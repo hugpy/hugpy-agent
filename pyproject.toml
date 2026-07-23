@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hugpy-agent"
+version = "0.1.2"
+description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "putkoff", email = "support@hugpy.ai" }
+]
+keywords = ["hugpy", "agent", "llm", "ai", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only"
+]
+# Deliberately dependency-free: a remote machine with only Python can run it.
+dependencies = []
+
+[project.urls]
+Homepage = "https://hugpy.ai"
+Repository = "https://github.com/hugpy/hugpy-agent"
+Issues = "https://github.com/hugpy/hugpy-agent/issues"
+
+[project.scripts]
+hugpy-agent = "hugpy_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
