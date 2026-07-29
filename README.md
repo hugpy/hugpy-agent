@@ -10,6 +10,7 @@ stdlib only — zero dependencies.**
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
+python -m pip install --upgrade pip   # old distro pips choke on modern wheels
 pip install -e .
 hugpy-agent models        # lists fleet models from the configured base
 ```
@@ -27,8 +28,10 @@ bash bootstrap.sh --central https://dev.hugpy.ai/api \
 journalctl --user -u hugpy-agent -f     # watch it heartbeat / run tasks
 ```
 
-It creates `~/hugpy-agent/venv`, pip-installs the package (from the local
-checkout for now; PyPI later), then runs `python -m hugpy_agent.install`,
+It creates `~/hugpy-agent/venv`, upgrades that venv's pip (old distro pips
+choke on modern wheels), pip-installs the package (from the local checkout for
+now; PyPI later), installs a desktop launcher for the terminal console (skipped
+silently on a headless box), then runs `python -m hugpy_agent.install`,
 which writes `~/.config/systemd/user/hugpy-agent.service`
 (`Restart=on-failure`, `%h`-portable, `ExecStart=… serve`), writes all
 config **including the key** to the **0600** env file
@@ -52,6 +55,32 @@ apply). Sources (`HUGPY_TASK_SOURCE`):
 
 SIGTERM (`systemctl --user stop hugpy-agent`) finishes the current task,
 then exits cleanly.
+
+### macOS
+
+The secure install link's `.sh` one-liner works unchanged on macOS
+(`curl -fsSL …/agent/install/<id>.sh | bash` — it curls the same Python
+installer and runs it under the system `python3`). The installer creates its
+venv, writes the credential, and builds a **user-level app bundle**
+`~/Applications/hugpy Agent.app` whose icon opens the terminal console in
+**Terminal.app** (via the same hold-open launcher script Linux uses). No sudo,
+nothing in `/Applications`. On a headless Mac reached over SSH with no GUI
+login the bundle is skipped.
+
+Honest floors (below these, don't expect a working install rather than a
+half-working one):
+
+- **hugpy-agent** needs **python3 ≥ 3.10** — install the Xcode Command Line
+  Tools (`xcode-select --install`) or Homebrew python.
+- **OpenCode** (the interactive console TUI) needs **Node ≥ 18**
+  (`brew install node`); it's an optional peer — the agent runs without it.
+- Mountain-Lion-era Macs (OS X 10.8) are **below the floor** on both counts
+  (their python and TLS stack are too old for modern PyPI/wheels); use a
+  modern macOS.
+
+macOS **service mode** (a launchd equivalent of the systemd user unit) is
+**out of scope** here — `bootstrap.sh` is Linux/systemd only. On macOS run the
+console from the app bundle (or `hugpy-agent serve` by hand).
 
 ### Agent node mode (`serve --node`)
 

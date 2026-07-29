@@ -262,7 +262,35 @@ def launch(workspace_dir: str, key: str,
     if key:
         os.environ[KEY_ENV_NAME] = key
     os.chdir(ws)
+    _rebind_stdin_to_tty()
     os.execvp(binary, [binary])
+
+
+def _rebind_stdin_to_tty() -> None:
+    """If stdin is not a TTY but a controlling terminal exists, re-bind fd 0
+    to /dev/tty before the exec.
+
+    Why: the one-liner install path is ``curl … | bash`` — bash's stdin IS
+    the curl pipe, and every child inherits it. The OpenCode TUI then enables
+    mouse tracking on the terminal while its input loop reads the exhausted
+    pipe, so the terminal's mouse reports (``^[[<35;101;1M`` …) land in the
+    shell as literal garbage (operator report, 2026-07-23). Re-binding fd 0
+    to the controlling TTY gives the TUI the input stream its escape-mode
+    setup assumes. No controlling TTY (cron, CI) -> leave stdin alone; the
+    TUI's own non-interactive handling applies. Windows has no /dev/tty and
+    the pipe-install path there is PowerShell's, so this is a POSIX-only
+    concern by construction."""
+    try:
+        if os.isatty(0):
+            return
+        fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        return  # no controlling terminal — headless is a legitimate caller
+    try:
+        os.dup2(fd, 0)
+    finally:
+        if fd != 0:
+            os.close(fd)
 
 
 def run_console(cfg, workspace: str | None = None, sync: bool = True,

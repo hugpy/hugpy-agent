@@ -193,7 +193,7 @@ def build_registry(workspace: str, gateway, memory=None, comms=None,
     a `spawn` tool bound to that loop is registered — unless the loop sits
     at the configured max depth (subagent.make_spawn_spec returns None
     there; a floor-level child must not be able to recurse)."""
-    from . import fs, http, shell, fleet
+    from . import fs, http, shell, fleet, lean
 
     reg = Registry()
     for spec in fs.specs(workspace):
@@ -201,6 +201,11 @@ def build_registry(workspace: str, gateway, memory=None, comms=None,
     reg.register(shell.spec(workspace))
     reg.register(http.spec())
     for spec in fleet.specs(gateway, workspace):
+        reg.register(spec)
+    # lean (2026-07-29): the token-efficiency kit — find-by-phrase, digest,
+    # log digests, eviction windows, deliver-by-path. Registered so every
+    # keeper driving this agent inherits the cheap paths by default.
+    for spec in lean.specs(gateway, workspace):
         reg.register(spec)
     # ask_operator (P2.3): a direct line to the human. Risk READONLY — it
     # only sends a message and waits; it mutates nothing and is safe to
