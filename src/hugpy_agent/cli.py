@@ -267,9 +267,13 @@ def cmd_console(args) -> int:
     returns — the process execs into OpenCode."""
     from . import console as consolemod
     cfg = _cfg(args)
-    # --claude-code is shorthand for --frontend claude-code.
-    frontend = "claude-code" if getattr(args, "claude_code", False) else \
-        getattr(args, "frontend", "opencode")
+    # --claude-code / --qwen-code are shorthands for --frontend <name>.
+    if getattr(args, "claude_code", False):
+        frontend = "claude-code"
+    elif getattr(args, "qwen_code", False):
+        frontend = "qwen-code"
+    else:
+        frontend = getattr(args, "frontend", "opencode")
     try:
         return consolemod.run_console(
             cfg,
@@ -374,13 +378,17 @@ def main(argv=None) -> int:
     # from the agent-loop workspace, so --workspace here must not feed the
     # shared config resolver's workspace knob.
     p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
-    p.add_argument("--frontend", choices=["opencode", "claude-code"],
+    p.add_argument("--frontend", choices=["opencode", "claude-code", "qwen-code"],
                    default="opencode",
                    help="terminal frontend to launch (default opencode). "
                         "claude-code points Claude Code at the fleet's "
-                        "Anthropic Messages shim (/v1/messages)")
+                        "Anthropic Messages shim (/v1/messages); qwen-code "
+                        "points Qwen Code (a Claude-Code-style TUI, no "
+                        "Anthropic anything) at the fleet's OpenAI /v1")
     p.add_argument("--claude-code", dest="claude_code", action="store_true",
                    help="shorthand for --frontend claude-code")
+    p.add_argument("--qwen-code", dest="qwen_code", action="store_true",
+                   help="shorthand for --frontend qwen-code")
     p.add_argument("--model", help="override the default model OpenCode opens with")
     p.add_argument("--workspace", dest="console_workspace",
                    help="console dir holding opencode.json "

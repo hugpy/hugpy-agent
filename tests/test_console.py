@@ -274,5 +274,79 @@ class RunConsoleTests(unittest.TestCase):
         self.assertIn("npm install -g opencode-ai", err.getvalue())
 
 
+class QwenCodeFrontendTests(unittest.TestCase):
+    """The Claude-free qwen-code frontend: base = the /v1 mount, the auth
+    selection is merged into settings.json without clobbering (and never the
+    key), and a missing binary raises the install hint."""
+
+    def test_qwen_base_forms(self):
+        for base, want in [
+            ("https://dev.hugpy.ai", "https://dev.hugpy.ai/api/v1"),
+            ("https://dev.hugpy.ai/api", "https://dev.hugpy.ai/api/v1"),
+            ("http://127.0.0.1:7002/v1", "http://127.0.0.1:7002/v1"),
+        ]:
+            self.assertEqual(console.qwen_base(base), want, base)
+
+    def test_ensure_auth_creates_and_merges(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "settings.json")
+            console.ensure_qwen_openai_auth(path)
+            with open(path) as fh:
+                self.assertEqual(
+                    json.load(fh)["security"]["auth"]["selectedType"], "openai")
+            # Existing unrelated settings survive the merge.
+            with open(path, "w") as fh:
+                json.dump({"theme": "dark", "security": {"other": 1}}, fh)
+            console.ensure_qwen_openai_auth(path)
+            with open(path) as fh:
+                got = json.load(fh)
+            self.assertEqual(got["theme"], "dark")
+            self.assertEqual(got["security"]["other"], 1)
+            self.assertEqual(got["security"]["auth"]["selectedType"], "openai")
+
+    def test_ensure_auth_leaves_corrupt_file_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "settings.json")
+            with open(path, "w") as fh:
+                fh.write("{not json")
+            console.ensure_qwen_openai_auth(path)
+            with open(path) as fh:
+                self.assertEqual(fh.read(), "{not json")
+
+    def test_missing_binary_raises_install_hint(self):
+        with mock.patch.object(console, "resolve_qwen", return_value=None):
+            with self.assertRaises(console.ConsoleError) as ctx:
+                console.launch_qwen_code("https://dev.hugpy.ai", SECRET)
+        self.assertIn("@qwen-code/qwen-code", str(ctx.exception))
+
+    def test_launch_env_key_placeholder_and_model_default(self):
+        """Env-only seam: base/key/model land in the child env (placeholder
+        key on an open fleet, pre-set OPENAI_MODEL respected); exec is
+        reached — the key never lands in any file."""
+        calls = {}
+
+        def fake_exec(binary, argv):
+            calls["binary"], calls["argv"] = binary, argv
+
+        for key, want_key in [(SECRET, SECRET), ("", "hugpy-open-fleet")]:
+            with mock.patch.object(console, "resolve_qwen",
+                                   return_value="/bin/qwen"), \
+                 mock.patch.object(console, "ensure_qwen_openai_auth"), \
+                 mock.patch.object(console, "_rebind_stdin_to_tty"), \
+                 mock.patch.object(console.os, "execvp", fake_exec), \
+                 mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("OPENAI_MODEL", None)
+                console.launch_qwen_code("https://dev.hugpy.ai", key,
+                                         "Qwen~Qwen3-Coder-Next-GGUF")
+                self.assertEqual(os.environ["OPENAI_BASE_URL"],
+                                 "https://dev.hugpy.ai/api/v1")
+                self.assertEqual(os.environ["OPENAI_API_KEY"], want_key)
+                # The brain is named EXPLICITLY — "default" would resolve to
+                # the small chat default whose ctx agent prompts exceed.
+                self.assertEqual(os.environ["OPENAI_MODEL"],
+                                 "Qwen~Qwen3-Coder-Next-GGUF")
+        self.assertEqual(calls["binary"], "/bin/qwen")
+
+
 if __name__ == "__main__":
     unittest.main()

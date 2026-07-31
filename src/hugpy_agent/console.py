@@ -147,10 +147,120 @@ def launch_claude_code(central: str, key: str,
     # lands on the shim on every topology.
     api_base = models_url(central)[: -len("/v1/models")]
     os.environ[CLAUDE_BASE_ENV] = api_base
-    if key:
-        os.environ[CLAUDE_AUTH_ENV] = key
+    # ALWAYS export a token, even on a keyless fleet: Claude Code treats a
+    # missing ANTHROPIC_AUTH_TOKEN as "no credential" and falls back to its
+    # own Anthropic login flow — a hugpy console must never demand a Claude
+    # account. The placeholder is fine on an open fleet (the shim only
+    # verifies keys when require_key is on); a gated fleet still needs the
+    # real key configured, and gets a clean 401 from the shim instead of an
+    # Anthropic login screen.
+    os.environ[CLAUDE_AUTH_ENV] = key or "hugpy-open-fleet"
     _rebind_stdin_to_tty()
     os.execvp(binary, [binary])
+
+
+# The env vars qwen-code (Qwen Code) reads: an OpenAI-compatible base that it
+# appends `/chat/completions` to (so the /v1 mount itself), a bearer key, and
+# a model id. "default" rides hugpy's resolve() fall-through to the served
+# brain, so no model discovery is needed at launch.
+QWEN_AUTH_ENV = "OPENAI_API_KEY"
+QWEN_BASE_ENV = "OPENAI_BASE_URL"
+QWEN_MODEL_ENV = "OPENAI_MODEL"
+
+QWEN_INSTALL_HINT = """\
+qwen (Qwen Code) not found. It is an optional peer — install it once:
+
+    npm config set prefix ~/.npm-global
+    npm install -g @qwen-code/qwen-code
+
+then make sure ~/.npm-global/bin is on your PATH, e.g. add to ~/.bashrc:
+
+    export PATH="$HOME/.npm-global/bin:$PATH"
+
+hugpy-agent never auto-installs it; opencode remains the default frontend."""
+
+
+def resolve_qwen() -> str | None:
+    """Absolute path of the `qwen` (Qwen Code) binary, or None.
+
+    Same discipline as resolve_opencode: PATH first, then the well-known
+    npm-prefix location the install hint sets up. None means "not installed",
+    never an error."""
+    found = shutil.which("qwen")
+    if found:
+        return found
+    candidate = os.path.expanduser(os.path.join("~", ".npm-global", "bin",
+                                                "qwen"))
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def ensure_qwen_openai_auth(settings_path: str | None = None) -> None:
+    """Pre-select qwen-code's "openai" auth type in ~/.qwen/settings.json.
+
+    Without `security.auth.selectedType` qwen-code ignores the OPENAI_* env
+    and blocks on its auth-selection dialog — which in `-p` mode is a silent
+    hang. Only this one nested flag is merged in; every other setting is
+    preserved and THE KEY NEVER LANDS IN THE FILE (same discipline as the
+    other frontends). An existing file that fails to parse is left untouched
+    — qwen then asks interactively rather than us clobbering user config.
+    """
+    path = settings_path or os.path.expanduser(os.path.join(
+        "~", ".qwen", "settings.json"))
+    settings: dict = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                settings = json.load(fh)
+            if not isinstance(settings, dict):
+                return
+        except (OSError, ValueError):
+            return
+    sec = settings.setdefault("security", {})
+    auth = sec.setdefault("auth", {}) if isinstance(sec, dict) else None
+    if not isinstance(auth, dict) or auth.get("selectedType") == "openai":
+        return
+    auth["selectedType"] = "openai"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+
+
+def launch_qwen_code(central: str, key: str, model: str | None = None,
+                     binary: str | None = None) -> "None":
+    """exec Qwen Code pointed at the fleet's OpenAI-compatible /v1.
+
+    The fully Claude-free Claude-Code-style frontend: qwen-code's TUI speaks
+    plain `/v1/chat/completions`, so it drives hugpy models with no Anthropic
+    account, binary, or shim involved. Base = the /v1 mount (qwen appends
+    `/chat/completions` itself); key is exported into the child env only
+    (placeholder on an open fleet, same as the claude-code path); model is
+    cfg.model — the AGENT BRAIN, named explicitly. Never "default": the
+    server's no-preference fall-through is DEFAULT_CHAT_MODEL (a small fast
+    chat model), and an agent-sized prompt can exceed its slot ctx. A
+    pre-set OPENAI_MODEL is respected.
+
+    Only returns by raising; on success the exec replaces the process.
+    """
+    binary = binary or resolve_qwen()
+    if not binary:
+        raise ConsoleError(QWEN_INSTALL_HINT)
+    os.environ[QWEN_BASE_ENV] = qwen_base(central)
+    os.environ[QWEN_AUTH_ENV] = key or "hugpy-open-fleet"
+    os.environ.setdefault(QWEN_MODEL_ENV, model or "default")
+    ensure_qwen_openai_auth()
+    _rebind_stdin_to_tty()
+    os.execvp(binary, [binary])
+
+
+def qwen_base(central: str) -> str:
+    """The OpenAI-compatible base for qwen-code: the /v1 mount itself.
+
+    Derived by stripping `/models` off the same models_url every frontend
+    uses, so every configured base form (bare host, /api, explicit /v1)
+    lands on the right mount."""
+    return models_url(central)[: -len("/models")]
 
 
 def resolve_opencode() -> str | None:
@@ -399,6 +509,12 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
         # the two env vars set in launch_claude_code. A missing binary raises
         # ConsoleError (cmd_console maps it to a non-zero exit + hint).
         launch_claude_code(cfg.base, cfg.api_key)
+        return 0  # unreachable on success (exec)
+
+    if frontend == "qwen-code":
+        # Same no-config seam as claude-code, but fully Claude-free: qwen-code
+        # speaks OpenAI /v1 directly. Env-only key, "default" model.
+        launch_qwen_code(cfg.base, cfg.api_key, cfg.model)
         return 0  # unreachable on success (exec)
 
     ws = os.path.expanduser(workspace or DEFAULT_WORKSPACE)
