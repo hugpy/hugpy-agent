@@ -85,6 +85,74 @@ class ConsoleError(Exception):
     on the message without capturing stdio."""
 
 
+# The env var Claude Code reads for its bearer credential and its API origin.
+# Claude Code APPENDS `/v1/messages` itself, so ANTHROPIC_BASE_URL must be the
+# ORIGIN (e.g. https://dev.hugpy.ai), never the /v1 mount.
+CLAUDE_AUTH_ENV = "ANTHROPIC_AUTH_TOKEN"
+CLAUDE_BASE_ENV = "ANTHROPIC_BASE_URL"
+
+CLAUDE_INSTALL_HINT = """\
+claude (Claude Code) not found. It is an optional peer — install it once:
+
+    npm config set prefix ~/.npm-global
+    npm install -g @anthropic-ai/claude-code
+
+then make sure ~/.npm-global/bin is on your PATH, e.g. add to ~/.bashrc:
+
+    export PATH="$HOME/.npm-global/bin:$PATH"
+
+hugpy-agent never auto-installs it; opencode remains the default frontend."""
+
+
+def resolve_claude() -> str | None:
+    """Absolute path of the `claude` (Claude Code) binary, or None.
+
+    Same discipline as resolve_opencode: PATH first, then the well-known
+    npm-prefix location the install hint sets up. None means "not installed",
+    never an error."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidate = os.path.expanduser(os.path.join("~", ".npm-global", "bin",
+                                                "claude"))
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def launch_claude_code(central: str, key: str,
+                       binary: str | None = None) -> "None":
+    """exec Claude Code pointed at the fleet's Anthropic Messages shim.
+
+    Sets ANTHROPIC_BASE_URL to the fleet ORIGIN (Claude Code appends
+    `/v1/messages` itself — so NOT the /v1 mount) and ANTHROPIC_AUTH_TOKEN to
+    the same key opencode uses (HUGPY_API_KEY, resolved by cfg). The key is only
+    ever a process-env entry, never written to a file — the same discipline as
+    the opencode `{env:NAME}` reference. Never installs anything: a missing
+    binary raises ConsoleError with the install hint.
+
+    Only returns by raising; on success the exec replaces the process.
+    """
+    binary = binary or resolve_claude()
+    if not binary:
+        raise ConsoleError(CLAUDE_INSTALL_HINT)
+    # ANTHROPIC_BASE_URL must be the API root that Claude Code appends
+    # `/v1/messages` to — WITHOUT a trailing /v1 (the operator's constraint),
+    # but WITH the fleet's /api routing prefix where the topology uses it. The
+    # shim is dual-mounted at /v1/messages AND /api/v1/messages, and the public
+    # dev front only proxies /api/* to the API. Deriving the base by stripping
+    # `/v1/models` off the same models_url opencode uses gets exactly the right
+    # root for every base form: bare host -> https://host/api, an /api base ->
+    # .../api, an explicit /v1 base -> its origin. Appending /v1/messages then
+    # lands on the shim on every topology.
+    api_base = models_url(central)[: -len("/v1/models")]
+    os.environ[CLAUDE_BASE_ENV] = api_base
+    if key:
+        os.environ[CLAUDE_AUTH_ENV] = key
+    _rebind_stdin_to_tty()
+    os.execvp(binary, [binary])
+
+
 def resolve_opencode() -> str | None:
     """Absolute path of the `opencode` binary, or None.
 
@@ -304,16 +372,29 @@ def _rebind_stdin_to_tty() -> None:
 
 def run_console(cfg, workspace: str | None = None, sync: bool = True,
                 offline: bool = False, model: str | None = None,
-                print_config: bool = False) -> int:
+                print_config: bool = False,
+                frontend: str = "opencode") -> int:
     """The `hugpy-agent console` flow, factored out of cli.py for testing.
 
-    Order: resolve workspace -> (sync? fetch+write config) -> print-config
-    short-circuit -> launch. `--offline` implies no sync and additionally
-    requires an existing opencode.json to be present (launching OpenCode
-    with no provider config would drop the user into a stranger's setup —
-    fail with instructions instead). Returns an exit code; only the launch
-    step never returns (exec).
+    `frontend` selects the terminal face. Default "opencode" keeps the existing
+    behavior (generate opencode.json from /v1/models, exec OpenCode). The opt-in
+    "claude-code" resolves the `claude` binary and execs it against the fleet's
+    Anthropic Messages shim — NO opencode.json, no model-map sync (Claude Code
+    discovers models itself); the key is exported into the child env only, never
+    written to a file.
+
+    opencode order: resolve workspace -> (sync? fetch+write config) ->
+    print-config short-circuit -> launch. `--offline` implies no sync and
+    additionally requires an existing opencode.json to be present. Returns an
+    exit code; only the launch step never returns (exec).
     """
+    if frontend == "claude-code":
+        # Claude Code carries no per-workspace config we own; the whole seam is
+        # the two env vars set in launch_claude_code. A missing binary raises
+        # ConsoleError (cmd_console maps it to a non-zero exit + hint).
+        launch_claude_code(cfg.base, cfg.api_key)
+        return 0  # unreachable on success (exec)
+
     ws = os.path.expanduser(workspace or DEFAULT_WORKSPACE)
     path = config_path(ws)
 
