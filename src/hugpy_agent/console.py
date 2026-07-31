@@ -185,12 +185,16 @@ def models_url(central: str) -> str:
 
 
 def fetch_model_map(central: str, key: str,
-                    tasks: frozenset[str] = TEXT_TASKS,
+                    tasks: "frozenset[str] | None" = TEXT_TASKS,
                     timeout: int = 30) -> tuple[dict, str]:
     """(models map, chosen default id) from the fleet's live /v1/models.
 
     Ported from the sync-models reference script. Filtering doctrine:
-      * tasks must intersect `tasks` — chat-drivable only;
+      * tasks must intersect `tasks` — chat-drivable only. ``tasks=None`` (the
+        ``--all-models`` opt-in) DROPS the task filter and lists every
+        non-blocked model — the operator's escape hatch when they want the
+        whole fleet in the picker, accepting that a non-chat model (ASR,
+        diffusion, embedding) selected in a coding agent will simply fail;
       * `blocked: true` records are skipped — the operator's model BLOCK
         outranks listing, here as everywhere;
       * context_length rides into the display name ("(32k ctx)") and
@@ -222,7 +226,7 @@ def fetch_model_map(central: str, key: str,
         if m.get("blocked"):
             continue
         m_tasks = set(m.get("tasks") or ([m["task"]] if m.get("task") else []))
-        if not (m_tasks & tasks):
+        if tasks and not (m_tasks & tasks):   # tasks=None -> no filter (all models)
             continue
         ctx = m.get("context_length") or 0
         label = str(m["id"])
@@ -234,8 +238,9 @@ def fetch_model_map(central: str, key: str,
 
     if not models:
         raise ConsoleError(
-            "the fleet at %s listed no chat-drivable models (tasks %s) — "
-            "nothing for OpenCode to serve" % (url, sorted(tasks)))
+            "the fleet at %s listed no %s models — nothing for OpenCode to serve"
+            % (url, ("non-blocked" if not tasks
+                     else "chat-drivable (tasks %s)" % sorted(tasks))))
     default = (PREFERRED_DEFAULT if PREFERRED_DEFAULT in models
                else next(iter(models)))
     return models, default
@@ -373,7 +378,8 @@ def _rebind_stdin_to_tty() -> None:
 def run_console(cfg, workspace: str | None = None, sync: bool = True,
                 offline: bool = False, model: str | None = None,
                 print_config: bool = False,
-                frontend: str = "opencode") -> int:
+                frontend: str = "opencode",
+                all_models: bool = False) -> int:
     """The `hugpy-agent console` flow, factored out of cli.py for testing.
 
     `frontend` selects the terminal face. Default "opencode" keeps the existing
@@ -400,13 +406,20 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
 
     do_sync = sync and not offline
     if do_sync:
-        models, default = fetch_model_map(cfg.base, cfg.api_key)
+        # --all-models (or HUGPY_CONSOLE_ALL_MODELS=1): drop the chat-drivable
+        # task filter so the picker lists every non-blocked fleet model.
+        env_all = os.environ.get("HUGPY_CONSOLE_ALL_MODELS", "").strip().lower() \
+            in ("1", "true", "yes", "on")
+        tasks = None if (all_models or env_all) else TEXT_TASKS
+        models, default = fetch_model_map(cfg.base, cfg.api_key, tasks=tasks)
         chosen = model or default
         if chosen not in models:
             # An explicit --model that the fleet doesn't serve is honored
             # anyway (the operator may know a load is in flight), but say so.
             print("[console] note: model %r is not in the fleet's "
-                  "chat-drivable list right now" % chosen, file=sys.stderr)
+                  "%s list right now"
+                  % (chosen, "model" if tasks is None else "chat-drivable"),
+                  file=sys.stderr)
         config = build_config(cfg.base, KEY_ENV_NAME, models, chosen)
         if print_config:
             print(json.dumps(config, indent=2))

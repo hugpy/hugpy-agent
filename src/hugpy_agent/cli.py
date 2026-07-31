@@ -278,7 +278,8 @@ def cmd_console(args) -> int:
             offline=args.offline,
             model=getattr(args, "model", None),
             print_config=args.print_config,
-            frontend=frontend)
+            frontend=frontend,
+            all_models=getattr(args, "all_models", False))
     except consolemod.ConsoleError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -396,6 +397,10 @@ def main(argv=None) -> int:
     p.add_argument("--print-config", dest="print_config", action="store_true",
                    help="print the opencode.json that would be used, then "
                         "exit (no write on sync path, no launch)")
+    p.add_argument("--all-models", dest="all_models", action="store_true",
+                   help="list EVERY non-blocked fleet model in the picker, not "
+                        "just chat-drivable ones (also HUGPY_CONSOLE_ALL_MODELS=1). "
+                        "opencode only; a non-chat model selected here will fail")
     p.set_defaults(fn=cmd_console)
 
     p = sub.add_parser("serve", help="daemon: poll the task source and run "
