@@ -113,6 +113,30 @@ class BuildConfigTests(unittest.TestCase):
         self.assertEqual(hp["options"]["baseURL"],
                          "https://dev.hugpy.ai/api/v1")
         self.assertEqual(cfg["model"], "hugpy/m")
+
+    def test_permission_defaults_to_ask_when_env_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HUGPY_CONSOLE_PERMISSION", None)
+            cfg = console.build_config("https://dev.hugpy.ai/api",
+                                       console.KEY_ENV_NAME, {"m": {"name": "m"}}, "m")
+        self.assertEqual(cfg["permission"],
+                         {"edit": "ask", "bash": "ask", "webfetch": "ask"})
+
+    def test_permission_honors_HUGPY_CONSOLE_PERMISSION(self):
+        # The unattended keeper needs 'allow' to survive --sync (which rewrites
+        # opencode.json every launch): the value must come from the env the
+        # fleet sets, not a hand-edit that gets clobbered.
+        for val in ("allow", "deny", "ask"):
+            with mock.patch.dict(os.environ, {"HUGPY_CONSOLE_PERMISSION": val}):
+                cfg = console.build_config("https://dev.hugpy.ai/api",
+                                           console.KEY_ENV_NAME, {"m": {"name": "m"}}, "m")
+            self.assertEqual(cfg["permission"],
+                             {"edit": val, "bash": val, "webfetch": val})
+
+    def test_permission_falls_back_to_ask_on_a_bad_value(self):
+        with mock.patch.dict(os.environ, {"HUGPY_CONSOLE_PERMISSION": "yolo"}):
+            cfg = console.build_config("https://dev.hugpy.ai/api",
+                                       console.KEY_ENV_NAME, {"m": {"name": "m"}}, "m")
         self.assertEqual(cfg["permission"],
                          {"edit": "ask", "bash": "ask", "webfetch": "ask"})
 

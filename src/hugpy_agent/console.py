@@ -179,11 +179,20 @@ def build_config(central: str, key_env_name: str, models: dict,
 
     The apiKey is ALWAYS the `{env:NAME}` reference — OpenCode resolves it
     from its own process environment at runtime; the literal key never
-    enters this dict and therefore never lands on disk. Permissions default
-    to `ask` across edit/bash/webfetch: the same fail-toward-the-operator
-    posture as this package's own policy engine — a fresh console must not
-    silently mutate anything.
+    enters this dict and therefore never lands on disk.
+
+    Permission posture is read from ``HUGPY_CONSOLE_PERMISSION`` (edit/bash/
+    webfetch), defaulting to ``ask`` — the same fail-toward-the-operator posture
+    as this package's own policy engine, so a fresh console still must not
+    silently mutate anything. Wiring this env is what lets an UNATTENDED keeper
+    run: ``console`` re-syncs by default (rewriting opencode.json every launch),
+    so a hand-edited "allow" never stuck — the value has to come from the
+    environment the fleet already sets (HUGPY_CONSOLE_PERMISSION=allow in
+    hugpy-keeper.env). Anything other than ask/allow/deny falls back to ask.
     """
+    perm = os.environ.get("HUGPY_CONSOLE_PERMISSION", "ask")
+    if perm not in ("ask", "allow", "deny"):
+        perm = "ask"
     base = normalize_base(central)
     if not base.endswith("/v1"):
         base = models_url(central)[: -len("/models")]
@@ -202,9 +211,9 @@ def build_config(central: str, key_env_name: str, models: dict,
         },
         "model": "hugpy/" + default_model,
         "permission": {
-            "edit": "ask",
-            "bash": "ask",
-            "webfetch": "ask",
+            "edit": perm,
+            "bash": perm,
+            "webfetch": perm,
         },
     }
 
