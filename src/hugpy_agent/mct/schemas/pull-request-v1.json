@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hugpy.ai/mct/schemas/pull-request-v1.json",
+  "title": "MCT pull request",
+  "description": "A's request for missing information. Object kind 'pull_request'. Design ref: §7.3, §8.4, §10. A pull cannot widen authority; B is the sole arbiter (invariant 12, §13.6). The pull text itself is untrusted input to the broker.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "session_id", "turn_id", "epoch", "request_id", "need", "target"],
+  "properties": {
+    "schema": { "type": "string", "const": "mct.pull-request/1" },
+    "session_id": { "type": "string", "pattern": "^s_[A-Za-z0-9]+$" },
+    "turn_id": { "type": "string", "pattern": "^t_[0-9]{6,}$" },
+    "epoch": { "type": "string", "pattern": "^e_[A-Za-z0-9]+$" },
+    "request_id": { "type": "string", "pattern": "^pr_[0-9]{4,}$" },
+    "need": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "Plain-language statement of what is missing. Untrusted; cannot alter policy or roots (§13.6)."
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "description": "What to resolve. Never a host path — A holds only opaque handles and catalog categories (invariant 5).",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["catalog-query", "object", "selector"],
+          "description": "catalog-query: search a named catalog category; object: an already-known opaque handle; selector: a bounded selector over a known object."
+        },
+        "query": { "type": "string", "description": "For kind=catalog-query." },
+        "object": { "$ref": "#/$defs/pointer", "description": "For kind=object/selector." },
+        "selector": { "type": "string", "description": "For kind=selector: lines/bytes/JSON-path/AST-symbol/match spec." }
+      }
+    },
+    "preferred_form": {
+      "type": "string",
+      "description": "Requested shape, e.g. 'matching lines with 20 lines of surrounding context'. Advisory; B chooses the least expansive satisfactory form (§10.1 step 7)."
+    },
+    "maximum_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "A's self-imposed ceiling; still bounded by remaining turn budget (§10.3)."
+    },
+    "reason": { "type": "string", "maxLength": 2000 },
+    "required_fidelity": {
+      "type": "string",
+      "enum": ["verbatim-source", "reduced", "summary"],
+      "default": "reduced"
+    },
+    "allow_summary_fallback": { "type": "boolean", "default": false }
+  },
+  "$defs": {
+    "pointer": {
+      "type": "string",
+      "pattern": "^mct://broker/session/s_[A-Za-z0-9]+/object/o_[A-Za-z0-9_]+$"
+    }
+  }
+}
