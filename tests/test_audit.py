@@ -21,8 +21,8 @@ from helpers import FakeGateway, tc
 
 TS = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
 SCHEMA_KEYS = {"ts_iso", "run_id", "step", "tool", "risk", "decision",
-               "args_sha256", "result_sha256", "result_len", "duration_ms",
-               "error_bool"}
+               "model", "args_sha256", "result_sha256", "result_len",
+               "duration_ms", "error_bool"}
 
 
 def _record(log, args=None, result="ok", **over):

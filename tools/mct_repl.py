@@ -12,7 +12,8 @@ Usage:
 In-session commands:
   /help                      show this help
   /policy <text>             set the governing instruction (always in context)
-  /root <name> <path>        grant confined read access to a directory
+  /root <name> <path>        grant confined read access to a directory (persisted)
+  /allow on|off              let B broker A's fs requests against granted roots
   /file <catalog> <root> <rel>   expose a file under a root as a pullable source
   /source <catalog> <text>   add an inline source A can pull by name
   /sources                   list the catalog A can pull from
@@ -32,6 +33,7 @@ In-session commands:
 from __future__ import annotations
 
 import argparse
+import atexit
 import itertools
 import os
 import sys
@@ -39,12 +41,41 @@ import threading
 import time
 from pathlib import Path
 
+try:  # line editing (backspace/arrows/Ctrl-A/E) + history for input()
+    import readline
+except ImportError:  # non-GNU platforms: input() still works, just bare
+    readline = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from hugpy_agent.mct.claude_adapter import ClaudeCodeAdapter
 from hugpy_agent.mct.session import BrokerConfig, BrokerServer
 
 DIM, BOLD, CYAN, YELLOW, RED, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[33m", "\033[31m", "\033[0m"
+
+# Readline needs non-printing prompt chars wrapped in \001…\002 so it can
+# measure the visible width correctly (otherwise long lines wrap mid-word).
+PROMPT = f"\001{BOLD}\002you>\001{RESET}\002 " if readline else f"{BOLD}you>{RESET} "
+
+
+def _setup_readline():
+    """Persistent cross-session input history under ~/.mct/."""
+    if readline is None:
+        return
+    hist = Path.home() / ".mct" / "repl_history"
+    hist.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        readline.read_history_file(hist)
+    except OSError:
+        pass
+    readline.set_history_length(1000)
+
+    def _save():
+        try:
+            readline.write_history_file(hist)
+        except OSError:
+            pass
+    atexit.register(_save)
 
 
 class Spinner:
@@ -98,9 +129,10 @@ def main() -> int:
     print(f"{DIM}rolling log: {server.ledger.event_log_path}   (tail -f it){RESET}")
     print(f"{DIM}Type a message, or /help for commands. Ctrl-C cancels a turn, /exit quits.{RESET}\n")
 
+    _setup_readline()
     while True:
         try:
-            line = input(f"{BOLD}you>{RESET} ").strip()
+            line = input(PROMPT).strip()
         except (EOFError, KeyboardInterrupt):
             print("\nbye."); break
         if not line:
@@ -161,9 +193,19 @@ def _command(line: str, sess, server, state) -> bool:
         sess.set_policy(" ".join(rest)); print(f"{DIM}policy set.{RESET}")
     elif cmd == "/root" and len(rest) == 2:
         try:
-            sess.register_root(rest[0], rest[1]); print(f"{DIM}root '{rest[0]}' -> {rest[1]}{RESET}")
+            # Validate first, then persist to fs_policy so the grant reaches
+            # the MCP child (which rebuilds roots from the policy file, not
+            # parent memory) and survives reopening the workspace.
+            sess.register_root(rest[0], rest[1])
+            from hugpy_agent.mct.fs_policy import add_root
+            add_root(server.workspace_root, rest[0], rest[1])
+            print(f"{DIM}root '{rest[0]}' -> {rest[1]}{RESET}")
         except Exception as e:
             print(f"{RED}{e}{RESET}")
+    elif cmd == "/allow" and len(rest) == 1 and rest[0] in ("on", "off"):
+        from hugpy_agent.mct.fs_policy import set_allow
+        set_allow(server.workspace_root, rest[0] == "on")
+        print(f"{DIM}frontier fs requests: {rest[0]}{RESET}")
     elif cmd == "/file" and len(rest) == 3:
         try:
             sess.register_source_file(rest[0], rest[1], rest[2])

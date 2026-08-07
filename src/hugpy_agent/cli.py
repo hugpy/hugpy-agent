@@ -97,6 +97,15 @@ def _printer(quiet: bool):
             print("[%s] run_id=%s" % (kind, a[0]), file=sys.stderr)
         elif kind == "mode":
             print("[mode] %s" % a[0], file=sys.stderr)
+        # second-in-line brain events: the run-start choice and the ONE
+        # mid-run capacity fallback (a WARNING — the operator's primary
+        # brain refused for capacity and the run switched for good).
+        elif kind == "brain":
+            print("[brain] using %s — %s" % (a[0], a[1]), file=sys.stderr)
+        elif kind == "brain_fallback":
+            print("[brain] WARNING: capacity refusal from the active brain; "
+                  "switching to %s for the rest of the run (%s)"
+                  % (a[0], a[1]), file=sys.stderr)
         elif kind == "policy":
             print("[policy] %s -> %s" % (a[0], a[1]), file=sys.stderr)
         elif kind == "ask":
@@ -151,6 +160,50 @@ def cmd_run(args) -> int:
     loop = AgentLoop(cfg, on_event=_printer(args.quiet))
     _install_sigint(loop)
     report = loop.run(args.task)
+    print(json.dumps(report, indent=2))
+    return 0 if report.get("outcome") == "done" else 1
+
+
+# --- case (k95): sentinel-spawned one-shot diagnosis run --------------------
+#
+# The sentinel (abstract_hugpy_dev.sentinel.runner) spawns exactly one of
+# these per opened case. The profile is pinned HERE as CLI-layer overrides —
+# the strongest layer in load_config — so no workspace .env/agent.toml or
+# process environment can widen it: readonly mode denies every non-readonly
+# tool; fs_write and http_fetch are allowed back in (fs_write is jailed to
+# the workspace, which `case` forces to the case dir, and http_fetch is how
+# the agent reads central's /llm + /oracle surfaces to diagnose); the deny
+# list re-closes the mutation-shaped tools even against an explicit
+# HUGPY_TOOL_ALLOW in the environment (deny beats allow beats mode).
+
+CASE_TOOL_ALLOW = ["fs_write", "http_fetch"]
+CASE_TOOL_DENY = ["shell", "spawn", "generate_image", "generate_scene",
+                  "lean_deliver", "lean_digest", "lean_logs", "remember"]
+
+
+def cmd_case(args) -> int:
+    if args.brief == "-":
+        brief = sys.stdin.read()
+    else:
+        with open(args.brief, "r", encoding="utf-8") as fh:
+            brief = fh.read()
+    if not brief.strip():
+        print("case: empty brief", file=sys.stderr)
+        return 2
+    cfg = load_config(overrides={
+        "base": getattr(args, "base", None),
+        "model": getattr(args, "model", None),
+        "workspace": args.case_dir,
+        "max_steps": getattr(args, "max_steps", None),
+        "tools_mode": getattr(args, "tools_mode", None),
+        "no_think": getattr(args, "no_think", None),
+        "policy_mode": "readonly",
+        "tool_allow": CASE_TOOL_ALLOW,
+        "tool_deny": CASE_TOOL_DENY,
+    })
+    loop = AgentLoop(cfg, on_event=_printer(args.quiet))
+    _install_sigint(loop)
+    report = loop.run(brief)
     print(json.dumps(report, indent=2))
     return 0 if report.get("outcome") == "done" else 1
 
@@ -289,6 +342,96 @@ def cmd_console(args) -> int:
         return 1
 
 
+def cmd_mct(args) -> int:
+    """`hugpy-agent mct` — launch the Mediated Context Terminal (the mct
+    subpackage's pointer-mediated REPL): a confined Claude (A) answers only
+    through B's curated context. Equivalent to `python -m hugpy_agent.mct`."""
+    from .mct.repl import run
+    return run(args.workspace, model=args.model, use_model=not args.no_model,
+               allow_fs_requests=args.allow_fs_requests)
+
+
+def cmd_mct_usage(args) -> int:
+    """`hugpy-agent mct-usage` — one JSON document of precise token/cost
+    accounting plus cache-shadow timing for an MCT workspace. Read-oriented and
+    machine-consumed (the fleet console's steward drawer polls it); safe to run
+    while a REPL holds the workspace."""
+    import json as _json
+    import sqlite3
+    import time
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    ws = Path(args.workspace)
+    db = ws / ".hugpy_agent" / "mct" / "mct.db"
+    if not db.exists():
+        print(_json.dumps({"workspace": str(ws), "sessions": [],
+                           "error": "no MCT workspace here yet"}))
+        return 0
+    from .mct.session import BrokerConfig, BrokerServer
+    srv = BrokerServer(ws, config=BrokerConfig(event_log=False))
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        sessions = [r[0] for r in con.execute(
+            "SELECT session_id FROM sessions ORDER BY created_at")]
+        out = []
+        for sid in sessions:
+            row = con.execute(
+                "SELECT MAX(created_at) FROM objects WHERE session_id=? "
+                "AND kind='a_transcript'", (sid,)).fetchone()
+            last_at, cache = row[0] if row else None, None
+            if last_at:
+                try:
+                    ts = datetime.fromisoformat(last_at.replace("Z", "+00:00"))
+                    age = max(0.0, time.time() - ts.timestamp())
+                    # 5-min TTL, refreshed by each confirmed read (design §12):
+                    # never claim provider knowledge — this is the shadow's
+                    # expected state, not a confirmed one.
+                    cache = {"last_a_turn_at": last_at,
+                             "age_sec": round(age, 1), "ttl_sec": 300,
+                             "state": "expected-valid" if age < 300 else "expired"}
+                except ValueError:
+                    pass
+            per_turn = srv.tokens.per_turn(sid)
+            out.append({"session_id": sid,
+                        "report": srv.tokens.report(sid),
+                        "per_turn": per_turn[-args.turns:],
+                        "cache": cache})
+        con.close()
+        print(_json.dumps({"workspace": str(ws), "sessions": out}))
+        return 0
+    finally:
+        srv.close()
+
+
+def cmd_mct_fs(args) -> int:
+    """`hugpy-agent mct-fs` — read or set the frontier filesystem policy for an
+    MCT workspace: whether the frontier model (A) may reach the filesystem at
+    all, and WHICH directories. This is what the fleet console's directory-
+    accessibility button drives (symmetric with `mct-usage`, which it polls).
+
+    No mutating flags => print the current policy JSON. Otherwise apply the
+    changes and print the resulting policy. Changes take effect on the running
+    session's next A turn (the broker re-reads this file live)."""
+    import json as _json
+    from .mct import fs_policy as _fp
+
+    ws = args.workspace
+    changed = False
+    if args.allow is not None:
+        _fp.set_allow(ws, args.allow == "on"); changed = True
+    for spec in (args.add_root or []):
+        if "=" not in spec:
+            print(_json.dumps({"error": f"--add-root expects NAME=PATH, got {spec!r}"}))
+            return 2
+        name, path = spec.split("=", 1)
+        _fp.add_root(ws, name, path); changed = True
+    for name in (args.remove_root or []):
+        _fp.remove_root(ws, name); changed = True
+    print(_json.dumps(_fp.load_policy(ws), indent=2))
+    return 0
+
+
 def cmd_models(args) -> int:
     cfg = _cfg(args)
     gw = Gateway.from_config(cfg)
@@ -332,6 +475,28 @@ def main(argv=None) -> int:
     p.add_argument("task")
     _add_common(p)
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("case", help="one-shot sentinel case run under the "
+                                    "pinned document-only profile (readonly "
+                                    "policy + case-dir-jailed fs_write + "
+                                    "http_fetch; shell/spawn hard-denied)")
+    p.add_argument("brief", help="path to the case-brief file, or - for stdin")
+    p.add_argument("--case-dir", required=True,
+                   help="case directory; becomes the workspace, so journal, "
+                        "audit log and any fs_write stay inside it")
+    # Deliberately NOT _add_common: --workspace and --policy must not exist
+    # here — the case dir IS the workspace and the policy profile is pinned.
+    p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
+    p.add_argument("--model", help="model id (default env HUGPY_MODEL)")
+    p.add_argument("--max-steps", type=int, dest="max_steps")
+    p.add_argument("--tools-mode", dest="tools_mode",
+                   choices=["auto", "native", "prompted", "constrained"])
+    p.add_argument("--think", dest="no_think", action="store_false",
+                   default=None,
+                   help="let the model think (disables /no_think suffix)")
+    p.add_argument("-q", "--quiet", action="store_true",
+                   help="only print the final report JSON")
+    p.set_defaults(fn=cmd_case)
 
     p = sub.add_parser("chat", help="interactive REPL")
     _add_common(p)
@@ -410,6 +575,47 @@ def main(argv=None) -> int:
                         "just chat-drivable ones (also HUGPY_CONSOLE_ALL_MODELS=1). "
                         "opencode only; a non-chat model selected here will fail")
     p.set_defaults(fn=cmd_console)
+
+    p = sub.add_parser("mct", help="Mediated Context Terminal — pointer-mediated "
+                                   "chat where a confined Claude answers only "
+                                   "through B's curated context")
+    p.add_argument("workspace", nargs="?",
+                   default=os.path.expanduser("~/.mct/repl"),
+                   help="workspace dir (a fresh dir = a new conversation)")
+    p.add_argument("--model", default="sonnet",
+                   help="A's model (e.g. sonnet, opus, haiku)")
+    p.add_argument("--no-model", dest="no_model", action="store_true",
+                   help="disable B's local ranking model")
+    p.add_argument("--allow-fs-requests", action="store_true",
+                   help="Allow Frontier filesystem requests (Steward trigger): "
+                        "a missed pull may be brokered by B against granted "
+                        "roots — through B, never direct filesystem access")
+    p.set_defaults(fn=cmd_mct)
+
+    p = sub.add_parser("mct-usage", help="JSON token/cost accounting + cache "
+                                         "timing for an MCT workspace (polled "
+                                         "by the fleet console steward drawer)")
+    p.add_argument("workspace", nargs="?",
+                   default=os.path.expanduser("~/.mct/repl"),
+                   help="MCT workspace dir (default ~/.mct/repl)")
+    p.add_argument("--turns", type=int, default=5,
+                   help="how many most-recent per-turn rows to include")
+    p.set_defaults(fn=cmd_mct_usage)
+
+    p = sub.add_parser("mct-fs", help="read/set the frontier filesystem policy "
+                                      "(allow/disallow + granted directories) for "
+                                      "an MCT workspace — the console's directory-"
+                                      "accessibility control")
+    p.add_argument("workspace", nargs="?",
+                   default=os.path.expanduser("~/.mct/repl"),
+                   help="MCT workspace dir (default ~/.mct/repl)")
+    p.add_argument("--allow", choices=["on", "off"],
+                   help="allow (on) or disallow (off) frontier filesystem access")
+    p.add_argument("--add-root", action="append", metavar="NAME=PATH",
+                   help="grant a directory the frontier may reach (repeatable)")
+    p.add_argument("--remove-root", action="append", metavar="NAME",
+                   help="revoke a granted directory by name (repeatable)")
+    p.set_defaults(fn=cmd_mct_fs)
 
     p = sub.add_parser("serve", help="daemon: poll the task source and run "
                                      "each task (what the systemd unit runs)")

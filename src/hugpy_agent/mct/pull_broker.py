@@ -36,10 +36,23 @@ class TurnPullState:
     tokens: int = 0
     source_bytes: int = 0
     seen_queries: list[str] = field(default_factory=list)
+    fs_results: dict = field(default_factory=dict)  # query -> steward candidates
 
 
 def _tokens(data: bytes) -> int:
     return max(1, len(data) // 4)
+
+
+def _snippet(text: str, terms: list[str], width: int = 200) -> str:
+    """A short evidence window around the earliest term hit (slate material)."""
+    if not text:
+        return ""
+    low = text.lower()
+    hits = [low.find(t) for t in terms if t in low]
+    if not hits:
+        return text[:width].strip()
+    start = max(0, min(hits) - width // 3)
+    return text[start:start + width].strip()
 
 
 class PullBroker:
@@ -58,6 +71,7 @@ class PullBroker:
         request: dict,
         catalog: dict[str, str],
         state: TurnPullState,
+        fs_search=None,
     ) -> tuple[dict, str]:
         """Return ``(pull_result_payload, pull_result_pointer)``.
 
@@ -103,7 +117,36 @@ class PullBroker:
 
         # 4. resolve the target. Filesystem-backed sources are already snapshotted
         # into the catalog through confined_io before arbitration (§13.4).
-        source_pointer = self._locate(session_id, target, catalog)
+        # Catalog queries go through candidate generation: an unambiguous winner
+        # resolves directly; a contested slate goes back to A as decision
+        # "candidates" — the frontier model chooses, B only ranks (§11.2).
+        candidates = None
+        if target["kind"] == "catalog-query":
+            source_pointer, candidates = self._resolve_catalog_query(
+                session_id, target, catalog, fs_search, state)
+        else:
+            source_pointer = self._locate(session_id, target, catalog)
+        if candidates:
+            slate = json.dumps({
+                "schema": "mct.candidates/1",
+                "query": target.get("query") or "",
+                "note": "Ambiguous query. Choose one candidate, then pull it with "
+                        "target {\"kind\":\"object\",\"object\":<pointer>} (or an "
+                        "exact-name catalog-query).",
+                "candidates": candidates,
+            }).encode("utf-8")
+            ref = self.store.commit(
+                session_id, slate,
+                media_type="application/vnd.hugpy.mct-candidates+json",
+                kind="candidate_list", provenance={"request_id": request_id})
+            state.tokens += _tokens(slate)
+            return finish({
+                "schema": "mct.pull-result/1", "request_id": request_id,
+                "decision": "candidates",
+                "objects": [{"object": ref.pointer, "sha256": ref.sha256,
+                             "token_estimate": _tokens(slate)}],
+                "policy_revision": POLICY_REVISION,
+            })
         if source_pointer is None:
             return finish({
                 "schema": "mct.pull-result/1", "request_id": request_id,
@@ -159,18 +202,66 @@ class PullBroker:
             pointer = target["object"]
             _, object_id = parse_pointer(pointer)
             return pointer if self.ledger.get_object(object_id) else None
-        if kind == "catalog-query":
-            query = (target.get("query") or "").lower()
-            terms = [t for t in query.split() if t]
-            best = None
-            for name, pointer in catalog.items():
-                key = name.lower()
-                if terms and all(t in key for t in terms):
-                    return pointer
-                if any(t in key for t in terms):
-                    best = best or pointer
-            return best
         return None
+
+    K = 5                      # max slate size returned to A
+    _PEEK_BYTES = 256 * 1024   # bounded content peek for catalog ranking
+
+    def _resolve_catalog_query(self, session_id: str, target: dict,
+                               catalog: dict[str, str], fs_search=None,
+                               state: TurnPullState | None = None
+                               ) -> tuple[str | None, list[dict] | None]:
+        """Candidate generation for a catalog query (§11.2).
+
+        Returns ``(pointer, None)`` for an unambiguous winner, ``(None, slate)``
+        when the top candidates are contested (A chooses), ``(None, None)`` for
+        a miss. Name terms outweigh content terms so a query that names a
+        source still beats an incidental mention."""
+        query = (target.get("query") or "").lower()
+        terms = [t for t in query.split() if t]
+        if not terms:
+            return None, None
+        scored: list[dict] = []
+        for name, pointer in catalog.items():
+            key = name.lower()
+            if all(t in key for t in terms):
+                return pointer, None  # named exactly: no arbitration needed
+            text = self._peek_text(session_id, pointer)
+            low = text.lower()
+            score = 3.0 * sum(t in key for t in terms)
+            score += float(sum(1 for t in terms if t in low)) if text else 0.0
+            if score > 0:
+                _, oid = parse_pointer(pointer)
+                meta = self.ledger.get_object(oid) or {}
+                scored.append({"name": name, "pointer": pointer, "score": score,
+                               "snippet": _snippet(text, terms),
+                               "token_estimate": max(1, int(meta.get("size") or 0) // 4)})
+        if fs_search is not None:
+            # Steward trigger on: B may broker against granted roots (still
+            # confined + snapshotted; never a host path). Memoized per turn so
+            # a repeated query does not re-pay the walk or the finder call.
+            fs_hits = state.fs_results.get(query) if state is not None else None
+            if fs_hits is None:
+                fs_hits = fs_search(target.get("query") or "", self.K)
+                if state is not None:
+                    state.fs_results[query] = fs_hits
+            seen = {c["pointer"] for c in scored}
+            scored += [c for c in fs_hits if c["pointer"] not in seen]
+        if not scored:
+            return None, None
+        scored.sort(key=lambda c: (-c["score"], c["name"]))
+        top = scored[: self.K]
+        if len(top) == 1 or top[0]["score"] >= 2.0 * top[1]["score"]:
+            return top[0]["pointer"], None  # clear winner: skip the round-trip
+        return None, top
+
+    def _peek_text(self, session_id: str, pointer: str) -> str:
+        """Bounded text peek of a committed object ('' when unreadable)."""
+        try:
+            data = self.store.resolve(session_id, pointer)[: self._PEEK_BYTES]
+            return data.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
 
     _SELECTOR_VERBS = ("lines ", "bytes ", "json ", "symbol ", "match ")
 

@@ -34,6 +34,23 @@ DEFAULT_AGENT_BRAIN = "Qwen~Qwen3-Coder-Next-GGUF"
 # Legacy alias — import site back-compat only (external clones may import the
 # old name). New code must use DEFAULT_AGENT_BRAIN.
 DEFAULT_MODEL = DEFAULT_AGENT_BRAIN
+# Second-in-line agent brain (HUGPY_AGENT_BRAIN_2). Default EMPTY = feature
+# off. When set, the loop checks at RUN START (never per step) which of the
+# two brains a fleet worker actually has seated (/llm/workers) and starts on
+# the resident one; a capacity-class refusal mid-run falls back to it once
+# and sticks. Same knob family as the BRAIN switch above — an operator names
+# a specific standby, nothing is ever auto-discovered.
+DEFAULT_AGENT_BRAIN_2 = ""
+# Ordered brain LADDER (HUGPY_AGENT_BRAINS, csv, best-first) — k96, operator
+# ruling 2026-08-06 ("a priority brain list would be ideal, taking the path of
+# least resistance"). Default EMPTY = ladder is derived from model/model_2
+# exactly as before (full back-compat). When set, the run starts on the FIRST
+# entry that is warm on a fleet worker, and walks DOWN one entry per
+# capacity-class/permanent-verdict refusal mid-run (forward-only, never back).
+# CONVENTION (documented, not enforced): the LAST entry is the PILOT LIGHT —
+# a model small enough that a cold load is cheap, so a fleet with nothing warm
+# still answers at reduced depth instead of aborting.
+DEFAULT_AGENT_BRAINS: list = []
 DEFAULT_MAX_STEPS = 25
 DEFAULT_TIMEOUT = 300          # per-read socket timeout; cold model loads are slow by design
 DEFAULT_MAX_TOKENS = 1024      # per agent step
@@ -60,6 +77,8 @@ _ENV_KEYS = {
     "HUGPY_API_KEY": "api_key",
     "HUGPY_MODEL": "model",
     "HUGPY_AGENT_BRAIN": "model",
+    "HUGPY_AGENT_BRAIN_2": "model_2",
+    "HUGPY_AGENT_BRAINS": "brains",
     "HUGPY_MAX_STEPS": "max_steps",
     "HUGPY_TIMEOUT": "timeout",
     "HUGPY_MAX_TOKENS": "max_tokens",
@@ -76,6 +95,7 @@ _ENV_KEYS = {
     "HUGPY_DISCORD_CHANNEL": "discord_channel",
     "HUGPY_ASK_TIMEOUT": "ask_timeout",
     "HUGPY_LOOP_GUARD_N": "loop_guard_n",
+    "HUGPY_OBS_CAP_CHARS": "observation_cap_chars",
     "HUGPY_SUB_MAX_STEPS": "sub_max_steps",
     "HUGPY_MAX_DEPTH": "max_depth",
     "HUGPY_RAG": "rag_enabled",
@@ -90,23 +110,26 @@ _ENV_KEYS = {
     "HUGPY_AGENT_STATE": "agent_state",
 }
 _INT_FIELDS = {"max_steps", "timeout", "max_tokens", "max_generations",
-               "ask_timeout", "loop_guard_n", "sub_max_steps", "max_depth",
+               "ask_timeout", "loop_guard_n", "observation_cap_chars",
+               "sub_max_steps", "max_depth",
                "rag_k", "poll_interval"}
 _BOOL_FIELDS = {"no_think", "audit_verbose", "discord_mint", "rag_enabled",
                 "agent_node"}
 _LIST_FIELDS = {"tool_allow", "tool_deny",   # comma-separated in env/.env
-                "agent_capabilities"}
+                "agent_capabilities", "brains"}
 # Attributes where an EXPLICIT empty value is meaningful (it disables the
 # feature) rather than "unset". Everywhere else an empty value is skipped.
 _EMPTY_DISABLES = {"audit_log"}
 # All settable attributes, in precedence-application order (shared by the
 # agent.toml and CLI-override passes so a new knob is wired in one place).
-_SETTABLE = ("base", "api_key", "model", "max_steps", "timeout",
+_SETTABLE = ("base", "api_key", "model", "model_2", "brains",
+             "max_steps", "timeout",
              "max_tokens", "tools_mode", "max_generations", "no_think",
              "policy_mode", "tool_allow", "tool_deny",
              "audit_log", "audit_verbose",
              "discord_session", "discord_mint", "discord_channel",
-             "ask_timeout", "loop_guard_n", "sub_max_steps", "max_depth",
+             "ask_timeout", "loop_guard_n", "observation_cap_chars",
+               "sub_max_steps", "max_depth",
              "rag_enabled", "rag_k",
              "task_source", "task_queue", "poll_interval",
              "agent_central", "agent_node", "agent_name",
@@ -129,6 +152,14 @@ class Config:
     base: str = DEFAULT_BASE
     api_key: str = ""
     model: str = DEFAULT_AGENT_BRAIN
+    # Second-in-line brain (HUGPY_AGENT_BRAIN_2). Empty (the default) turns
+    # the feature off entirely: no /llm/workers probe at run start, no
+    # capacity fallback mid-run. See loop._select_brain for the semantics.
+    model_2: str = DEFAULT_AGENT_BRAIN_2
+    # Ordered brain ladder (HUGPY_AGENT_BRAINS, csv, best-first; last entry =
+    # the pilot light by convention). Empty (the default) derives the ladder
+    # from model/model_2 — see gateway.resolve_brain_ladder for the semantics.
+    brains: list = field(default_factory=list)
     workspace: str = "."
     max_steps: int = DEFAULT_MAX_STEPS
     timeout: int = DEFAULT_TIMEOUT
@@ -188,6 +219,11 @@ class Config:
     # outcome "looping" (fail fast, don't burn the step cap on a weak model
     # spinning). 0 disables the guard entirely.
     loop_guard_n: int = DEFAULT_LOOP_GUARD_N
+    # Conversation copy of ONE tool result is clipped past this (journal keeps
+    # the full result). 12k chars ~ 4k tokens: an 84KB observation on a
+    # 32k-ctx brain squeezed later completions to nothing (sentinel case runs
+    # died mid-tool-call, 2026-08-06). 0 disables.
+    observation_cap_chars: int = 12_000
     # Subagents (P2.5). `sub_max_steps` is a hard ceiling on any spawned
     # child's step budget (a spawn may ask for less, never more). `max_depth`
     # bounds nesting: a loop at depth >= max_depth gets no `spawn` tool at

@@ -121,8 +121,15 @@ def resolve_claude() -> str | None:
 
 
 def launch_claude_code(central: str, key: str,
-                       binary: str | None = None) -> "None":
+                       binary: str | None = None,
+                       init_prompt: str | None = None) -> "None":
     """exec Claude Code pointed at the fleet's Anthropic Messages shim.
+
+    Init prompting on call: `init_prompt` (or $HUGPY_INIT_PROMPT when unset) is
+    passed to Claude Code as `--append-system-prompt`, so a caller — e.g. the
+    console handing down the Steward's reach statement — can seed the frontend's
+    system prompt at launch. Empty/unset adds nothing (the bare exec is
+    unchanged), keeping it sparing.
 
     Sets ANTHROPIC_BASE_URL to the fleet ORIGIN (Claude Code appends
     `/v1/messages` itself — so NOT the /v1 mount) and ANTHROPIC_AUTH_TOKEN to
@@ -156,7 +163,10 @@ def launch_claude_code(central: str, key: str,
     # Anthropic login screen.
     os.environ[CLAUDE_AUTH_ENV] = key or "hugpy-open-fleet"
     _rebind_stdin_to_tty()
-    os.execvp(binary, [binary])
+    init = (init_prompt if init_prompt is not None
+            else os.environ.get("HUGPY_INIT_PROMPT", "")).strip()
+    argv = [binary] + (["--append-system-prompt", init] if init else [])
+    os.execvp(binary, argv)
 
 
 # The env vars qwen-code (Qwen Code) reads: an OpenAI-compatible base that it

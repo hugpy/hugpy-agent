@@ -39,7 +39,11 @@ TOOLS = [
      "description": "Ask B for missing context. Provide a plain-language 'need' and a "
                     "'target' (usually {\"kind\":\"catalog-query\",\"query\":\"...\"}). "
                     "Optionally 'preferred_form' e.g. 'match ERROR ctx 3'. Returns a "
-                    "decision and result object pointers; then resolve those pointers.",
+                    "decision and result object pointers; then resolve those pointers. "
+                    "decision 'candidates' means the query was ambiguous: the result "
+                    "object (shown in preview) is a ranked slate of {name, pointer, "
+                    "snippet} — choose one and pull it with "
+                    "{\"kind\":\"object\",\"object\":<pointer>}.",
      "inputSchema": {"type": "object", "properties": {
          "need": {"type": "string"},
          "target": {"type": "object"},
@@ -49,7 +53,8 @@ TOOLS = [
     {"name": "respond",
      "description": "Deliver your final answer for this turn. Call exactly once, last.",
      "inputSchema": {"type": "object", "properties": {
-         "body": {"type": "string"}, "format": {"type": "string"}},
+         "body": {"type": "string"},
+         "format": {"type": "string", "enum": ["text/markdown", "text/plain"]}},
          "required": ["body"]}},
 ]
 
@@ -96,7 +101,11 @@ class TurnTools:
         # response manifest pointer via an event the parent reads.
         import hashlib
         body_bytes = args["body"].encode("utf-8")
-        fmt = args.get("format", "text/markdown")
+        # Normalize loose format labels ("text", "markdown", …) to the schema's
+        # media types — a mislabeled hint must not void a valid answer.
+        fmt = str(args.get("format") or "text/markdown").lower()
+        if fmt not in ("text/markdown", "text/plain"):
+            fmt = "text/plain" if "plain" in fmt or fmt == "text" else "text/markdown"
         body_ptr = self.binding.create_object(body_bytes, fmt, "response_body", None)
         manifest = {
             "schema": "mct.response/1", "session_id": self.session_id,

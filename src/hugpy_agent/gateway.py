@@ -79,11 +79,195 @@ def apply_no_think(messages):
     return out
 
 
+# ── second-in-line brain support ─────────────────────────────────────────
+# The workers probe is a run-start amenity: a few seconds, best-effort, and
+# NEVER load-bearing — every failure mode below resolves to "use the primary".
+
+# Timeout for the run-start GET /llm/workers probe. Deliberately short: the
+# probe is an optimization (start on the brain that is already seated), so a
+# slow control plane must cost seconds, not a run.
+WORKERS_PROBE_TIMEOUT = 5
+
+# Substrings that mark a chat failure as CAPACITY-class — the worker refused
+# to seat/serve the model (fleet loadrefusal/budgetrefusal wording plus the
+# raw llama.cpp/CUDA phrasings that ride inside HTTP error bodies). Matched
+# case-insensitively against the structured error string.
+#
+# k96 additions (deliberate — each marker is a live central/worker phrasing):
+#   * "failure is permanent" — central's load-verdict cache answering without a
+#     re-attempt ("<model> on <worker> failed to load moments ago and the
+#     failure is permanent"; resolvers/remote._verdict_message). Retrying the
+#     SAME brain cannot fix it, which is precisely when the ladder must walk.
+#   * "refusing without evicting" / "no_makeroom" — the fleet's polite-load
+#     refusal wording: with no_makeroom riding every brain chat, a cold brain
+#     that would need an eviction is refused fast, and that refusal must read
+#     as capacity so the ladder walks instead of burning the retry budget.
+CAPACITY_MARKERS = ("won't fit", "wont fit", "out of memory",
+                    "loadrefusal", "budgetrefusal",
+                    "failure is permanent",
+                    "refusing without evicting", "no_makeroom")
+
+
+def is_capacity_error(error: str | None) -> bool:
+    """True when a ChatResult error string reads as a capacity-class refusal
+    (the model could not be seated), as opposed to a transport or model
+    failure. Curly apostrophes are folded so a prettified "won’t fit"
+    still matches."""
+    s = (error or "").lower().replace("’", "'")
+    return any(marker in s for marker in CAPACITY_MARKERS)
+
+
+def brain_matches_key(model: str, key: str) -> bool:
+    """Does a configured brain name match a worker allocation's model_key?
+
+    Exact match, or equal bare tails after '~' — the catalog serves keys in
+    'Org~Name' form (e.g. 'Qwen~Qwen3-Coder-Next-GGUF') while worker rows may
+    report either the full key or just the bare name, and operators type both.
+    """
+    m, k = (model or "").strip(), (key or "").strip()
+    if not m or not k:
+        return False
+    return m == k or m.split("~")[-1] == k.split("~")[-1]
+
+
+def slot_model_keys(payload) -> list[str] | None:
+    """model_keys actively SEATED (allocation kind == 'slot') in a
+    /llm/workers payload; None when the payload isn't worker rows (an error
+    body, HTML, etc.) so callers can tell 'could not read the fleet' from
+    'nothing is seated'. Accepts the bare list form and a {"workers": [...]}
+    wrapper. Pure — unit-testable offline."""
+    workers = payload if isinstance(payload, list) else \
+        payload.get("workers") if isinstance(payload, dict) else None
+    if not isinstance(workers, list):
+        return None
+    keys: list[str] = []
+    for w in workers:
+        if not isinstance(w, dict):
+            continue
+        for a in (w.get("allocations") or []):
+            if isinstance(a, dict) and a.get("kind") == "slot" \
+                    and a.get("model_key"):
+                keys.append(str(a["model_key"]))
+    return keys
+
+
+def warm_model_keys(payload) -> list[str] | None:
+    """model_keys WARM (ready to answer now) in a /llm/workers payload, or
+    None when the payload isn't worker rows — the ladder's warm source (k96).
+
+    Broader than slot_model_keys deliberately: a 'slot' allocation counts
+    unless it reports healthy=False (a seat mid-load/wedged is not warm), and
+    a 'ram' (in-process resident) allocation counts too — an in-process
+    resident answers without any load. Parsed defensively; malformed rows and
+    allocation entries are skipped, never fatal. Pure — unit-testable
+    offline."""
+    workers = payload if isinstance(payload, list) else \
+        payload.get("workers") if isinstance(payload, dict) else None
+    if not isinstance(workers, list):
+        return None
+    keys: list[str] = []
+    for w in workers:
+        if not isinstance(w, dict):
+            continue
+        for a in (w.get("allocations") or []):
+            if not isinstance(a, dict) or not a.get("model_key"):
+                continue
+            if a.get("healthy") is False:      # tri-state: absent = warm
+                continue
+            keys.append(str(a["model_key"]))
+    return keys
+
+
+def resolve_brain_ladder(cfg) -> tuple[list[str], bool]:
+    """The ordered brain ladder for a run: (ladder, explicit) — k96.
+
+    HUGPY_AGENT_BRAINS (cfg.brains, csv, best-first) wins when set:
+    explicit=True, and by convention the LAST entry is the operator's PILOT
+    LIGHT — a model small enough that a cold load is cheap (documented, not
+    enforced). Unset falls back to the pre-ladder pair: [model] + [model_2 if
+    set], explicit=False — byte-compatible with the second-in-line feature.
+    Duplicates are dropped keeping the first (best) position; empty entries
+    are skipped. The ladder is never empty: it always ends at [cfg.model]."""
+    raw = list(getattr(cfg, "brains", None) or [])
+    explicit = bool(raw)
+    if not raw:
+        raw = [cfg.model]
+        model_2 = getattr(cfg, "model_2", "")
+        if model_2:
+            raw.append(model_2)
+    ladder: list[str] = []
+    for b in raw:
+        b = str(b or "").strip()
+        if b and b not in ladder:
+            ladder.append(b)
+    return (ladder or [cfg.model]), explicit
+
+
+def pick_ladder_brain(warm: list[str] | None, ladder: list[str],
+                      explicit: bool) -> tuple[str, int, str]:
+    """Warm-first run-start choice over the ladder: (model, position, why).
+
+    First ladder entry that is warm wins. None-warm splits by provenance:
+    an EXPLICIT ladder (HUGPY_AGENT_BRAINS) starts on its LAST entry — the
+    designated pilot light, whose cold load is cheap by design — while the
+    back-compat pair keeps the historical answer (the primary), because the
+    operator never designated a pilot light there. A failed probe (warm is
+    None) always answers ladder[0]: this probe is an optimization and must
+    never redirect a run on no evidence. Pure — probe I/O lives in
+    Gateway.warm_models."""
+    if len(ladder) == 1:
+        return ladder[0], 0, "single brain configured"
+    if warm is None:
+        return ladder[0], 0, "workers probe failed; defaulting to ladder[0]"
+    for i, model in enumerate(ladder):
+        if any(brain_matches_key(model, k) for k in warm):
+            if i == 0:
+                return model, 0, "ladder[0] %r is warm" % model
+            return model, i, ("earlier ladder entries (%s) are not seated on "
+                              "any worker; %r is warm (ladder position %d)"
+                              % (", ".join(ladder[:i]), model, i + 1))
+    if explicit:
+        last = len(ladder) - 1
+        return ladder[last], last, ("no ladder entry is warm; starting on the "
+                                    "pilot light %r (last entry — cold load "
+                                    "is cheap by design)" % ladder[last])
+    return ladder[0], 0, "neither brain is warm; defaulting to the primary"
+
+
+def pick_resident_brain(seated: list[str] | None, primary: str,
+                        secondary: str) -> tuple[str, str]:
+    """Run-start choice between the primary and second-in-line brain, given
+    the seated model_keys (or None = probe failed). Returns (model, why).
+
+    LEGACY (pre-k96) import surface: the loop now drives resolve_brain_ladder
+    + pick_ladder_brain, which subsume this decision table; kept because
+    external clones import it and its contract is still true.
+
+    Primary seated -> primary; else secondary seated -> secondary; else (and
+    on any probe failure) primary — the primary is the operator's stated
+    preference, so only positive evidence that it is absent AND the standby
+    is present ever redirects a run. Pure — the probe I/O lives in
+    Gateway.seated_model_keys."""
+    if not secondary or secondary == primary:
+        return primary, "no second-in-line brain configured"
+    if seated is None:
+        return primary, "workers probe failed; defaulting to primary"
+    if any(brain_matches_key(primary, k) for k in seated):
+        return primary, "primary brain is seated on a worker"
+    if any(brain_matches_key(secondary, k) for k in seated):
+        return secondary, ("primary brain %r is not seated on any worker; "
+                           "second-in-line %r is" % (primary, secondary))
+    return primary, "neither brain is seated; defaulting to primary"
+
+
 def estimate_tokens(text: str) -> int:
     """Client-side token estimate (~4 chars/token). Isolated here because the
     /v1 seam returns null usage today (design §2.2); when real usage lands,
-    this is the only function to replace."""
-    return max(1, len(text or "") // 4)
+    this is the only function to replace. //3 not //4: agent transcripts are
+    JSON-escaped tool dumps (~2.5-3 chars/token), and //4 undercounting made
+    compaction fire only after the wire prompt already overflowed a 32k slot
+    (sentinel case runs died at step ~14, 2026-08-06)."""
+    return max(1, len(text or "") // 3)
 
 
 def origin(url: str) -> str:
@@ -235,6 +419,38 @@ class Gateway:
         with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
             return resp.read(max_bytes)
 
+    def seated_model_keys(self,
+                          timeout: int = WORKERS_PROBE_TIMEOUT) -> list[str] | None:
+        """model_keys with a live 'slot' allocation on any fleet worker, via
+        GET {base}/llm/workers. Returns None on ANY failure (network, non-JSON,
+        unexpected shape) — the second-in-line selection treats that as
+        'could not tell' and silently keeps the primary; this probe must
+        never be able to break a run."""
+        url = normalize_base(self.base) + "/llm/workers"
+        try:
+            req = urllib.request.Request(url, headers=self._headers())
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode(errors="replace"))
+        except Exception:
+            return None
+        return slot_model_keys(data)
+
+    def warm_models(self,
+                    timeout: int = WORKERS_PROBE_TIMEOUT) -> list[str] | None:
+        """model_keys WARM on any fleet worker (k96 ladder source), via GET
+        {base}/llm/workers — slot allocations not reporting healthy=False plus
+        in-process 'ram' residents (see warm_model_keys). Returns None on ANY
+        failure, which the ladder selection treats as 'could not tell' and
+        answers ladder[0] — this probe must never be able to break a run."""
+        url = normalize_base(self.base) + "/llm/workers"
+        try:
+            req = urllib.request.Request(url, headers=self._headers())
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode(errors="replace"))
+        except Exception:
+            return None
+        return warm_model_keys(data)
+
     # ── route resolution ─────────────────────────────────────────────────
     def resolve(self) -> tuple[str, str]:
         """(chat_url, models_url), probing candidates once and caching.
@@ -313,11 +529,27 @@ class Gateway:
             # Kills the continuation-prompt leak class (design §2.3); the
             # per-request knob exists since hugpy 0.1.171.
             "max_chunks": 1,
+            # k96 no-evict guarantee: a brain call must NEVER cost the fleet a
+            # resident model. Central's dispatch honors this by running any
+            # cold load POLITELY (free headroom only) and failing fast with a
+            # capacity-class refusal otherwise — which the brain ladder walks.
+            # A warm brain serves exactly as before; an older central simply
+            # drops the unknown key (additive and safe against any backend).
+            "no_makeroom": True,
         }
         if tools:
             # Native passthrough tier — ignored by /v1 today (design §2.1),
             # kept so the tier activates the day the seam supports it.
             payload["tools"] = tools
+        if self.no_think:
+            # HARD no-think (hugpy 0.1.229+): the ` /no_think` suffix on the
+            # messages is the SOFT directive a model may ignore (Wasserstein
+            # does). This asks central to pre-close the think block at the chat
+            # template (enable_thinking=false), which central version-gates and
+            # forwards to the worker's llama-server. An older central/worker
+            # simply drops the unknown key and the soft directive still rides
+            # the messages — so this is additive and safe against any backend.
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         return payload
 
     def chat(self, messages, model=None, temperature=0.2, max_tokens=1024,

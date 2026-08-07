@@ -7,8 +7,12 @@ survives journal compaction/deletion and can be shipped off-box.
 
 Line schema (one JSON object per line, keys always present):
 
-    {ts_iso, run_id, step, tool, risk, decision,
+    {ts_iso, run_id, step, tool, risk, decision, model,
      args_sha256, result_sha256, result_len, duration_ms, error_bool}
+
+`model` is the ACTIVE brain at call time — with a second-in-line brain
+configured it can change once mid-run (capacity fallback), and the audit
+trail is where that switch stays visible per call.
 
 Doctrines:
   * Args/results are HASHED, never stored — an audit trail must not become
@@ -66,7 +70,8 @@ class AuditLog:
 
     def record(self, ts, *, run_id: str, step: int, tool: str, risk: str,
                decision: str, args: dict, result: str, duration_ms: int,
-               error: bool, args_sha256: str | None = None) -> None:
+               error: bool, args_sha256: str | None = None,
+               model: str = "") -> None:
         """Append one line for a resolved tool call. `ts` is an aware
         datetime supplied by the caller (injectable clock). Never raises.
         `args_sha256` lets a caller that already hashed the args (the loop
@@ -82,6 +87,7 @@ class AuditLog:
                 "tool": tool,
                 "risk": risk,
                 "decision": decision,
+                "model": model,
                 "args_sha256": args_sha256 or sha256_of(args),
                 "result_sha256": sha256_of(result),
                 "result_len": len(result),

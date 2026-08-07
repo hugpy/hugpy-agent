@@ -311,11 +311,16 @@ class Ledger:
         return event
 
     def _label_objs(self, oids: list[str]) -> str:
-        """Annotate object ids with their kind so log lines are self-describing."""
+        """Annotate object ids with kind (+ source name) so log lines are self-describing."""
         parts = []
         for oid in oids:
             m = self.get_object(oid)
-            parts.append(f"{(m['kind'] if m else '?')}:{oid}")
+            if not m:
+                parts.append(f"?:{oid}")
+                continue
+            prov = json.loads(m.get("provenance") or "{}")
+            name = prov.get("catalog_name") or prov.get("relpath") or ""
+            parts.append(f"{m['kind']}{f'({name})' if name else ''}:{oid}")
         return "[" + ", ".join(parts) + "]"
 
     def record_metric(self, session_id, turn_id, operator_bytes, context_tokens,

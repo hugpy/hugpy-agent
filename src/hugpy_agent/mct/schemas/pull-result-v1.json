@@ -17,6 +17,7 @@
         "reduced",
         "summarized",
         "redacted",
+        "candidates",
         "approval_required",
         "denied",
         "not_found",

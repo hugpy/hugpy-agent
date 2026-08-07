@@ -2,10 +2,12 @@
 saving, async generation lifecycle, per-run cap, resume re-poll vs re-enqueue,
 model_key resolution. All HTTP is stubbed — no network."""
 import _bootstrap  # noqa: F401  (src-path shim; no-op when installed)
+import io
 import json
 import os
 import tempfile
 import unittest
+import urllib.error
 
 from hugpy_agent.journal import Journal
 from hugpy_agent.tools import Registry, ToolContext, ToolInterrupted
@@ -129,11 +131,14 @@ class SyncJsonAmenityTests(FleetHarness):
         self.assertEqual(out["error"], "local_serving_disabled")
 
     def test_unresolvable_task_names_it(self):
+        # capture BEFORE patching: self.gw.__class__ IS StubGateway, so
+        # reading the attribute back in finally would restore the patch itself
+        orig = StubGateway.api_json
         self.gw.__class__.api_json = _no_catalog_api_json
         try:
             out = json.loads(self.ft.summarize("t"))
         finally:
-            self.gw.__class__.api_json = StubGateway.api_json
+            self.gw.__class__.api_json = orig
         self.assertIn("text-summarization", out["error"])
 
     def test_catalog_cached_per_instance(self):
@@ -343,6 +348,167 @@ class GenerationTests(FleetHarness):
         self.assertEqual(enq[2]["n_frames"], 8)
 
 
+def _http_err(code, body_dict=None, body_raw=b"<html>boom</html>"):
+    """A real urllib HTTPError with a readable body, like urlopen raises."""
+    data = json.dumps(body_dict).encode() if body_dict is not None else body_raw
+    return urllib.error.HTTPError("fake://oracle", code, "err", None,
+                                  io.BytesIO(data))
+
+
+class OracleTests(FleetHarness):
+    """oracle_route / oracle_capabilities (k93): request shapes, the four
+    labelled response shapes, top-level scorecard surfacing, error
+    normalization. All HTTP stubbed, same as the rest of the file."""
+
+    EXECUTED = {
+        "ok": True,
+        "goal": {"objective": "summarize this image"},
+        "route": {"capability": "image.caption", "model_id": "blip2",
+                  "execution": "sync", "rationale": "best eligible"},
+        "artifacts": [{"kind": "text", "uri": "", "sha256": "abc",
+                       "text": "a red barn at dusk"}],
+        "receipt": {"capability": "image.caption", "model_id": "blip2"},
+        "scorecard": {"hard_pass": True, "checks": [], "judge_results": [],
+                      "diagnosis": None, "repair_code": None},
+    }
+
+    def test_route_happy_path_surfaces_scorecard(self):
+        self.gw.on_json = lambda p, m, b: dict(self.EXECUTED)
+        out = json.loads(self.ft.oracle_route(
+            "summarize this image",
+            inputs=[{"kind": "image", "uri": "/srv/shared/photo.png"}],
+            quality="best"))
+        # the surfaced trio sits at the TOP level, no digging
+        self.assertEqual(out["oracle_status"], "executed")
+        self.assertIs(out["hard_pass"], True)
+        self.assertIsNone(out["diagnosis"])
+        self.assertIsNone(out["repair_code"])
+        # the server payload rides along verbatim
+        self.assertEqual(out["artifacts"][0]["text"], "a red barn at dusk")
+        self.assertEqual(out["receipt"]["model_id"], "blip2")
+        self.assertEqual(out["scorecard"]["hard_pass"], True)
+        path, method, payload = self.gw.json_calls[-1]
+        self.assertEqual((path, method), ("/api/oracle/route", "POST"))
+        self.assertEqual(payload["prompt"], "summarize this image")
+        self.assertEqual(payload["inputs"][0]["uri"], "/srv/shared/photo.png")
+        self.assertEqual(payload["quality"], "best")
+
+    def test_route_k92_flags_forwarded_only_when_given(self):
+        self.gw.on_json = lambda p, m, b: dict(self.EXECUTED)
+        self.ft.oracle_route("x")
+        self.assertNotIn("evaluate", self.gw.json_calls[-1][2])
+        self.assertNotIn("repair", self.gw.json_calls[-1][2])
+        self.ft.oracle_route("x", evaluate=True, repair=False)
+        payload = self.gw.json_calls[-1][2]
+        self.assertIs(payload["evaluate"], True)
+        self.assertIs(payload["repair"], False)
+
+    def test_route_typed_400_is_data_not_exception(self):
+        body = {"ok": False,
+                "error": "model_id 'nope' is not eligible for image.caption",
+                "eligible": ["blip2", "llava"]}
+
+        def on_json(p, m, b):
+            raise _http_err(400, body)
+        self.gw.on_json = on_json
+        out = json.loads(self.ft.oracle_route("caption", model_id="nope"))
+        self.assertEqual(out["oracle_status"], "error")
+        self.assertIn("not eligible", out["error"])       # verbatim
+        self.assertEqual(out["eligible"], ["blip2", "llava"])
+        self.assertIsNone(out["hard_pass"])               # no card on a 400
+
+    def test_route_deferred_shape_labelled(self):
+        deferred = {
+            "ok": True, "routed": "video.generate", "execution": "deferred",
+            "reason": "video capabilities execute through the studio job "
+                      "pipeline",
+            "binding": {"model_id": "wan2.1", "model_ids": ["wan2.1"]},
+            "route": {"capability": "video.generate", "execution": "deferred"},
+            "scorecard": {"hard_pass": False, "judge_results": [],
+                          "diagnosis": "video execution is deferred by k91 "
+                                       "scope",
+                          "repair_code": None},
+        }
+        self.gw.on_json = lambda p, m, b: deferred
+        out = json.loads(self.ft.oracle_route("make a video of a barn"))
+        self.assertEqual(out["oracle_status"], "deferred")
+        self.assertIs(out["hard_pass"], False)
+        self.assertIn("deferred", out["diagnosis"])
+        self.assertEqual(out["binding"]["model_id"], "wan2.1")
+
+    def test_route_gap_shape_labelled_with_repair_code(self):
+        gap = {"ok": False, "error": "capability gap",
+               "goal": {"objective": "diarize this"},
+               "route": {"capability": "audio.diarize", "execution": "gap",
+                         "reasons": ["no model handles audio.diarize"]},
+               "scorecard": {"hard_pass": False,
+                             "diagnosis": "no eligible route for "
+                                          "'audio.diarize'",
+                             "repair_code": "CAPABILITY_GAP"}}
+
+        def on_json(p, m, b):
+            raise _http_err(422, gap)
+        self.gw.on_json = on_json
+        out = json.loads(self.ft.oracle_route("diarize this"))
+        self.assertEqual(out["oracle_status"], "capability_gap")
+        self.assertIs(out["hard_pass"], False)
+        self.assertEqual(out["repair_code"], "CAPABILITY_GAP")
+        self.assertEqual(out["route"]["reasons"],
+                         ["no model handles audio.diarize"])
+
+    def test_route_non_json_http_error_normalized(self):
+        def on_json(p, m, b):
+            raise _http_err(502, body_raw=b"<html>bad gateway</html>")
+        self.gw.on_json = on_json
+        out = json.loads(self.ft.oracle_route("x"))
+        self.assertIn("oracle_route HTTP 502", out["error"])
+        self.assertIn("bad gateway", out["error"])
+
+    def test_route_network_error_normalized(self):
+        def on_json(p, m, b):
+            raise OSError("connection refused")
+        self.gw.on_json = on_json
+        out = json.loads(self.ft.oracle_route("x"))
+        self.assertIn("oracle_route request failed", out["error"])
+        self.assertIn("connection refused", out["error"])
+
+    def test_route_rejects_non_list_inputs(self):
+        out = json.loads(self.ft.oracle_route("x", inputs="photo.png"))
+        self.assertIn("inputs must be a list", out["error"])
+        self.assertEqual(self.gw.json_calls, [])          # never sent
+
+    def test_capabilities_list_and_filter(self):
+        caps = {"ok": True, "count": 1, "capabilities": [
+            {"name": "image.caption", "accepts": ["image"],
+             "produces": ["text"], "model_ids": ["blip2"],
+             "eligibility": {"eligible": True, "reasons": []}}]}
+        self.gw.on_json = lambda p, m, b: caps
+        out = json.loads(self.ft.oracle_capabilities())
+        self.assertEqual(out["capabilities"][0]["name"], "image.caption")
+        self.assertEqual(self.gw.json_calls[-1][0], "/api/oracle/capabilities")
+        self.ft.oracle_capabilities("image.caption")
+        self.assertEqual(self.gw.json_calls[-1][0],
+                         "/api/oracle/capabilities?capability=image.caption")
+
+    def test_capabilities_typed_404_is_data(self):
+        body = {"ok": False, "error": "unknown capability 'audio.diarize'",
+                "known": ["image.caption", "text.summarize"]}
+
+        def on_json(p, m, b):
+            raise _http_err(404, body)
+        self.gw.on_json = on_json
+        out = json.loads(self.ft.oracle_capabilities("audio.diarize"))
+        self.assertIn("unknown capability", out["error"])
+        self.assertEqual(out["known"], ["image.caption", "text.summarize"])
+
+    def test_capabilities_network_error_normalized(self):
+        def on_json(p, m, b):
+            raise OSError("connection refused")
+        self.gw.on_json = on_json
+        out = json.loads(self.ft.oracle_capabilities())
+        self.assertIn("oracle_capabilities request failed", out["error"])
+
+
 class RegistryWiringTests(FleetHarness):
     def test_all_tools_registered_with_remote_compute(self):
         reg = Registry()
@@ -350,12 +516,22 @@ class RegistryWiringTests(FleetHarness):
             reg.register(s)
         for name in ("summarize", "keywords", "embed", "similarity",
                      "transcribe", "classify", "detect", "segment", "depth",
-                     "generate_image", "generate_scene", "vision"):
+                     "generate_image", "generate_scene", "vision",
+                     "oracle_route"):
             spec = reg.get(name)
             self.assertIsNotNone(spec, name)
             self.assertEqual(spec.risk_class, "remote_compute", name)
         self.assertTrue(reg.get("generate_image").needs_context)
         self.assertEqual(reg.get("models_list").risk_class, "readonly")
+        self.assertEqual(reg.get("oracle_capabilities").risk_class, "readonly")
+
+    def test_build_registry_exposes_oracle_tools(self):
+        from hugpy_agent.tools import build_registry
+        reg = build_registry(self.ws, self.gw)
+        self.assertIn("oracle_route", reg.names())
+        self.assertIn("oracle_capabilities", reg.names())
+        self.assertEqual(reg.get("oracle_route").parameters["required"],
+                         ["prompt"])
 
     def test_model_cannot_smuggle_context(self):
         """A '_context' key in model-supplied arguments must be stripped,

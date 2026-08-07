@@ -29,7 +29,8 @@ from .adapter import Adapter, cached_probe_native
 from .audit import AuditLog, default_audit_path, sha256_of
 from .comms import Comms
 from .config import Config
-from .gateway import Gateway, estimate_tokens
+from .gateway import (Gateway, estimate_tokens, is_capacity_error,
+                      pick_ladder_brain, resolve_brain_ladder)
 from .journal import Journal, idem_key
 from .memory import Memory
 from .policy import decide
@@ -119,6 +120,54 @@ class AgentLoop:
         self.audit = AuditLog(audit_path, verbose=cfg.audit_verbose,
                               on_event=lambda *a, **k: self.on_event(*a, **k))
         self.stop_requested = False
+        # Brain ladder (k96): the model this run actually talks to. Set by
+        # _select_brain() at run start (never per step); the capacity walk-down
+        # in _drive may advance it FORWARD along the ladder, never back; every
+        # chat/journal/audit site reads active_model, never cfg.model, so the
+        # whole loop agrees on the brain.
+        self.active_model = cfg.model
+        self._ladder = [cfg.model]        # resolved for real by _select_brain
+        self._ladder_pos = 0              # index of active_model in _ladder
+        self._brain_reason = "not selected yet"
+
+    # ── brain ladder (run-start selection, k96) ──────────────────────────
+    def _select_brain(self) -> None:
+        """Resolve the ladder and choose the starting brain ONCE, at run
+        start (never per step).
+
+        Warm-first: asks /llm/workers which models are warm and starts on
+        the FIRST warm ladder entry; with an explicit HUGPY_AGENT_BRAINS
+        ladder and nothing warm, starts on the LAST entry — the pilot light,
+        whose cold load is cheap by design. A single-entry ladder makes NO
+        probe traffic, and any probe trouble is a SILENT ladder[0]: this
+        feature is an optimization and must never be able to break or delay
+        a run beyond the probe's few-second timeout."""
+        self._ladder, explicit = resolve_brain_ladder(self.cfg)
+        if len(self._ladder) == 1:
+            self.active_model = self._ladder[0]
+            self._ladder_pos = 0
+            self._brain_reason = "single brain configured"
+            return
+        try:
+            warm = self.gateway.warm_models()
+        except Exception:   # belt-and-suspenders; the probe never raises
+            warm = None
+        model, pos, why = pick_ladder_brain(warm, self._ladder, explicit)
+        self.active_model = model
+        self._ladder_pos = pos
+        self._brain_reason = why
+        if pos != 0:
+            self.on_event("brain", model, why)
+
+    def _record_brain_choice(self, run_id: str) -> None:
+        """Journal the run-start ladder decision (choice + reason) so a case
+        report's provenance survives the process — kv, keyed by run_id."""
+        try:
+            self.journal.kv_set("brain|%s" % run_id, json.dumps({
+                "model": self.active_model, "position": self._ladder_pos,
+                "ladder": self._ladder, "reason": self._brain_reason}))
+        except Exception:  # noqa: BLE001 — bookkeeping must never break a run
+            pass
 
     # ── mode selection ───────────────────────────────────────────────────
     def _pick_mode(self) -> str:
@@ -147,7 +196,7 @@ class AgentLoop:
         mode = (self.cfg.tools_mode or "prompted").lower()
         if mode not in ("auto", adapter_mod.MODE_NATIVE):
             return
-        ok = cached_probe_native(self.gateway, self.cfg.model)
+        ok = cached_probe_native(self.gateway, self.active_model)
         if ok:
             self.adapter.mode = adapter_mod.MODE_NATIVE
             self.on_event("mode", "native tool-calling detected and enabled")
@@ -192,6 +241,7 @@ class AgentLoop:
 
     # ── public API ───────────────────────────────────────────────────────
     def run(self, task: str) -> dict:
+        self._select_brain()
         self._maybe_probe_native()
         return self._drive(self.prepare_run(task))
 
@@ -202,8 +252,9 @@ class AgentLoop:
         resume instead of re-spawning. Deliberately does NOT probe for
         native tools — a child inherits the parent's already-resolved
         adapter mode (zero extra probe traffic, post-incident doctrine)."""
-        run_id = self.journal.create_run(task, self.cfg.model,
+        run_id = self.journal.create_run(task, self.active_model,
                                          parent_run_id=parent_run_id)
+        self._record_brain_choice(run_id)
         self.journal.append_message(run_id, "system",
                                     self._system_prompt()
                                     + self._auto_recall_block(task))
@@ -221,6 +272,11 @@ class AgentLoop:
             return json.loads(run["outcome"]) if run["outcome"] else \
                 {"run_id": run_id, "outcome": "done", "steps": 0,
                  "tool_calls": 0, "est_tokens": 0}
+        # Resume is a run start from this process's point of view: re-check
+        # which brain is seated NOW (the fleet may have reshuffled since the
+        # original process died) — still never per step.
+        self._select_brain()
+        self._record_brain_choice(run_id)
         self.journal.set_run_status(run_id, "running")
         self.on_event("resume", run_id, run["task"])
         return self._drive(run_id)
@@ -231,8 +287,10 @@ class AgentLoop:
 
     def start_chat(self) -> str:
         """Create a run for the interactive REPL (no fixed task brief)."""
+        self._select_brain()
         self._maybe_probe_native()
-        run_id = self.journal.create_run("(interactive chat)", self.cfg.model)
+        run_id = self.journal.create_run("(interactive chat)", self.active_model)
+        self._record_brain_choice(run_id)
         self.journal.append_message(run_id, "system", self._system_prompt())
         self.journal.append_message(
             run_id, "user",
@@ -274,7 +332,7 @@ class AgentLoop:
                 self._compact_if_needed(run_id)
                 wire = self.journal.wire_messages(run_id)
                 res = self.gateway.chat(
-                    wire, model=self.cfg.model,
+                    wire, model=self.active_model,
                     max_tokens=self.cfg.max_tokens,
                     tools=self.adapter.wire_tools(self.registry.specs()),
                     stream=(self.adapter.mode != adapter_mod.MODE_NATIVE),
@@ -282,6 +340,22 @@ class AgentLoop:
                 est_total += res.est_tokens + sum(
                     estimate_tokens(json.dumps(m.get("content"))) for m in wire)
                 if not res.ok and not res.text:
+                    # Reactive ladder walk-down (k96): a CAPACITY-class or
+                    # permanent-verdict refusal (the fleet cannot seat/serve
+                    # this brain right now) is not a transient the retry/abort
+                    # ladder can fix — advance to the NEXT ladder entry and
+                    # retry this step on it. FORWARD-ONLY and index-bounded:
+                    # at most len(ladder)-1 switches per run, never back up,
+                    # so no ping-pong is possible by construction. On the last
+                    # entry (the pilot light) a refusal rides the normal
+                    # failure ladder below.
+                    if (self._ladder_pos < len(self._ladder) - 1
+                            and is_capacity_error(res.error)):
+                        self._ladder_pos += 1
+                        self.active_model = self._ladder[self._ladder_pos]
+                        self.on_event("brain_fallback", self.active_model,
+                                      res.error)
+                        continue    # the one retry, not a counted failure
                     failures += 1
                     self.on_event("chat_error", res.error)
                     if failures >= MAX_CONSECUTIVE_FAILURES:
@@ -401,6 +475,16 @@ class AgentLoop:
                 # finishes the run as interrupted, and resume re-executes the
                 # handler, which re-attaches via its journaled state.
                 continue
+            if len(result) > self.cfg.observation_cap_chars > 0:
+                # A single oversized observation (an 84KB /llm/jobs dump on a
+                # 32k-ctx brain) squeezes every later completion to a few
+                # tokens and the run dies mid-tool-call. Clamp BELOW the
+                # per-tool caps (http_fetch's 64KB FETCH_CAP) — journal keeps
+                # the full result; only the conversation copy is clipped.
+                result = (result[:self.cfg.observation_cap_chars]
+                          + '\n[observation clipped at %d of %d chars — '
+                            're-query with a narrower filter for the rest]'
+                          % (self.cfg.observation_cap_chars, len(result)))
             self.on_event("tool", call.name, args, result, replayed)
             self.journal.append_message(
                 run_id,
@@ -449,6 +533,7 @@ class AgentLoop:
                 run_id=run_id,
                 step=self.journal.assistant_step_count(run_id),
                 tool=spec.name, risk=spec.risk_class, decision=decision,
+                model=self.active_model,
                 args=args, result=result, args_sha256=args_sha,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error=result.startswith('{"error"'))
@@ -588,7 +673,7 @@ class AgentLoop:
         the contract or the goal is unrecoverable; losing old observations is
         just lossy."""
         wire = self.journal.wire_messages(run_id)
-        budget = self.gateway.context_length(self.cfg.model,
+        budget = self.gateway.context_length(self.active_model,
                                              self.cfg.ctx_fallback)
         est = sum(estimate_tokens(json.dumps(m.get("content"))) for m in wire) \
             + self.cfg.max_tokens
@@ -610,7 +695,7 @@ class AgentLoop:
               "Summarize this agent-session transcript into a dense progress "
               "note: what was tried, what was learned (with file paths), what "
               "remains. Max ~300 words.\n\n%s\n\n/no_think" % transcript}],
-            model=self.cfg.model, max_tokens=500, stream=False)
+            model=self.active_model, max_tokens=500, stream=False)
         if res.ok and res.text.strip():
             summary = res.text.strip()
         else:
@@ -625,13 +710,29 @@ class AgentLoop:
     # ── reports ──────────────────────────────────────────────────────────
     def _finish(self, run_id: str, outcome: str, answer: str | None = None,
                 error: str | None = None, est_tokens: int = 0) -> dict:
+        # k96: a run answered off ladder[0] must SAY so — a pilot-light case
+        # report is visibly reduced-depth, never silently passed off as the
+        # primary brain's work. One line, appended to the answer (the surface
+        # sentinel case reports actually publish) and carried in the report.
+        brain_note = None
+        if self._ladder_pos > 0 and len(self._ladder) > 1:
+            brain_note = ("answered by %s (ladder position %d of %d)"
+                          % (self.active_model, self._ladder_pos + 1,
+                             len(self._ladder)))
+            if answer is not None:
+                answer = "%s\n\n[%s]" % (answer, brain_note)
         report = {
             "run_id": run_id,
             "outcome": outcome,
+            # The brain that actually drove (the tail of) this run — differs
+            # from the runs.model column when the capacity walk-down fired.
+            "model": self.active_model,
             "steps": self.journal.assistant_step_count(run_id),
             "tool_calls": self.journal.call_count(run_id),
             "est_tokens": est_tokens,
         }
+        if brain_note is not None:
+            report["brain_note"] = brain_note
         if answer is not None:
             report["answer"] = answer
         if error is not None:

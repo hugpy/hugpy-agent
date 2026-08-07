@@ -7,4 +7,4 @@ Layers (thin -> thick, per AGENT-SYSTEM-DESIGN.md §3):
   cli      (run | chat | resume | models)
 """
 
-__version__ = "0.1.44"
+__version__ = "0.1.47"

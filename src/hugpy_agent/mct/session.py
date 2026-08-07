@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,11 @@ class BrokerConfig:
     use_model: bool = False
     # Phase 6: per-session disk quota on the object store (0 = unlimited).
     session_quota_bytes: int = 0
+    # Steward trigger — "Allow Frontier filesystem requests". Off (default): A
+    # pulls only sources B proactively whitelisted into the catalog. On: a
+    # catalog-query miss may be brokered against the granted roots — B still
+    # validates, confines, snapshots, and serves; A never gets a host path.
+    allow_frontier_fs_requests: bool = False
     # Rolling append-only log (<workspace>/.hugpy_agent/mct/mct.log). On by default.
     event_log: bool = True
 
@@ -107,7 +113,63 @@ class BrokerServer:
         return session_id
 
     def session(self, session_id: str) -> "MctSession":
-        return MctSession(self, session_id)
+        sess = MctSession(self, session_id)
+        self.apply_fs_policy(sess, force=True)
+        return sess
+
+    def apply_fs_policy(self, session: "MctSession", *, force: bool = False) -> None:
+        """Sync the on-disk frontier fs-policy into live enforcement state: the
+        ``allow_frontier_fs_requests`` gate and the session's granted roots.
+
+        mtime-cached, so calling it before every brokered resolution is cheap —
+        a console-side toggle of the "directory accessibility" button (which
+        just rewrites fs_policy.json) then takes effect on the very next A turn
+        without restarting the session. ``force`` bypasses the cache (session
+        open). Never raises: a policy read problem defaults closed, never breaks
+        a turn."""
+        from .fs_policy import policy_path, load_policy
+        try:
+            p = policy_path(self.workspace_root)
+            mtime = p.stat().st_mtime if p.exists() else 0.0
+            if not force and mtime == getattr(session, "_fs_policy_mtime", None):
+                return
+            session._fs_policy_mtime = mtime
+            pol = load_policy(self.workspace_root)
+            self.config.allow_frontier_fs_requests = pol["allow_frontier_fs_requests"]
+            wanted = {r["name"]: r["path"] for r in pol["granted_roots"]}
+            # register/refresh wanted roots; drop only roots THIS sync installed
+            # earlier — never grants made programmatically via register_root().
+            for name, path in wanted.items():
+                cur = session._roots.get(name)
+                if cur is None or getattr(cur, "root_path", None) != os.path.realpath(path):
+                    try:
+                        session.register_root(name, path)
+                    except Exception:
+                        continue  # a bad/missing dir simply grants nothing
+            prev = getattr(session, "_policy_root_names", set())
+            for name in prev - set(wanted):
+                gone = session._roots.pop(name, None)
+                if gone is not None:
+                    try:
+                        gone.close()
+                    except Exception:
+                        pass
+            session._policy_root_names = set(wanted)
+        except Exception:
+            pass
+
+    def gateway(self):
+        """Lazy central gateway for B's bench tools (abstract-search). ``None``
+        when config/network is unavailable — callers degrade to local search,
+        never fail a turn over it."""
+        if not hasattr(self, "_gateway"):
+            try:
+                from ..config import load_config
+                from ..gateway import Gateway
+                self._gateway = Gateway.from_config(load_config(str(self.workspace_root)))
+            except Exception:
+                self._gateway = None
+        return self._gateway
 
     def close(self) -> None:
         self.ledger.close()
@@ -127,7 +189,13 @@ class MctSession:
     def register_root(self, name: str, path: str, *, allow_symlinks: bool = False):
         """Grant this session confined read access to a directory root."""
         from .confined_io import ConfinedRoot
+        old = self._roots.get(name)
         self._roots[name] = ConfinedRoot(path, allow_symlinks=allow_symlinks)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
         return self._roots[name]
 
     def register_source_file(self, catalog_name: str, root_name: str, relpath: str) -> None:
@@ -155,6 +223,180 @@ class MctSession:
                 self.session_id, data, media_type="text/plain", kind="source_snapshot",
                 provenance={"root": root_name, "relpath": relpath, "catalog_name": name})
             self._catalog[name] = ref.pointer
+
+    _FS_SCAN_FILES = 2048              # content-peek bound per brokered request
+    _FS_SCAN_BYTES = 64 * 1024         # per-file content peek cap (truncating)
+    _FS_WALK_FILES = 20000             # hard bound on files visited per request
+    _FS_SNAPSHOT_BUDGET = 8 * 1024 * 1024  # bytes B may snapshot per request
+
+    def _fs_broker_resolve(self, query: str) -> str | None:
+        """Single best steward match (compat wrapper over ``_fs_broker_search``)."""
+        got = self._fs_broker_search(query, limit=1)
+        return got[0]["pointer"] if got else None
+
+    def _fs_broker_search(self, query: str, limit: int = 5) -> list[dict]:
+        """Steward-enabled brokered filesystem search (design: "Frontier
+        filesystem requests enabled"). Called only on a catalog-query miss and
+        only when ``allow_frontier_fs_requests`` is on. B — never A — generates
+        ranked candidates from the granted roots: the central abstract-search
+        (finder) when reachable, plus a bounded local walk. Path-term hits are
+        peeked first so the content budget is spent on likely candidates; files
+        beyond the peek budget are ranked by path only (the finder covers
+        content at scale). Binary files are dropped outright. Each admitted
+        candidate is read confined, snapshotted immutably (within a per-request
+        byte budget), and cataloged; A receives pointers and root-relative
+        names — the host path stays with B (invariant 5)."""
+        terms = [t for t in (query or "").lower().split() if t]
+        if not terms:
+            return []
+        out = self._abstract_search_candidates(query, limit)
+        if len(out) >= limit:
+            return out[:limit]
+        have = {c["name"] for c in out}
+        import os as _os
+        entries: list[tuple[int, str, str]] = []  # (name_hits, root, rel)
+        visited = 0
+        for root_name, root in self._roots.items():
+            if visited >= self._FS_WALK_FILES:
+                break
+            for dirpath, dirnames, filenames in _os.walk(root.root_path):
+                dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))[:64]
+                for fn in sorted(filenames):
+                    if fn.startswith("."):
+                        continue
+                    visited += 1
+                    if visited > self._FS_WALK_FILES:
+                        break
+                    rel = _os.path.relpath(_os.path.join(dirpath, fn), root.root_path)
+                    if f"fs:{root_name}:{rel}" not in have:
+                        entries.append((sum(t in rel.lower() for t in terms),
+                                        root_name, rel))
+                if visited > self._FS_WALK_FILES:
+                    break
+        # Spend the content-peek budget name-hits-first, then walk order.
+        entries.sort(key=lambda e: (-e[0], e[2]))
+        scored: list[tuple[float, str, str, str]] = []  # (score, root, rel, text)
+        peeked = 0
+        for name_hits, root_name, rel in entries:
+            root = self._roots.get(root_name)
+            if root is None:
+                continue
+            score = 3.0 * name_hits  # a path term outweighs a content term
+            if name_hits == len(terms):
+                score += 100.0       # every term in the path: dominant
+            text = ""
+            if peeked < self._FS_SCAN_FILES:
+                peeked += 1
+                try:
+                    data = root.read_prefix(rel, self._FS_SCAN_BYTES)
+                except Exception:
+                    data = b""
+                if b"\0" in data[:8192]:
+                    continue  # binary: never a candidate, whatever its name
+                if data:
+                    text = data.decode("utf-8", errors="replace")
+                    low = text.lower()
+                    score += sum(1.0 for t in terms if t in low)
+            if score > 0:
+                scored.append((score, root_name, rel, text))
+        scored.sort(key=lambda x: (-x[0], x[2]))
+        from .pull_broker import _snippet
+        snap_budget = self._FS_SNAPSHOT_BUDGET
+        for score, root_name, rel, text in scored:
+            if len(out) >= limit or snap_budget <= 0:
+                break
+            root = self._roots.get(root_name)
+            ptr = self._snapshot_fs_source(root_name, root, rel,
+                                           byte_budget=snap_budget) if root else None
+            if not ptr:
+                continue  # denied/oversized/vanished → next candidate
+            size = self._ptr_tokens(ptr) * 4
+            snap_budget -= size
+            out.append({"name": f"fs:{root_name}:{rel}", "pointer": ptr,
+                        "score": score, "snippet": _snippet(text, terms),
+                        "token_estimate": self._ptr_tokens(ptr)})
+        return out[:limit]
+
+    def _abstract_search_candidates(self, query: str, limit: int) -> list[dict]:
+        """Candidates from B's bench abstract-search (central ``/api/finder/search``,
+        the engine behind ``lean_find``): file paths + matched lines, the cheapest
+        locator. Only hits that fall under a granted root are admitted (confined
+        read + snapshot as usual). Returns ``[]`` on any failure so the caller
+        degrades to the local walk (§17: degrade, never bypass)."""
+        gw = self.server.gateway()
+        if gw is None or not self._roots:
+            return []
+        import os as _os
+        import urllib.parse
+        froot = os.environ.get("MCT_FINDER_ROOT", "dev")
+        try:
+            d = gw.api_json(
+                f"/api/finder/search?q={urllib.parse.quote(query)}"
+                f"&root={urllib.parse.quote(froot)}&limit={int(limit) * 4}",
+                timeout=8)
+        except Exception:
+            self.server._gateway = None  # one strike: don't stall later pulls
+            return []
+        if not isinstance(d, dict) or d.get("error"):
+            self.server._gateway = None  # errors-as-data count as a strike too
+            return []
+        out: list[dict] = []
+        try:
+            for h in d.get("hits") or []:
+                if not isinstance(h, dict):
+                    continue
+                path = _os.path.realpath(str(h.get("file_path") or ""))
+                for root_name, root in self._roots.items():
+                    prefix = root.root_path + _os.sep
+                    if not path.startswith(prefix):
+                        continue
+                    rel = path[len(prefix):]
+                    ptr = self._snapshot_fs_source(root_name, root, rel)
+                    if not ptr:
+                        continue  # unreadable under this root: try the others
+                    lines = " | ".join(str(l.get("content"))[:110]
+                                       for l in (h.get("lines") or [])[:3]
+                                       if isinstance(l, dict))
+                    out.append({"name": f"fs:{root_name}:{rel}", "pointer": ptr,
+                                "score": 10.0 + float(len(h.get("lines") or [])),
+                                "snippet": lines,
+                                "token_estimate": self._ptr_tokens(ptr)})
+                    break
+                if len(out) >= limit:
+                    break
+        except Exception:
+            return out  # malformed payload degrades, never fails the turn (§17)
+        return out
+
+    def _ptr_tokens(self, pointer: str) -> int:
+        _, oid = parse_pointer(pointer)
+        meta = self.server.ledger.get_object(oid) or {}
+        return max(1, int(meta.get("size") or 0) // 4)
+
+    def _snapshot_fs_source(self, root_name: str, root, rel: str,
+                            byte_budget: int | None = None) -> str | None:
+        """Confined read + immutable snapshot + catalog entry (§13.4), cached.
+        ``byte_budget`` bounds how much B will read for this snapshot."""
+        name = f"fs:{root_name}:{rel}"
+        if name not in self._catalog:
+            try:
+                data = root.read(rel, max_bytes=byte_budget)
+            except Exception:
+                return None
+            ref = self.server.store.commit(
+                self.session_id, data, media_type="text/plain",
+                kind="source_snapshot",
+                provenance={"root": root_name, "relpath": rel,
+                            "catalog_name": name,
+                            "steward": "brokered-fs-request"})
+            self._catalog[name] = ref.pointer
+            # Live audit line: every file B lifts off disk is visible in the
+            # rolling log the moment it happens, not just when A reads it.
+            turn, epoch = getattr(self, "_active_turn", ("", ""))
+            self.server.ledger.append_event(self.session_id, turn, epoch,
+                                            "fs.snapshot", "B.steward",
+                                            output_objects=[ref.object_id])
+        return self._catalog[name]
 
     def invalidate_source_cache(self, name: str | None = None) -> None:
         """Drop cached file-source snapshots so the next build re-snapshots the
@@ -447,8 +689,14 @@ class _ABinding:
         _, req_oid = parse_pointer(request_pointer)
         srv.ledger.append_event(self.session_id, self.turn_id, self.epoch, "pull.requested",
                                 "A.adapter", input_objects=[req_oid])
+        # Live-refresh from the on-disk policy so a console toggle of the
+        # directory-accessibility button takes effect on THIS turn (mtime-cached).
+        srv.apply_fs_policy(self._s)
+        self._s._active_turn = (self.turn_id, self.epoch)  # for steward audit events
         payload, result_pointer = srv.pull_broker.arbitrate(
-            self.session_id, self.turn_id, self.epoch, request, self._s._catalog, self._pull_state)
+            self.session_id, self.turn_id, self.epoch, request, self._s._catalog, self._pull_state,
+            fs_search=(self._s._fs_broker_search
+                       if srv.config.allow_frontier_fs_requests else None))
         srv.ledger.append_event(self.session_id, self.turn_id, self.epoch,
                                 f"pull.{payload['decision']}", "B.pull-broker",
                                 input_objects=[req_oid], output_objects=[_oid(result_pointer)],

@@ -346,7 +346,7 @@ def _tool_stats(journal: Journal, run_id: str) -> tuple[int, int]:
 
 
 def run_task(task: EvalTask, cfg: Config, *, gateway: Gateway | None = None,
-             workspace: str | None = None, on_event=None) -> TaskResult:
+             workspace: str | None = None, on_event=None, extra_tools=None) -> TaskResult:
     """Run one task through a real AgentLoop and score it deterministically.
 
     A fresh temp workspace (or the caller's) is seeded by `task.setup`, then
@@ -382,6 +382,8 @@ def run_task(task: EvalTask, cfg: Config, *, gateway: Gateway | None = None,
         journal = Journal(default_journal_path(ws))
         loop = AgentLoop(run_cfg, gateway=gw, journal=journal,
                          memory=Memory(ws), on_event=on_event)
+        for _spec in (extra_tools or ()):   # e.g. the steward eval's gated vm.* surface
+            loop.registry.register(_spec)
         t0 = time.monotonic()
         report = loop.run(task.prompt)
         wall = time.monotonic() - t0

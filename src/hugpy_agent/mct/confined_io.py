@@ -122,3 +122,17 @@ class ConfinedRoot:
             return os.read(fd, st.st_size)
         finally:
             os.close(fd)
+
+    def read_prefix(self, relpath: str, max_bytes: int) -> bytes:
+        """Read at most ``max_bytes`` from the start of a confined file.
+
+        Unlike :meth:`read` this truncates instead of failing closed — it is for
+        *scoring peeks* (search/ranking), never for serving content to A."""
+        fd = self.open_read(relpath)
+        try:
+            st = os.fstat(fd)
+            if not (st.st_mode & 0o170000) == 0o100000:  # S_ISREG
+                raise AuthorizationError("not a regular file")
+            return os.read(fd, min(st.st_size, max_bytes))
+        finally:
+            os.close(fd)

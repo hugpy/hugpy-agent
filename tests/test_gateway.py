@@ -62,7 +62,10 @@ class PayloadTests(unittest.TestCase):
 
 class TokenTests(unittest.TestCase):
     def test_heuristic(self):
-        self.assertEqual(estimate_tokens("x" * 400), 100)
+        # //3, not //4, since the 2026-08-06 compaction fix: agent transcripts
+        # are JSON-escaped tool dumps (~2.5-3 chars/token) and //4 undercounted
+        # until the wire prompt overflowed a 32k slot (see estimate_tokens).
+        self.assertEqual(estimate_tokens("x" * 402), 134)
         self.assertEqual(estimate_tokens(""), 1)
         self.assertEqual(estimate_tokens(None), 1)
 

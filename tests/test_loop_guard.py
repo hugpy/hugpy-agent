@@ -44,7 +44,10 @@ class GuardHarness(unittest.TestCase):
         self.tmp.cleanup()
 
     def make_loop(self, replies):
-        gw = FakeGateway(replies)
+        # Big fake ctx: since estimate_tokens counts //3 (the 2026-08-06
+        # compaction fix), the default 8192 budget trips mid-test compaction —
+        # extra model calls that are noise to the GUARD behavior under test.
+        gw = FakeGateway(replies, ctx=256_000)
         journal = Journal(os.path.join(self.ws, ".hugpy_agent", "journal.db"))
         reg = build_registry(self.ws, gw, Memory(self.ws))
         loop = AgentLoop(self.cfg, gateway=gw, registry=reg, journal=journal,

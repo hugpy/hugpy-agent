@@ -83,6 +83,23 @@ def _http_error_body(exc: urllib.error.HTTPError) -> str:
         return ""
 
 
+def _http_error_json(exc: urllib.error.HTTPError):
+    """(parsed_dict_or_None, raw_500). The oracle endpoints answer 4xx with
+    typed JSON bodies (400 malformed/ineligible, 404 unknown capability,
+    422 CAPABILITY_GAP with a scorecard) — those are RESULTS for the model,
+    not transport noise, so the whole body is read and parsed rather than
+    truncated like _http_error_body's transport summary."""
+    try:
+        raw = exc.read().decode(errors="replace")
+    except Exception:
+        return None, ""
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None, raw[:500]
+    return (parsed if isinstance(parsed, dict) else None), raw[:500]
+
+
 def output_uris(result: dict) -> list[str]:
     """Server refs for a job's outputs (+ assembled movie). Seed: generate.py."""
     uris = []
@@ -529,6 +546,84 @@ class FleetTools:
                         if e.get(k) is not None})
         return json.dumps({"models": out, "count": len(out)})
 
+    # ── oracle: route-to-best (k93, server side k90/k91) ─────────────────
+    def _oracle_shape(self, res: dict) -> str:
+        """Label the response shape and surface the scorecard verdict at the
+        TOP level (hard_pass / diagnosis / repair_code) — the brain must see
+        quality without digging into the card. The server payload rides
+        along verbatim below the surfaced keys (the loop consumes the JSON).
+        The three keys are always present; None means 'no scorecard came
+        back' (typed 400s carry none)."""
+        card = res.get("scorecard") if isinstance(res.get("scorecard"), dict) \
+            else {}
+        route = res.get("route") if isinstance(res.get("route"), dict) else {}
+        if res.get("execution") == "deferred":
+            status = "deferred"          # routed, NOT run (video.* today)
+        elif route.get("execution") == "gap":
+            status = "capability_gap"    # no eligible route; see scorecard
+        elif res.get("ok") is False:
+            status = "error"             # typed refusal, verbatim below
+        else:
+            status = "executed"
+        out = {"oracle_status": status,
+               "hard_pass": card.get("hard_pass"),
+               "diagnosis": card.get("diagnosis"),
+               "repair_code": card.get("repair_code")}
+        out.update(res)
+        return json.dumps(out)[:16000]
+
+    def oracle_route(self, prompt: str, inputs: list = None,
+                     capability: str = "", model_id: str = "",
+                     quality: str = "", evaluate: bool = None,
+                     repair: bool = None) -> str:
+        if inputs is not None and not isinstance(inputs, list):
+            return _err("inputs must be a list of {kind, uri|text} objects")
+        body = {"prompt": prompt}
+        if inputs:
+            body["inputs"] = inputs
+        if capability:
+            body["capability"] = capability
+        if model_id:
+            body["model_id"] = model_id
+        if quality:
+            body["quality"] = quality
+        # k92 passthroughs: forwarded only when supplied — a server without
+        # the evaluator kernel yet ignores unknown JSON fields.
+        if evaluate is not None:
+            body["evaluate"] = bool(evaluate)
+        if repair is not None:
+            body["repair"] = bool(repair)
+        try:
+            res = self.gw.api_json("/api/oracle/route", method="POST",
+                                   payload=body)
+        except urllib.error.HTTPError as exc:
+            parsed, raw = _http_error_json(exc)
+            if parsed is not None:
+                # typed 400 / 422 gap: a result shape, not a transport fault
+                return self._oracle_shape(parsed)
+            return _err("oracle_route HTTP %s: %s" % (exc.code, raw))
+        except Exception as exc:
+            return _err("oracle_route request failed: %s" % exc)
+        if not isinstance(res, dict):
+            return json.dumps({"result": res})[:8000]
+        return self._oracle_shape(res)
+
+    def oracle_capabilities(self, capability: str = "") -> str:
+        path = "/api/oracle/capabilities"
+        if capability:
+            path += "?capability=" + urllib.parse.quote(capability, safe="")
+        try:
+            res = self.gw.api_json(path, timeout=30)
+        except urllib.error.HTTPError as exc:
+            parsed, raw = _http_error_json(exc)
+            if parsed is not None:
+                # typed 404 names the unknown capability + the known list
+                return json.dumps(parsed)[:8000]
+            return _err("oracle_capabilities HTTP %s: %s" % (exc.code, raw))
+        except Exception as exc:
+            return _err("oracle_capabilities request failed: %s" % exc)
+        return json.dumps(res)[:16000]
+
 
 # ── registry wiring ─────────────────────────────────────────────────────────
 def _p(**props) -> dict:
@@ -630,4 +725,73 @@ def specs(gateway, workspace: str) -> list[ToolSpec]:
         ToolSpec("models_list",
                  "List the models currently available on the fleet.",
                  _p(), ft.models_list, RISK_READONLY),
+        # ── oracle: route-to-best (k93) ───────────────────────────────
+        ToolSpec("oracle_route",
+                 "One call that routes a request to the BEST fleet model and "
+                 "runs it: the oracle infers the capability from the prompt "
+                 "(or takes an explicit `capability`), picks the best "
+                 "eligible model, executes, and returns artifacts + receipt "
+                 "+ a quality scorecard. The result always surfaces "
+                 "hard_pass/diagnosis/repair_code at the top level. PREFER "
+                 "this over the single-purpose tools (vision, summarize, "
+                 "transcribe, classify, ...) when the ask is multimodal, "
+                 "when you do not know which model is best, or when you "
+                 "need quality evidence; keep the narrow tools for tight "
+                 "single-task calls where you already know exactly what "
+                 "you want. `inputs` URIs are SERVER paths on shared "
+                 "storage (NOT agent-local files — upload/produce them "
+                 "first, or use the narrow file tools). oracle_status is "
+                 "one of executed | deferred (video.*: routed, not run) | "
+                 "capability_gap | error. Example: oracle_route(prompt="
+                 '"summarize this image", inputs=[{"kind": "image", '
+                 '"uri": "/srv/shared/photo.png"}]).',
+                 _p(prompt={"type": "string",
+                            "description": "what you want done, plain words"},
+                    inputs={"type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"type": "string",
+                                             "description":
+                                             "text|image|audio|video|url"},
+                                    "uri": {"type": "string",
+                                            "description":
+                                            "SERVER path/URI on shared "
+                                            "storage"},
+                                    "text": {"type": "string",
+                                             "description":
+                                             "inline text (kind=text)"}},
+                                "required": ["kind"]},
+                            "description": "optional input refs; uri values "
+                                           "are SERVER paths, not agent-"
+                                           "local files"},
+                    capability={"type": "string",
+                                "description": "optional explicit capability "
+                                               "(e.g. audio.transcribe); "
+                                               "wins over inference"},
+                    model_id={"type": "string",
+                              "description": "optional: force a model; "
+                                             "ineligible ids come back as a "
+                                             "typed error with the eligible "
+                                             "list"},
+                    quality={"type": "string",
+                             "description": "preview | balanced | best "
+                                            "(default balanced)"},
+                    evaluate={"type": "boolean",
+                              "description": "optional: run the judge "
+                                             "evaluation pass"},
+                    repair={"type": "boolean",
+                            "description": "optional: allow one bounded "
+                                           "repair loop on a failed card"},
+                    _required=["prompt"]),
+                 ft.oracle_route, rc),
+        ToolSpec("oracle_capabilities",
+                 "List the oracle's capability catalog: what the fleet can "
+                 "do right now (name, accepted/produced kinds, model ids, "
+                 "eligibility with reasons). Check it before oracle_route "
+                 "when unsure a capability exists or why one is ineligible.",
+                 _p(capability={"type": "string",
+                                "description": "optional: filter to this one "
+                                               "capability name"}),
+                 ft.oracle_capabilities, RISK_READONLY),
     ]
