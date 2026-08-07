@@ -29,6 +29,8 @@ In-session commands:
   /memory                    decisions B has extracted so far
   /files [n] [cat]           who read/wrote which file, live (A = mediated, B =
                              host); 'cat' inlines the actual correspondence bytes
+  /native none|off_host|all  A's native Claude Code tools ('all' lets A read and
+                             write the host directly, outside B's ledger)
   /quiet [on|off]            toggle the inline A/B relay
   /model <name>              switch A's model (e.g. sonnet, opus, haiku)
   /frontier on|off           Frontier Keeper: Enabled/Disabled. Off: messages are
@@ -272,7 +274,8 @@ class LiveFeed:
 
 
 def run(workspace: str, model: str = "sonnet", use_model: bool = True,
-        allow_fs_requests: bool = False, quiet: bool = False) -> int:
+        allow_fs_requests: bool = False, quiet: bool = False,
+        native_tools: str = "off_host") -> int:
     """Launch the Mediated Context Terminal against ``workspace``.
 
     A fresh workspace dir is a new conversation; reuse a dir to continue one.
@@ -283,7 +286,7 @@ def run(workspace: str, model: str = "sonnet", use_model: bool = True,
         return 1
 
     state = {"model": model, "last": None, "frontier": True, "queue": [],
-             "quiet": quiet}
+             "quiet": quiet, "native": native_tools}
 
     def render(body: str):  # B renders A's answer in the assistant position (§5.1)
         print(f"\n{CYAN}{body}{RESET}\n")
@@ -337,7 +340,9 @@ def run(workspace: str, model: str = "sonnet", use_model: bool = True,
         try:
             with LiveFeed(server.access.path, quiet=state["quiet"],
                           path_for=server.store.path_for):
-                r = sess.submit_via_claude(_with_queued(state, line), model=state["model"])
+                r = sess.submit_via_claude(_with_queued(state, line),
+                                           model=state["model"],
+                                           native_tools=state["native"])
             state["last"] = r
             if r.state != "Committed":   # the illusion breaks explicitly (§5.2)
                 print(f"{YELLOW}[A did not answer — B does not answer in its place.]{RESET}")
@@ -362,6 +367,11 @@ def main(argv=None) -> int:
     ap.add_argument("--model", default="sonnet", help="A's model (e.g. sonnet, opus, haiku)")
     ap.add_argument("--no-model", dest="no_model", action="store_true",
                     help="disable B's local ranking model")
+    ap.add_argument("--native-tools", dest="native_tools", default="off_host",
+                    choices=["none", "off_host", "all"],
+                    help="A's native Claude Code tools. off_host (default) adds "
+                         "web+todo and bypasses nothing; all adds "
+                         "Read/Grep/Edit/Write/Bash, letting A work without B")
     ap.add_argument("--quiet", action="store_true",
                     help="do not relay the A/B exchange inline (spinner only)")
     ap.add_argument("--allow-fs-requests", action="store_true",
@@ -370,7 +380,8 @@ def main(argv=None) -> int:
                          "roots — through B, never direct filesystem access")
     args = ap.parse_args(argv)
     return run(args.workspace, model=args.model, use_model=not args.no_model,
-               allow_fs_requests=args.allow_fs_requests, quiet=args.quiet)
+               allow_fs_requests=args.allow_fs_requests, quiet=args.quiet,
+               native_tools=args.native_tools)
 
 
 def _with_queued(state, line: str) -> str:
@@ -583,6 +594,22 @@ def _command(line: str, sess, server, state) -> bool:
             print(f"{DIM}/files cat  — inline the actual correspondence bytes{RESET}")
         print(f"{DIM}live: tail -f {server.access.path}  (or the interleaved "
               f"{server.ledger.event_log_path}){RESET}")
+    elif cmd == "/native":
+        want = rest[0] if rest else ""
+        if want not in ("none", "off_host", "all"):
+            print(f"{RED}usage: /native none|off_host|all{RESET}")
+            print(f"{DIM}  none      MCT tools only\n"
+                  f"  off_host  + WebSearch/WebFetch/TodoWrite (bypasses nothing)\n"
+                  f"  all       + Read/Grep/Edit/Write/Bash — A can work WITHOUT B:\n"
+                  f"            files land in A's context in full, no snapshot is\n"
+                  f"            kept, and /files only sees what still goes through B"
+                  f"{RESET}")
+        else:
+            state["native"] = want
+            print(f"{DIM}A native tools: {want}{RESET}")
+            if want == "all":
+                print(f"{YELLOW}[A can now read and write the host directly. The "
+                      f"access log will only show brokered work.]{RESET}")
     elif cmd == "/quiet":
         state["quiet"] = not state["quiet"] if not rest else rest[0] == "on"
         print(f"{DIM}inline A/B relay: {'off' if state['quiet'] else 'on'}{RESET}")

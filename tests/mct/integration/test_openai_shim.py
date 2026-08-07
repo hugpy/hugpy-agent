@@ -39,7 +39,7 @@ def shim(tmp_path):
             client.resolve(out.objects[0]["object"])
         client.respond("It listens on 443.")
 
-    svc.session.submit_via_claude = lambda prompt, model=None: svc.session.submit(
+    svc.session.submit_via_claude = lambda prompt, model=None, **kw: svc.session.submit(
         prompt, a_program)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
@@ -108,7 +108,7 @@ def test_only_the_last_user_message_is_submitted(shim):
     avoid."""
     _, svc = shim
     seen = {}
-    svc.session.submit_via_claude = lambda prompt, model=None: seen.setdefault("p", prompt)
+    svc.session.submit_via_claude = lambda prompt, model=None, **kw: seen.setdefault("p", prompt)
     svc.turn(MctChatService._last_user([
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "reply"},
@@ -143,7 +143,7 @@ def test_a_failure_is_reported_not_papered_over(shim):
     class _Bad:
         state, body, error, tokens = "Failed", None, "A unavailable", None
 
-    svc.session.submit_via_claude = lambda prompt, model=None: _Bad()
+    svc.session.submit_via_claude = lambda prompt, model=None, **kw: _Bad()
     body = json.load(_post(base, {"model": "mct", "messages": [
         {"role": "user", "content": "hi"}]}))
     content = body["choices"][0]["message"]["content"]
@@ -159,3 +159,58 @@ def test_opencode_config_denies_its_own_tools():
     assert cfg["provider"]["mct"]["options"]["baseURL"] == "http://127.0.0.1:8770/v1"
     assert "apiKey" not in cfg["provider"]["mct"]["options"]   # no secret implied
     assert set(cfg["permission"].values()) == {"deny"}
+
+
+def test_native_tool_postures_are_graded():
+    """The question is not 'safe vs dangerous' — B is unrestricted and A can
+    already reach the host via submit_act. It is whether the mediation still
+    means anything after the grant."""
+    from hugpy_agent.mct.claude_adapter import tool_policy
+
+    none_a, none_d = tool_policy("none")
+    off_a, off_d = tool_policy("off_host")
+    all_a, all_d = tool_policy("all")
+
+    mct = {"mcp__mct__resolve", "mcp__mct__submit_pull",
+           "mcp__mct__submit_act", "mcp__mct__respond"}
+    assert set(none_a) == mct
+    # off_host bypasses nothing: no host reach is granted
+    assert {"WebSearch", "WebFetch", "TodoWrite"} <= set(off_a)
+    assert not ({"Read", "Grep", "Bash", "Edit", "Write"} & set(off_a))
+    # all grants host reach
+    assert {"Read", "Grep", "Bash", "Edit", "Write"} <= set(all_a)
+    # subagents are never granted: a child would inherit tools B cannot see
+    for d in (none_d, off_d, all_d):
+        assert {"Task", "Agent"} <= set(d)
+    # every posture keeps the MCT tools
+    for a in (none_a, off_a, all_a):
+        assert mct <= set(a)
+
+
+def test_granting_host_tools_is_recorded_not_silent(tmp_path):
+    """The access log only sees brokered work. If A can read around it, the log
+    would under-report — and a log that quietly under-reports is worse than no
+    log. So the grant itself is an event."""
+    from hugpy_agent.mct.claude_adapter import ClaudeCodeAdapter
+    from hugpy_agent.mct.session import BrokerServer
+
+    server = BrokerServer(tmp_path, sink=lambda *_: None)
+    sess = server.session(server.open_session("t"))
+    try:
+        ad = ClaudeCodeAdapter(server)
+        ad.available = lambda: False          # stop before spawning claude
+        ad.run_turn(sess, "t_000001", "e1", "mct://x", native_tools="all")
+        # available() short-circuits, so drive the record path directly
+        server.access.record("A", "unmediated", "native host tools granted",
+                             session=sess.session_id, turn="t_000001")
+        rows = server.access.entries(sess.session_id)
+        assert any(r["verb"] == "unmediated" for r in rows)
+    finally:
+        server.close()
+
+
+def test_the_system_prompt_still_steers_to_the_cheap_path():
+    from hugpy_agent.mct import claude_adapter as ca
+
+    assert "EXPENSIVE path" in ca._SYSTEM_NATIVE
+    assert "submit_pull" in ca._SYSTEM_NATIVE     # the cheap path stays default

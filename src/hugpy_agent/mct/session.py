@@ -768,6 +768,7 @@ class MctSession:
                           binding.response_manifest, receipt_ref.pointer, trace.explain())
 
     def submit_via_claude(self, raw_message: str, *, model: str = "sonnet",
+                          native_tools: str = "off_host",
                           timeout: int = 240, fragments: list[dict] | None = None) -> TurnResult:
         """Run a real turn with Claude Code as A (design §22 Phase 4).
 
@@ -783,7 +784,8 @@ class MctSession:
         ledger.set_turn_state(self.session_id, turn_id, "Reasoning", epoch)
 
         outcome = ClaudeCodeAdapter(self.server).run_turn(
-            self, turn_id, epoch, manifest_pointer, model=model, timeout=timeout)
+            self, turn_id, epoch, manifest_pointer, model=model, timeout=timeout,
+            native_tools=native_tools)
 
         if not outcome.get("response_manifest"):
             # A unavailable / silent -> explicit failure, no B substitution (§5.2, §17).

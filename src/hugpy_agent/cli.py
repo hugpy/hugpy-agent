@@ -349,7 +349,8 @@ def cmd_mct(args) -> int:
     from .mct.repl import run
     return run(args.workspace, model=args.model, use_model=not args.no_model,
                allow_fs_requests=args.allow_fs_requests,
-               quiet=getattr(args, "quiet", False))
+               quiet=getattr(args, "quiet", False),
+               native_tools=getattr(args, "native_tools", "off_host"))
 
 
 def cmd_mct_serve(args) -> int:
@@ -366,7 +367,8 @@ def cmd_mct_serve(args) -> int:
     from .mct.openai_shim import serve
 
     httpd, service = serve(args.workspace, host=args.host, port=args.port,
-                           model=args.model, use_model=not args.no_model)
+                           model=args.model, use_model=not args.no_model,
+                           native_tools=args.native_tools)
     base = f"http://{args.host}:{args.port}/v1"
     print(f"MCT serving at {base}   (workspace={args.workspace}, A=claude:{args.model})")
     print(f"  relay: {service.server.access.path}")
@@ -633,6 +635,13 @@ def main(argv=None) -> int:
                    help="disable B's local ranking model")
     p.add_argument("--quiet", action="store_true",
                    help="do not relay the A/B exchange inline (spinner only)")
+    p.add_argument("--native-tools", dest="native_tools", default="off_host",
+                   choices=["none", "off_host", "all"],
+                   help="A's native Claude Code tools. off_host (default) adds "
+                        "web+todo and bypasses nothing; all adds "
+                        "Read/Grep/Edit/Write/Bash, letting A work without B "
+                        "(files enter A's context in full, unsnapshotted, and "
+                        "the access log sees only what still goes through B)")
     p.add_argument("--allow-fs-requests", action="store_true",
                    help="Allow Frontier filesystem requests (Steward trigger): "
                         "a missed pull may be brokered by B against granted "
@@ -652,6 +661,9 @@ def main(argv=None) -> int:
     p.add_argument("--model", default="sonnet", help="A's model")
     p.add_argument("--no-model", dest="no_model", action="store_true",
                    help="disable B's local ranking model")
+    p.add_argument("--native-tools", dest="native_tools", default="off_host",
+                   choices=["none", "off_host", "all"],
+                   help="A's native Claude Code tools (see `hugpy-agent mct -h`)")
     p.add_argument("--launch", action="store_true",
                    help="also write opencode.json and exec OpenCode against it")
     p.add_argument("--console-workspace", dest="console_workspace",

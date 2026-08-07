@@ -126,7 +126,8 @@ class ClaudeCodeAdapter:
         return shutil.which("claude") is not None
 
     def run_turn(self, session, turn_id, epoch, manifest_pointer, *,
-                 model: str = "sonnet", timeout: int = 240) -> dict:
+                 model: str = "sonnet", timeout: int = 240,
+                 native_tools: str = "off_host") -> dict:
         """Launch confined Claude Code as A. Returns
         ``{"response_manifest": pointer|None, "raw": <claude result>, "error": ...}``."""
         if not self.available():
@@ -152,14 +153,32 @@ class ClaudeCodeAdapter:
         prompt = _prompt(manifest_pointer)
         # Document A's exact inputs as immutable objects — part of the durable
         # "A cache" mirror (everything A receives is captured, not just pointers).
-        self._capture_input(session, turn_id, epoch, "a_system_prompt", _SYSTEM)
+        allowed, disallowed = tool_policy(native_tools)
+        system = _SYSTEM + (_SYSTEM_NATIVE if native_tools == "all" else "")
+        if native_tools == "all":
+            # A can now read and write the host WITHOUT B. The access log only
+            # sees brokered work, so it would silently under-report from here on
+            # — say so in the ledger rather than let the record imply coverage
+            # it does not have.
+            try:
+                self.server.ledger.append_event(
+                    session.session_id, turn_id, epoch,
+                    "a.native_host_tools", "B.a-adapter")
+                self.server.access.record(
+                    "A", "unmediated", "native host tools granted",
+                    detail="Read/Grep/Edit/Write/Bash bypass B; this log sees "
+                           "only what still goes through it",
+                    session=session.session_id, turn=turn_id)
+            except Exception:
+                pass
+        self._capture_input(session, turn_id, epoch, "a_system_prompt", system)
         self._capture_input(session, turn_id, epoch, "a_prompt", prompt)
 
         cmd = ["claude", "-p", prompt,
                "--mcp-config", cfg_path, "--strict-mcp-config",
-               "--allowedTools", *_ALLOWED,
-               "--disallowedTools", *_DISALLOWED,
-               "--append-system-prompt", _SYSTEM,
+               "--allowedTools", *allowed,
+               *(["--disallowedTools", *disallowed] if disallowed else []),
+               "--append-system-prompt", system,
                "--model", model,
                "--output-format", "stream-json", "--verbose"]
         try:

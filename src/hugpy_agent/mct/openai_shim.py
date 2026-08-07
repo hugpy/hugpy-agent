@@ -102,9 +102,10 @@ class MctChatService:
     would interleave into one ledger."""
 
     def __init__(self, workspace: str, model: str = "sonnet",
-                 use_model: bool = True):
+                 use_model: bool = True, native_tools: str = "off_host"):
         from .session import BrokerConfig, BrokerServer
         self.model = model
+        self.native_tools = native_tools
         self.server = BrokerServer(workspace, sink=lambda *_: None,
                                    config=BrokerConfig(use_model=use_model))
         self.session = self.server.session(self.server.open_session("openai-shim"))
@@ -144,8 +145,9 @@ class MctChatService:
             if t:
                 t.start()
             try:
-                result = self.session.submit_via_claude(prompt,
-                                                        model=model or self.model)
+                result = self.session.submit_via_claude(
+                    prompt, model=model or self.model,
+                    native_tools=self.native_tools)
             finally:
                 stop.set()
                 if t:
@@ -261,13 +263,15 @@ def _handler_for(service: MctChatService):
 
 
 def serve(workspace: str, host: str = "127.0.0.1", port: int = 8770,
-          model: str = "sonnet", use_model: bool = True):
+          model: str = "sonnet", use_model: bool = True,
+          native_tools: str = "off_host"):
     """Start the shim. Returns ``(httpd, service)``; caller runs/loops it.
 
     Binds loopback by default: this endpoint drives a confined Claude and can
     apply changes through B's act channel, so it is not something to expose on
     an interface by accident."""
-    service = MctChatService(workspace, model=model, use_model=use_model)
+    service = MctChatService(workspace, model=model, use_model=use_model,
+                             native_tools=native_tools)
     httpd = ThreadingHTTPServer((host, port), _handler_for(service))
     httpd.daemon_threads = True
     return httpd, service
