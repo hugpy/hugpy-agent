@@ -30,10 +30,27 @@ import os
 from pathlib import Path
 from typing import Any
 
+# Scan filters handed straight to abstract-search. Empty here on purpose: the
+# package already ships good defaults (it excludes node_modules, *.log, binaries
+# and friends), so an unset key means "use abstract-search's default", not "no
+# filtering". Setting one lets the operator name any dir / extension / glob
+# pattern to allow or exclude, which is the package's own native machinery.
+_SCAN_FILTER_KEYS = ("allowed_exts", "exclude_exts", "allowed_dirs",
+                     "exclude_dirs", "allowed_patterns", "exclude_patterns")
+
 _DEFAULT: dict[str, Any] = {
     "allow_frontier_fs_requests": False,
     "granted_roots": [],
+    **{k: [] for k in _SCAN_FILTER_KEYS},
 }
+
+
+def _norm_filters(raw: dict[str, Any], out: dict[str, Any]) -> None:
+    """Normalize the scan-filter lists; anything unset stays an empty list."""
+    for key in _SCAN_FILTER_KEYS:
+        val = raw.get(key)
+        out[key] = ([str(x).strip() for x in val if str(x).strip()]
+                    if isinstance(val, list) else [])
 
 
 def policy_path(workspace: str | Path) -> Path:
@@ -62,6 +79,7 @@ def load_policy(workspace: str | Path) -> dict[str, Any]:
         seen.add(name)
         roots.append({"name": name, "path": path})
     out["granted_roots"] = roots
+    _norm_filters(raw, out)
     return out
 
 
@@ -92,6 +110,7 @@ def load_policy_from_obj(obj: dict[str, Any]) -> dict[str, Any]:
         seen.add(name)
         roots.append({"name": name, "path": path})
     out["granted_roots"] = roots
+    _norm_filters(obj, out)
     return out
 
 

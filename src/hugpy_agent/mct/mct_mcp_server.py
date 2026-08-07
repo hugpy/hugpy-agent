@@ -50,6 +50,23 @@ TOOLS = [
          "preferred_form": {"type": "string"},
          "required_fidelity": {"type": "string"}},
          "required": ["need", "target"]}},
+    {"name": "submit_act",
+     "description": "Have B DO something on your behalf — B is the actor, you are the "
+                    "driver. B runs unrestricted on the host and auto-applies the "
+                    "result; you get back only a short status plus a 'full_output' "
+                    "pointer you can resolve if you actually need the detail. Use this "
+                    "to apply fixes, run builds/tests, or drive any tool: it costs no "
+                    "tokens beyond the summary. kind='write' {path, content}; "
+                    "kind='edit' {path, old, new, all?} (old must be unique unless "
+                    "all=true); kind='exec' {command, cwd?, timeout?}.",
+     "inputSchema": {"type": "object", "properties": {
+         "kind": {"type": "string", "enum": ["write", "edit", "exec"]},
+         "path": {"type": "string"}, "content": {"type": "string"},
+         "old": {"type": "string"}, "new": {"type": "string"},
+         "all": {"type": "boolean"},
+         "command": {"type": "string"}, "cwd": {"type": "string"},
+         "timeout": {"type": "integer"}},
+         "required": ["kind"]}},
     {"name": "respond",
      "description": "Deliver your final answer for this turn. Call exactly once, last.",
      "inputSchema": {"type": "object", "properties": {
@@ -94,6 +111,12 @@ class TurnTools:
                 preview = ""
         return json.dumps({"decision": out.decision, "objects": out.objects,
                            "preview": preview, "denial_reason": out.payload.get("denial_reason")})
+
+    def submit_act(self, args: dict) -> str:
+        kind = args.get("kind") or ""
+        kw = {k: v for k, v in args.items() if k != "kind" and v is not None}
+        self.session._active_turn = (self.turn_id, self.epoch)  # for the audit line
+        return json.dumps(self.session.broker_act(kind, **kw))
 
     def respond(self, args: dict) -> str:
         # Build the sealed response objects but do NOT render here — the parent B

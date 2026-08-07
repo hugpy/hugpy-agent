@@ -234,18 +234,95 @@ class MctSession:
         got = self._fs_broker_search(query, limit=1)
         return got[0]["pointer"] if got else None
 
+    def _scan_filters(self) -> dict:
+        """abstract-search filter kwargs from operator policy.
+
+        The package already has the filter machinery — allowed/exclude for dirs,
+        extensions and glob patterns — with sensible defaults (it excludes
+        ``node_modules``, ``*.log``, binaries out of the box). We pass policy
+        straight through rather than reimplementing any of it; an unset key just
+        leaves abstract-search's own default in force."""
+        from .fs_policy import load_policy
+        pol = load_policy(self.server.workspace_root)
+        return {k: pol[k] for k in ("allowed_exts", "exclude_exts", "allowed_dirs",
+                                    "exclude_dirs", "allowed_patterns",
+                                    "exclude_patterns") if pol.get(k)}
+
+    def _local_abstract_search(self, query: str, limit: int) -> list[dict]:
+        """Run abstract-search **in-process** against the granted roots.
+
+        This is the same engine behind ``/api/finder/search`` — but called as a
+        library, not over HTTP. That matters because the HTTP route is bound to
+        its own host: its roots are a hardcoded server-side whitelist
+        (``dev``/``station``/``comms``/``spool``) resolving on the central, so a
+        tree that lives only on this machine is unreachable through it at any
+        auth level. hugpy-agent is meant to run anywhere, so the steward searches
+        wherever it actually is.
+
+        Scoring is by how many distinct query terms a file contains — the engine
+        returns exact line hits, so there is nothing to guess at. Each term is
+        tried in its given case and lowercased, because ``getPaths`` prefilters
+        case-sensitively: a file containing ``/yt/foryou`` is invisible to a
+        search for ``forYou`` unless both are tried."""
+        try:
+            from abstract_search.find_content import findContent
+        except ImportError:
+            return []  # extra not installed: degrade to the HTTP finder (§17)
+        terms = [t for t in (query or "").replace("/", " ").split() if len(t) > 1]
+        if not terms:
+            return []
+        kw = self._scan_filters()
+        # (root, rel) -> {"terms": {...}, "lines": [...]}
+        found: dict[tuple[str, str], dict] = {}
+        for root_name, root in self._roots.items():
+            for term in terms:
+                for variant in dict.fromkeys((term, term.lower())):
+                    try:
+                        hits = findContent(directory=root.root_path, strings=[variant],
+                                           parse_lines=True, get_lines=True, **kw)
+                    except Exception:
+                        continue  # one bad term never costs the whole search
+                    for h in hits or []:
+                        path = h.get("file_path") if isinstance(h, dict) else h
+                        lines = h.get("lines") or [] if isinstance(h, dict) else []
+                        if not path:
+                            continue
+                        prefix = root.root_path + os.sep
+                        if not str(path).startswith(prefix):
+                            continue  # outside the root: never a candidate
+                        rec = found.setdefault((root_name, str(path)[len(prefix):]),
+                                               {"terms": set(), "lines": []})
+                        rec["terms"].add(term.lower())
+                        rec["lines"].extend(lines[:3])
+        out: list[dict] = []
+        for (root_name, rel), rec in sorted(
+                found.items(), key=lambda kv: (-len(kv[1]["terms"]), kv[0][1])):
+            if len(out) >= limit:
+                break
+            root = self._roots.get(root_name)
+            ptr = self._snapshot_fs_source(root_name, root, rel) if root else None
+            if not ptr:
+                continue  # denied/oversized/vanished → next candidate
+            out.append({
+                "name": f"fs:{root_name}:{rel}", "pointer": ptr,
+                "score": 10.0 * len(rec["terms"]),
+                "snippet": " | ".join(str(l.get("content"))[:110]
+                                      for l in rec["lines"][:3] if isinstance(l, dict)),
+                "token_estimate": self._ptr_tokens(ptr)})
+        return out
+
     def _fs_broker_search(self, query: str, limit: int = 5) -> list[dict]:
         """Steward-enabled brokered filesystem search (design: "Frontier
         filesystem requests enabled"). Called only on a catalog-query miss and
         only when ``allow_frontier_fs_requests`` is on. B — never A — generates
-        ranked candidates from the granted roots: the central abstract-search
-        (finder) when reachable, plus a bounded local walk. Path-term hits are
-        peeked first so the content budget is spent on likely candidates; files
-        beyond the peek budget are ranked by path only (the finder covers
-        content at scale). Binary files are dropped outright. Each admitted
-        candidate is read confined, snapshotted immutably (within a per-request
-        byte budget), and cataloged; A receives pointers and root-relative
-        names — the host path stays with B (invariant 5)."""
+        ranked candidates from the granted roots. Each admitted candidate is read
+        confined, snapshotted immutably, and cataloged; A receives pointers and
+        root-relative names — the host path stays with B (invariant 5).
+
+        Order: the central finder first (cheapest when it serves the tree), then
+        abstract-search in-process against the granted roots, then the legacy
+        bounded walk as a last resort. The local rung is what makes this work off
+        the central's own VM."""
         terms = [t for t in (query or "").lower().split() if t]
         if not terms:
             return []
@@ -253,6 +330,12 @@ class MctSession:
         if len(out) >= limit:
             return out[:limit]
         have = {c["name"] for c in out}
+        for cand in self._local_abstract_search(query, limit - len(out)):
+            if cand["name"] not in have:
+                out.append(cand)
+                have.add(cand["name"])
+        if len(out) >= limit:
+            return out[:limit]
         import os as _os
         entries: list[tuple[int, str, str]] = []  # (name_hits, root, rel)
         visited = 0
@@ -397,6 +480,109 @@ class MctSession:
                                             "fs.snapshot", "B.steward",
                                             output_objects=[ref.object_id])
         return self._catalog[name]
+
+    # --- the act channel: B as A's hands (§6.2) ---------------------------
+    _ACT_INLINE = 4000          # chars of output returned inline to A
+    _ACT_TIMEOUT = 600          # default seconds for an exec
+
+    def broker_act(self, kind: str, **kw) -> dict:
+        """Execute an action on A's behalf and auto-apply it.
+
+        MCT restricts *A's context*, not A's reach. Anything that runs on B's
+        side costs zero tokens from A's provider, so there is no reason to gate
+        it — B is the trusted actor and runs unrestricted. What A gets back is
+        deliberately small: a status line plus a pointer to the full output, so
+        driving a build or a grep does not import its transcript into A's window.
+        That asymmetry — B does the work, A sees the summary — is the entire
+        point of the mediation.
+
+        Every action is committed to the object store and appended to the ledger
+        before and after it runs. That is an audit trail, not a permission gate:
+        nothing is refused, everything is recorded, and ``/log b`` shows exactly
+        what B did on A's instruction.
+
+        Kinds: ``write`` (path, content), ``edit`` (path, old, new, count),
+        ``exec`` (command, cwd, timeout)."""
+        import subprocess
+        turn, epoch = getattr(self, "_active_turn", ("", ""))
+        detail = {"kind": kind, **{k: (str(v)[:200] if k != "content" else f"<{len(str(v))} chars>")
+                                   for k, v in kw.items()}}
+        req_ptr = self.server.store.commit(
+            self.session_id, json.dumps(detail).encode("utf-8"),
+            media_type="application/vnd.hugpy.mct-act+json", kind="act_request",
+            provenance={"turn": turn, "epoch": epoch})
+        self.server.ledger.append_event(self.session_id, turn, epoch,
+                                        "act.requested", "A.claude",
+                                        output_objects=[req_ptr.object_id])
+
+        out: dict = {"kind": kind, "ok": False}
+        try:
+            if kind == "write":
+                path = os.path.abspath(os.path.expanduser(kw["path"]))
+                data = str(kw.get("content") or "")
+                before = None
+                if os.path.exists(path):
+                    with open(path, "rb") as fh:  # snapshot the prior bytes
+                        before = self.server.store.commit(
+                            self.session_id, fh.read(), media_type="text/plain",
+                            kind="source_snapshot",
+                            provenance={"act": "pre-write", "path": path}).pointer
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(data)
+                out.update(ok=True, path=path, bytes=len(data.encode()), before=before)
+
+            elif kind == "edit":
+                path = os.path.abspath(os.path.expanduser(kw["path"]))
+                old, new = str(kw["old"]), str(kw.get("new") or "")
+                with open(path, encoding="utf-8") as fh:
+                    src = fh.read()
+                n = src.count(old)
+                if n == 0:
+                    raise ValueError("old string not found")
+                if n > 1 and not kw.get("all"):
+                    raise ValueError(f"old string is not unique ({n} matches); "
+                                     "pass all=true or give more context")
+                before = self.server.store.commit(
+                    self.session_id, src.encode(), media_type="text/plain",
+                    kind="source_snapshot",
+                    provenance={"act": "pre-edit", "path": path}).pointer
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(src.replace(old, new))
+                out.update(ok=True, path=path, replaced=n, before=before)
+
+            elif kind == "exec":
+                cmd = kw["command"]
+                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                                      cwd=kw.get("cwd") or None,
+                                      timeout=int(kw.get("timeout") or self._ACT_TIMEOUT))
+                body = (proc.stdout or "") + (("\n[stderr]\n" + proc.stderr)
+                                              if proc.stderr else "")
+                spool = self.server.store.commit(
+                    self.session_id, body.encode("utf-8", "replace"),
+                    media_type="text/plain", kind="act_output",
+                    provenance={"command": str(cmd)[:400]})
+                out.update(ok=(proc.returncode == 0), returncode=proc.returncode,
+                           output=body[:self._ACT_INLINE],
+                           truncated=len(body) > self._ACT_INLINE,
+                           full_output=spool.pointer)
+            else:
+                raise ValueError(f"unknown act kind {kind!r}")
+        except Exception as exc:
+            out.update(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+        res_ptr = self.server.store.commit(
+            self.session_id, json.dumps(out).encode("utf-8"),
+            media_type="application/vnd.hugpy.mct-act-result+json",
+            kind="act_result", provenance={"request": req_ptr.pointer})
+        self.server.ledger.append_event(
+            self.session_id, turn, epoch,
+            "act.applied" if out.get("ok") else "act.failed", "B.steward",
+            input_objects=[req_ptr.object_id], output_objects=[res_ptr.object_id])
+        # A file B just changed must not be served from a stale snapshot.
+        if kind in ("write", "edit") and out.get("ok"):
+            self.invalidate_source_cache()
+        return out
 
     def invalidate_source_cache(self, name: str | None = None) -> None:
         """Drop cached file-source snapshots so the next build re-snapshots the

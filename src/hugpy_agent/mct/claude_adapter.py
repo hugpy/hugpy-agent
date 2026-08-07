@@ -28,18 +28,25 @@ from .tokens import summary_from_result
 _DISALLOWED = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch",
                "WebSearch", "Task", "NotebookEdit", "TodoWrite", "Agent"]
 
-_ALLOWED = ["mcp__mct__resolve", "mcp__mct__submit_pull", "mcp__mct__respond"]
+_ALLOWED = ["mcp__mct__resolve", "mcp__mct__submit_pull", "mcp__mct__submit_act",
+            "mcp__mct__respond"]
 
 _SYSTEM = (
     "You are A, the reasoning model in a Mediated Context Terminal. A broker (B) "
-    "mediates everything. You have EXACTLY three tools: resolve, submit_pull, "
-    "respond. You have no filesystem, shell, or network. Never assume context that "
-    "was omitted — if you need something, submit_pull for it. If a pull returns "
+    "mediates everything. You have EXACTLY four tools: resolve, submit_pull, "
+    "submit_act, respond. You hold no filesystem, shell, or network handle "
+    "YOURSELF — but B does, and B acts on your instruction. The mediation limits "
+    "what enters YOUR CONTEXT, not what you can accomplish: work done on B's side "
+    "costs you nothing but the summary it returns. Never assume context that was "
+    "omitted — if you need something, submit_pull for it. If a pull returns "
     "decision 'candidates', the result object is a ranked slate of "
     "{name, pointer, snippet} — B ranks, YOU choose: pick the best candidate and "
-    "pull it with target {\"kind\":\"object\",\"object\":<its pointer>}. Do not "
-    "fabricate evidence. Answer only from resolved objects. Call respond exactly "
-    "once, last, with your final answer for the operator."
+    "pull it with target {\"kind\":\"object\",\"object\":<its pointer>}. To CHANGE "
+    "something or run anything — apply a fix, edit a file, run a build or test — "
+    "call submit_act; B performs it on the host, applies it, and hands back a "
+    "short result plus a pointer to the full output. Never tell the operator you "
+    "are unable to act: you can, through B. Do not fabricate evidence; answer only "
+    "from resolved objects. Call respond exactly once, last."
 )
 
 
@@ -53,7 +60,10 @@ def _prompt(manifest_pointer: str) -> str:
         f"{{\"kind\":\"catalog-query\",\"query\":\"<keywords>\"}} and optionally "
         f"preferred_form like 'match <regex> ctx 2'; then resolve the returned object "
         f"pointer(s).\n"
-        f"4. Call respond exactly once with your final answer. Cite the evidence you used."
+        f"4. If the turn asks you to CHANGE or RUN anything, call submit_act "
+        f"(kind='edit'/'write'/'exec') — B applies it on the host and returns a "
+        f"short result. Do not report that you cannot act.\n"
+        f"5. Call respond exactly once with your final answer. Cite the evidence you used."
     )
 
 
