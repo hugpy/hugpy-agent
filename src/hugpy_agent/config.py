@@ -354,16 +354,23 @@ def load_config(workspace: str | None = None, overrides: dict | None = None,
     """Resolve the effective Config.
 
     `overrides` (from CLI flags) beat everything — an operator typing a flag is
-    the most explicit intent there is. `environ` is injectable for tests.
+    the most explicit intent there is. `workspace` is the next most explicit: a
+    caller naming the directory outranks an ambient env var, which outranks cwd.
+    `environ` is injectable for tests.
     """
     env = os.environ if environ is None else environ
     overrides = {k: v for k, v in (overrides or {}).items() if v not in (None, "")}
 
     cfg = Config()
-    # 1. workspace first: CLI > env > cwd (its files feed the rest).
-    ws = overrides.get("workspace") or env.get("HUGPY_WORKSPACE") or os.getcwd()
+    # 1. workspace first: CLI > argument > env > cwd (its files feed the rest).
+    # The `workspace` argument was previously declared and then never read, so
+    # every caller passing one silently got cwd instead — and with it whatever
+    # agent.toml/.env happened to sit there. Honour it.
+    ws = (overrides.get("workspace") or workspace
+          or env.get("HUGPY_WORKSPACE") or os.getcwd())
     cfg.workspace = os.path.realpath(ws)
     cfg.sources["workspace"] = ("cli" if "workspace" in overrides
+                                else "argument" if workspace
                                 else "env" if env.get("HUGPY_WORKSPACE") else "default")
 
     # 2. lowest layer: agent.toml (keys are attr names, e.g. `model = "..."`).

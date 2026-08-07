@@ -103,6 +103,12 @@ class BrokerServer:
         from .logs import Logs
         from .tokens import TokenUsage
         from .metrics import Metrics
+        from .access_log import AccessLog
+        # Live "who read what" tracker. Shares mct.log so one tail shows event
+        # flow and file access interleaved (§18.2).
+        self.access = AccessLog(root / "access.jsonl", ledger=self.ledger,
+                                enabled=self.config.event_log,
+                                resolver=lambda sid, ptr: self.store.resolve(sid, ptr))
         self.a_cache = AWorkingSet(self)  # durable mirror of everything A received
         self.logs = Logs(self)            # full C / B / A logs from durable state
         self.tokens = TokenUsage(self)    # precise per-turn/session token accounting
@@ -161,17 +167,25 @@ class BrokerServer:
     def gateway(self):
         """Lazy central gateway for B's bench tools (abstract-search). ``None``
         when config/network is unavailable — callers degrade to local search,
-        never fail a turn over it."""
+        never fail a turn over it.
+
+        Deliberately resolves config the ordinary way (CLI > HUGPY_WORKSPACE >
+        cwd) rather than from ``workspace_root``. The MCT workspace is an
+        object-store location — a freshly minted ``~/.mct/session-<stamp>/`` that
+        holds the ledger and blobs — not a place anyone keeps ``agent.toml`` or
+        ``.env``. Pointing config resolution at it would find no credentials and
+        silently 401 every gateway call."""
         if not hasattr(self, "_gateway"):
             try:
                 from ..config import load_config
                 from ..gateway import Gateway
-                self._gateway = Gateway.from_config(load_config(str(self.workspace_root)))
+                self._gateway = Gateway.from_config(load_config())
             except Exception:
                 self._gateway = None
         return self._gateway
 
     def close(self) -> None:
+        self.access.close()
         self.ledger.close()
 
 
@@ -219,6 +233,12 @@ class MctSession:
                 data = root.read(relpath)
             except Exception:
                 continue
+            turn, _ = getattr(self, "_active_turn", ("", ""))
+            self.server.access.record("B", "read", f"{root_name}:{relpath}",
+                                      detail="materialize registered source",
+                                      session=self.session_id, turn=turn,
+                                      bytes_=len(data),
+                                      path=os.path.join(root.root_path, relpath))
             ref = self.server.store.commit(
                 self.session_id, data, media_type="text/plain", kind="source_snapshot",
                 provenance={"root": root_name, "relpath": relpath, "catalog_name": name})
@@ -272,9 +292,14 @@ class MctSession:
         if not terms:
             return []
         kw = self._scan_filters()
+        turn, _ = getattr(self, "_active_turn", ("", ""))
         # (root, rel) -> {"terms": {...}, "lines": [...]}
         found: dict[tuple[str, str], dict] = {}
         for root_name, root in self._roots.items():
+            self.server.access.record("B", "scan", f"{root_name}:{root.root_path}",
+                                      detail=f"q={' '.join(terms)!r}",
+                                      session=self.session_id, turn=turn,
+                                      path=root.root_path)
             for term in terms:
                 for variant in dict.fromkeys((term, term.lower())):
                     try:
@@ -290,8 +315,18 @@ class MctSession:
                         prefix = root.root_path + os.sep
                         if not str(path).startswith(prefix):
                             continue  # outside the root: never a candidate
-                        rec = found.setdefault((root_name, str(path)[len(prefix):]),
+                        rel = str(path)[len(prefix):]
+                        rec = found.setdefault((root_name, rel),
                                                {"terms": set(), "lines": []})
+                        if not rec["terms"]:
+                            # abstract-search opened and matched this file. Its
+                            # non-matching opens happen inside the library and
+                            # are not observable here — see the scan line.
+                            self.server.access.record(
+                                "B", "peek", f"{root_name}:{rel}",
+                                detail=f"matched {variant!r}",
+                                session=self.session_id, turn=turn,
+                                path=str(path))
                         rec["terms"].add(term.lower())
                         rec["lines"].extend(lines[:3])
         out: list[dict] = []
@@ -372,6 +407,10 @@ class MctSession:
                 peeked += 1
                 try:
                     data = root.read_prefix(rel, self._FS_SCAN_BYTES)
+                    self.server.access.record(
+                        "B", "peek", f"{root_name}:{rel}", detail="legacy walk scan",
+                        session=self.session_id, bytes_=len(data),
+                        path=os.path.join(root.root_path, rel))
                 except Exception:
                     data = b""
                 if b"\0" in data[:8192]:
@@ -479,6 +518,21 @@ class MctSession:
             self.server.ledger.append_event(self.session_id, turn, epoch,
                                             "fs.snapshot", "B.steward",
                                             output_objects=[ref.object_id])
+            self.server.access.record("B", "read", f"{root_name}:{rel}",
+                                      detail="snapshot -> store",
+                                      session=self.session_id, turn=turn,
+                                      bytes_=len(data), obj=ref.pointer,
+                                      path=os.path.join(root.root_path, rel))
+        else:
+            # Served from an existing snapshot: no disk touch this time. Worth
+            # its own verb — "B read it again" and "B reused what it had" are
+            # different facts, and conflating them overstates disk access.
+            turn, _ = getattr(self, "_active_turn", ("", ""))
+            self.server.access.record("B", "serve", f"{root_name}:{rel}",
+                                      detail="cached snapshot",
+                                      session=self.session_id, turn=turn,
+                                      obj=self._catalog[name],
+                                      path=os.path.join(root.root_path, rel))
         return self._catalog[name]
 
     # --- the act channel: B as A's hands (§6.2) ---------------------------
@@ -514,6 +568,10 @@ class MctSession:
         self.server.ledger.append_event(self.session_id, turn, epoch,
                                         "act.requested", "A.claude",
                                         output_objects=[req_ptr.object_id])
+        self.server.access.record("A->B", "act",
+                                  f"{kind} {str(kw.get('path') or kw.get('command') or '')[:140]}",
+                                  session=self.session_id, turn=turn,
+                                  obj=req_ptr.pointer)
 
         out: dict = {"kind": kind, "ok": False}
         try:
@@ -579,6 +637,16 @@ class MctSession:
             self.session_id, turn, epoch,
             "act.applied" if out.get("ok") else "act.failed", "B.steward",
             input_objects=[req_ptr.object_id], output_objects=[res_ptr.object_id])
+        self.server.access.record(
+            "B", kind if kind in ("write", "edit", "exec") else "act",
+            str(kw.get("path") or kw.get("command") or "")[:200],
+            detail=("ok" if out.get("ok") else f"FAILED {out.get('error', '')}")[:120],
+            session=self.session_id, turn=turn, bytes_=out.get("bytes"),
+            path=(out.get("path") if kind in ("write", "edit") else None))
+        self.server.access.record(
+            "B->A", "act_result", "ok" if out.get("ok") else "failed",
+            detail=str(out.get("error") or out.get("path") or "")[:120],
+            session=self.session_id, turn=turn, obj=res_ptr.pointer)
         # A file B just changed must not be served from a stale snapshot.
         if kind in ("write", "edit") and out.get("ok"):
             self.invalidate_source_cache()
@@ -853,6 +921,19 @@ class _ABinding:
         meta = srv.ledger.get_object(object_id)
         srv.ledger.record_receipt(self.session_id, self.turn_id, self.epoch, object_id,
                                   meta["digest"], selector, True, purpose, self._manifest_sha)
+        # Attribute A's read back to a real file where one exists. A resolves
+        # objects, never paths, so the mapping comes from the snapshot's
+        # provenance; objects with no file behind them log their kind instead.
+        target = f"{meta.get('kind') or 'object'} {object_id}"
+        try:
+            prov = json.loads(meta.get("provenance") or "{}")
+            if prov.get("relpath"):
+                target = f"{prov.get('root', '?')}:{prov['relpath']}"
+        except (ValueError, TypeError):
+            pass
+        srv.access.record("A", "read", target, detail=(selector or ""),
+                          session=self.session_id, turn=self.turn_id, bytes_=len(data),
+                          obj=pointer)
         return data
 
     def create_object(self, data: bytes, media_type: str, kind: str, provenance: dict | None) -> str:
@@ -875,6 +956,14 @@ class _ABinding:
         _, req_oid = parse_pointer(request_pointer)
         srv.ledger.append_event(self.session_id, self.turn_id, self.epoch, "pull.requested",
                                 "A.adapter", input_objects=[req_oid])
+        # A's actual "get me this file" command, in A's own words — the half of
+        # the exchange the ledger only records as an object id.
+        tgt = request.get("target") or {}
+        srv.access.record("A->B", "pull",
+                          str(tgt.get("query") or tgt.get("object") or tgt.get("kind"))[:160],
+                          detail=str(request.get("need") or "")[:120],
+                          session=self.session_id, turn=self.turn_id,
+                          obj=request_pointer)
         # Live-refresh from the on-disk policy so a console toggle of the
         # directory-accessibility button takes effect on THIS turn (mtime-cached).
         srv.apply_fs_policy(self._s)
@@ -887,6 +976,11 @@ class _ABinding:
                                 f"pull.{payload['decision']}", "B.pull-broker",
                                 input_objects=[req_oid], output_objects=[_oid(result_pointer)],
                                 policy_revision=payload.get("policy_revision"))
+        srv.access.record("B->A", payload["decision"],
+                          f"{len(payload.get('objects') or [])} object(s)",
+                          detail=str(payload.get("denial_reason") or "")[:120],
+                          session=self.session_id, turn=self.turn_id,
+                          obj=result_pointer)
         return payload, result_pointer
 
     # --- streaming (design §16.2) ------------------------------------------
@@ -948,6 +1042,9 @@ class _ABinding:
         srv = self._s.server
         self.responded = True
         self.response_manifest = manifest_pointer
+        srv.access.record("A->B", "respond", "final answer",
+                          session=self.session_id, turn=self.turn_id,
+                          obj=manifest_pointer)
 
         # Idempotent replay: a resent response.ready returns the original outcome
         # and never re-renders (§15.2, invariant 14).

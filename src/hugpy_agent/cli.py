@@ -348,7 +348,8 @@ def cmd_mct(args) -> int:
     through B's curated context. Equivalent to `python -m hugpy_agent.mct`."""
     from .mct.repl import run
     return run(args.workspace, model=args.model, use_model=not args.no_model,
-               allow_fs_requests=args.allow_fs_requests)
+               allow_fs_requests=args.allow_fs_requests,
+               quiet=getattr(args, "quiet", False))
 
 
 def cmd_mct_usage(args) -> int:
@@ -586,6 +587,8 @@ def main(argv=None) -> int:
                    help="A's model (e.g. sonnet, opus, haiku)")
     p.add_argument("--no-model", dest="no_model", action="store_true",
                    help="disable B's local ranking model")
+    p.add_argument("--quiet", action="store_true",
+                   help="do not relay the A/B exchange inline (spinner only)")
     p.add_argument("--allow-fs-requests", action="store_true",
                    help="Allow Frontier filesystem requests (Steward trigger): "
                         "a missed pull may be brokered by B against granted "
