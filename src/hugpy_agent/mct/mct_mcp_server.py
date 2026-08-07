@@ -43,7 +43,16 @@ TOOLS = [
                     "decision 'candidates' means the query was ambiguous: the result "
                     "object (shown in preview) is a ranked slate of {name, pointer, "
                     "snippet} — choose one and pull it with "
-                    "{\"kind\":\"object\",\"object\":<pointer>}.",
+                    "{\"kind\":\"object\",\"object\":<pointer>}. "
+                    "DIRECT B LIKE AN AGENT with "
+                    "{\"kind\":\"search\",\"spec\":{...}} instead of guessing "
+                    "keywords: spec takes all[] (every term must appear), any[] "
+                    "(at least one), none[] (drop any file containing these), "
+                    "ext[], path_include[]/path_exclude[] globs, "
+                    "modified_after/modified_before (ISO dates), limit and "
+                    "context_lines. B runs it across the granted roots for free "
+                    "and returns only matching lines — far cheaper than pulling "
+                    "files to filter them yourself.",
      "inputSchema": {"type": "object", "properties": {
          "need": {"type": "string"},
          "target": {"type": "object"},

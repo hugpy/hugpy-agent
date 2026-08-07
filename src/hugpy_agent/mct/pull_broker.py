@@ -72,6 +72,7 @@ class PullBroker:
         catalog: dict[str, str],
         state: TurnPullState,
         fs_search=None,
+        structured_search=None,
     ) -> tuple[dict, str]:
         """Return ``(pull_result_payload, pull_result_pointer)``.
 
@@ -121,7 +122,20 @@ class PullBroker:
         # resolves directly; a contested slate goes back to A as decision
         # "candidates" — the frontier model chooses, B only ranks (§11.2).
         candidates = None
-        if target["kind"] == "catalog-query":
+        if target["kind"] == "search":
+            # A directed B: run the directive, then hand back the same slate a
+            # catalog query would produce. A single hit resolves straight
+            # through — a precise directive that matched once needs no round
+            # trip to confirm it.
+            hits = (structured_search(target.get("spec") or {}, self.K)
+                    if structured_search else [])
+            if state is not None:
+                state.search_trace = {"tried": [{"strategy": "structured",
+                                                 "hits": len(hits)}],
+                                      "coverage": []}
+            source_pointer = hits[0]["pointer"] if len(hits) == 1 else None
+            candidates = hits if len(hits) > 1 else None
+        elif target["kind"] == "catalog-query":
             source_pointer, candidates = self._resolve_catalog_query(
                 session_id, target, catalog, fs_search, state)
         else:

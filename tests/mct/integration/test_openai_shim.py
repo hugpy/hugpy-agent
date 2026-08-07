@@ -214,3 +214,117 @@ def test_the_system_prompt_still_steers_to_the_cheap_path():
 
     assert "EXPENSIVE path" in ca._SYSTEM_NATIVE
     assert "submit_pull" in ca._SYSTEM_NATIVE     # the cheap path stays default
+
+
+# --- structured search: B as A's search agent -------------------------------
+
+def _search_session(tmp_path, files):
+    from hugpy_agent.mct.fs_policy import add_root, set_allow
+    from hugpy_agent.mct.session import BrokerServer
+    d = tmp_path / "src"
+    d.mkdir()
+    for name, body in files.items():
+        (d / name).write_text(body)
+    server = BrokerServer(tmp_path, sink=lambda *_: None)
+    server.gateway = lambda: None
+    set_allow(tmp_path, True)
+    add_root(tmp_path, "proj", str(d))
+    sess = server.session(server.open_session("t"))
+    server.apply_fs_policy(sess, force=True)
+    sess._active_turn = ("t_000001", "e1")
+    return server, sess
+
+
+def test_all_terms_is_an_intersection(tmp_path):
+    server, sess = _search_session(tmp_path, {
+        "both.md": "nginx and ssl together\n",
+        "one.md": "nginx only\n"})
+    try:
+        got = [h["name"] for h in sess._fs_structured_search({"all": ["nginx", "ssl"]})]
+        assert got == ["fs:proj:both.md"]
+    finally:
+        server.close()
+
+
+def test_any_terms_is_a_union(tmp_path):
+    server, sess = _search_session(tmp_path, {
+        "a.md": "nginx here\n", "b.md": "ssl here\n", "c.md": "neither\n"})
+    try:
+        got = {h["name"] for h in sess._fs_structured_search({"any": ["nginx", "ssl"]})}
+        assert got == {"fs:proj:a.md", "fs:proj:b.md"}
+    finally:
+        server.close()
+
+
+def test_none_is_a_veto_not_a_penalty(tmp_path):
+    """'Filter out X' has to mean gone. A ranked-down result A still has to read
+    and reject is not a filter — and A cannot reason over a set it cannot trust."""
+    server, sess = _search_session(tmp_path, {
+        "keep.md": "nginx config\n", "drop.md": "nginx config DEPRECATED\n"})
+    try:
+        got = [h["name"] for h in sess._fs_structured_search(
+            {"all": ["nginx"], "none": ["DEPRECATED"]})]
+        assert got == ["fs:proj:keep.md"]
+    finally:
+        server.close()
+
+
+def test_extension_and_path_filters_narrow_the_corpus(tmp_path):
+    server, sess = _search_session(tmp_path, {
+        "a.ts": "route handler\n", "b.md": "route handler\n"})
+    try:
+        got = [h["name"] for h in sess._fs_structured_search(
+            {"any": ["route"], "ext": [".ts"]})]
+        assert got == ["fs:proj:a.ts"]
+    finally:
+        server.close()
+
+
+def test_date_window_bounds_the_result(tmp_path):
+    import os
+    import time
+    server, sess = _search_session(tmp_path, {"old.md": "nginx\n", "new.md": "nginx\n"})
+    try:
+        old = tmp_path / "src" / "old.md"
+        stamp = time.time() - 400 * 24 * 3600          # ~13 months ago
+        os.utime(old, (stamp, stamp))
+        recent = sess._fs_structured_search(
+            {"any": ["nginx"], "modified_after": "2026-01-01"})
+        assert [h["name"] for h in recent] == ["fs:proj:new.md"]
+        assert not sess._fs_structured_search(
+            {"any": ["nginx"], "modified_before": "1990-01-01"})
+    finally:
+        server.close()
+
+
+def test_a_malformed_date_widens_rather_than_silently_empties(tmp_path):
+    """A typo in a filter must not look like 'nothing matched'."""
+    from hugpy_agent.mct.session import _parse_when
+    assert _parse_when("not-a-date") is None
+    assert _parse_when("") is None
+    assert _parse_when("2026-08-01") > 0
+
+    server, sess = _search_session(tmp_path, {"a.md": "nginx\n"})
+    try:
+        assert sess._fs_structured_search(
+            {"any": ["nginx"], "modified_after": "garbage"})
+    finally:
+        server.close()
+
+
+def test_a_directive_with_no_terms_returns_nothing(tmp_path):
+    server, sess = _search_session(tmp_path, {"a.md": "nginx\n"})
+    try:
+        assert sess._fs_structured_search({"ext": [".md"]}) == []
+    finally:
+        server.close()
+
+
+def test_search_is_a_valid_pull_target():
+    from hugpy_agent.mct.protocol import validate_against
+    validate_against("pull-request-v1", {
+        "schema": "mct.pull-request/1", "session_id": "s_A", "turn_id": "t_000001",
+        "epoch": "e_A", "request_id": "pr_0001", "need": "find it",
+        "target": {"kind": "search", "spec": {
+            "all": ["foryou"], "none": ["test"], "ext": [".ts"],
+            "modified_after": "2026-07-01", "limit": 5}}})

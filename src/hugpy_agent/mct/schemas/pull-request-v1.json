@@ -26,12 +26,29 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["catalog-query", "object", "selector"],
-          "description": "catalog-query: search a named catalog category; object: an already-known opaque handle; selector: a bounded selector over a known object."
+          "enum": ["catalog-query", "object", "selector", "search"],
+          "description": "catalog-query: search a named catalog category; object: an already-known opaque handle; selector: a bounded selector over a known object; search: a structured directive B executes on A's behalf."
         },
         "query": { "type": "string", "description": "For kind=catalog-query." },
         "object": { "$ref": "#/$defs/pointer", "description": "For kind=object/selector." },
-        "selector": { "type": "string", "description": "For kind=selector: lines/bytes/JSON-path/AST-symbol/match spec." }
+        "selector": { "type": "string", "description": "For kind=selector: lines/bytes/JSON-path/AST-symbol/match spec." },
+        "spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "For kind=search. A directs B like an agent: what to look for, what to rule out, where to look, and when. Still a directive, never a path — B resolves it against granted roots only (invariant 5) and a pull cannot widen authority (invariant 12).",
+          "properties": {
+            "all":  { "type": "array", "items": { "type": "string" }, "description": "Every term must appear in the file." },
+            "any":  { "type": "array", "items": { "type": "string" }, "description": "At least one term must appear." },
+            "none": { "type": "array", "items": { "type": "string" }, "description": "No file containing any of these is returned." },
+            "ext":  { "type": "array", "items": { "type": "string" }, "description": "Restrict to these extensions, e.g. ['.ts','.tsx']." },
+            "path_include": { "type": "array", "items": { "type": "string" }, "description": "Glob(s) the path must match." },
+            "path_exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob(s) the path must not match." },
+            "modified_after":  { "type": "string", "description": "ISO date/datetime; only files modified at or after this." },
+            "modified_before": { "type": "string", "description": "ISO date/datetime; only files modified before this." },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "context_lines": { "type": "integer", "minimum": 0, "maximum": 20 }
+          }
+        }
       }
     },
     "preferred_form": {

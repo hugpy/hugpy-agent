@@ -71,6 +71,26 @@ class TurnResult:
     tokens: dict | None = None         # precise token/cost summary for this A turn
 
 
+
+def _parse_when(value):
+    """ISO date or datetime -> epoch seconds; None when absent/unparseable.
+
+    Unparseable is deliberately None rather than an error: a malformed date
+    should widen the result set, never silently empty it. B says what it did in
+    the search trace; it does not fail a turn over a typo in a filter."""
+    if not value:
+        return None
+    from datetime import datetime
+    text = str(value).strip().replace("Z", "+00:00")
+    for parse in (datetime.fromisoformat,
+                  lambda t: datetime.strptime(t, "%Y-%m-%d")):
+        try:
+            return parse(text).timestamp()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 class BrokerServer:
     """Owns durable state and the deterministic enforcement points (registry)."""
 
@@ -345,6 +365,113 @@ class MctSession:
                                       for l in rec["lines"][:3] if isinstance(l, dict)),
                 "token_estimate": self._ptr_tokens(ptr)})
         return out
+
+    def _fs_structured_search(self, spec: dict, limit: int = 5) -> list[dict]:
+        """Execute a structured search directive — B as A's search agent.
+
+        A keyword bag makes B guess. A directive lets A say what it actually
+        means: every one of these terms, any of those, none of the third set,
+        only ``.ts``/``.tsx`` under ``src/``, only touched since July. B runs it
+        against the granted roots with abstract-search's own filter machinery
+        and returns matching lines, so A pays for the answer rather than for the
+        corpus.
+
+        ``none`` is applied as a *file-level veto*, not a rank penalty: a file
+        containing an excluded term is dropped even if it matched everything
+        else. "Filter out X" has to mean gone, or A cannot trust the result to
+        reason over."""
+        from abstract_search.find_content import findContent
+
+        turn, _ = getattr(self, "_active_turn", ("", ""))
+        alls = [str(t) for t in (spec.get("all") or []) if str(t).strip()]
+        anys = [str(t) for t in (spec.get("any") or []) if str(t).strip()]
+        nones = [str(t) for t in (spec.get("none") or []) if str(t).strip()]
+        if not (alls or anys):
+            return []
+        limit = min(int(spec.get("limit") or limit), 100)
+        ctx = int(spec.get("context_lines") or 0)
+
+        kw = dict(self._scan_filters())
+        if spec.get("ext"):
+            kw["allowed_exts"] = [e if e.startswith(".") else "." + e
+                                  for e in spec["ext"]]
+        if spec.get("path_include"):
+            kw["allowed_patterns"] = list(spec["path_include"])
+        if spec.get("path_exclude"):
+            kw["exclude_patterns"] = (list(kw.get("exclude_patterns") or [])
+                                      + list(spec["path_exclude"]))
+        after = _parse_when(spec.get("modified_after"))
+        before = _parse_when(spec.get("modified_before"))
+
+        def hits_for(term, root):
+            """Files under ``root`` containing ``term``; both cases tried,
+            because abstract-search prefilters case-sensitively."""
+            found = {}
+            for variant in dict.fromkeys((term, term.lower())):
+                try:
+                    res = findContent(directory=root.root_path, strings=[variant],
+                                      parse_lines=True, get_lines=True, **kw)
+                except Exception:
+                    continue
+                for h in res or []:
+                    path = h.get("file_path") if isinstance(h, dict) else h
+                    lines = (h.get("lines") or []) if isinstance(h, dict) else []
+                    if path:
+                        found.setdefault(str(path), []).extend(lines[:3])
+            return found
+
+        out: list[dict] = []
+        for root_name, root in self._roots.items():
+            self.server.access.record(
+                "B", "scan", f"{root_name}:{root.root_path}",
+                detail=f"all={alls} any={anys} none={nones}"[:180],
+                session=self.session_id, turn=turn, path=root.root_path)
+
+            keep: dict[str, list] | None = None
+            for t in alls:                       # intersection
+                got = hits_for(t, root)
+                keep = got if keep is None else {
+                    p: keep[p] + got[p] for p in keep.keys() & got.keys()}
+                if not keep:
+                    break
+            if anys:                             # union, then intersect with alls
+                union: dict[str, list] = {}
+                for t in anys:
+                    for p, ln in hits_for(t, root).items():
+                        union.setdefault(p, []).extend(ln)
+                keep = union if keep is None else {
+                    p: keep[p] + union[p] for p in keep.keys() & union.keys()}
+            if not keep:
+                continue
+            for t in nones:                      # veto: dropped, not demoted
+                for p in hits_for(t, root):
+                    keep.pop(p, None)
+
+            prefix = root.root_path + os.sep
+            for path, lines in sorted(keep.items()):
+                if len(out) >= limit:
+                    break
+                if not path.startswith(prefix):
+                    continue
+                try:
+                    mtime = os.stat(path).st_mtime
+                except OSError:
+                    continue
+                if (after and mtime < after) or (before and mtime >= before):
+                    continue
+                rel = path[len(prefix):]
+                ptr = self._snapshot_fs_source(root_name, root, rel)
+                if not ptr:
+                    continue
+                shown = lines[: max(1, ctx or 3)]
+                out.append({
+                    "name": f"fs:{root_name}:{rel}", "pointer": ptr,
+                    "score": 10.0 * (len(alls) + len(anys)),
+                    "snippet": " | ".join(
+                        f"{l.get('line')}: {str(l.get('content'))[:110]}"
+                        for l in shown if isinstance(l, dict)),
+                    "token_estimate": self._ptr_tokens(ptr)})
+        return out[:limit]
 
     def _fs_broker_search(self, query: str, limit: int = 5) -> list[dict]:
         """Steward-enabled brokered filesystem search (design: "Frontier
@@ -973,7 +1100,9 @@ class _ABinding:
         payload, result_pointer = srv.pull_broker.arbitrate(
             self.session_id, self.turn_id, self.epoch, request, self._s._catalog, self._pull_state,
             fs_search=(self._s._fs_broker_search
-                       if srv.config.allow_frontier_fs_requests else None))
+                       if srv.config.allow_frontier_fs_requests else None),
+            structured_search=(self._s._fs_structured_search
+                               if srv.config.allow_frontier_fs_requests else None))
         srv.ledger.append_event(self.session_id, self.turn_id, self.epoch,
                                 f"pull.{payload['decision']}", "B.pull-broker",
                                 input_objects=[req_oid], output_objects=[_oid(result_pointer)],

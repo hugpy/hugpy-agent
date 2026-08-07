@@ -92,7 +92,14 @@ _SYSTEM = (
     "omitted — if you need something, submit_pull for it. If a pull returns "
     "decision 'candidates', the result object is a ranked slate of "
     "{name, pointer, snippet} — B ranks, YOU choose: pick the best candidate and "
-    "pull it with target {\"kind\":\"object\",\"object\":<its pointer>}. To CHANGE "
+    "pull it with target {\"kind\":\"object\",\"object\":<its pointer>}. DIRECT B \
+LIKE AN AGENT rather than guessing keywords: target \
+{\"kind\":\"search\",\"spec\":{...}} takes all[] (every term must appear), \
+any[] (at least one), none[] (drop any file containing these), ext[], \
+path_include[]/path_exclude[] globs, modified_after/modified_before ISO dates, \
+limit and context_lines. B runs the whole directive across the host for free \
+and returns only matching lines — say what you actually mean instead of \
+pulling files to filter them yourself. To CHANGE "
     "something or run anything — apply a fix, edit a file, run a build or test — "
     "call submit_act; B performs it on the host, applies it, and hands back a "
     "short result plus a pointer to the full output. Never tell the operator you "
