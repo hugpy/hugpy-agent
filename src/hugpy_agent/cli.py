@@ -352,6 +352,50 @@ def cmd_mct(args) -> int:
                quiet=getattr(args, "quiet", False))
 
 
+def cmd_mct_serve(args) -> int:
+    """`hugpy-agent mct-serve` — expose C over an OpenAI-compatible endpoint.
+
+    One chat completion = one MCT turn. This is what lets a real TUI (OpenCode,
+    or anything speaking /v1/chat/completions) be the operator's terminal
+    without a line of frontend code here, and without A or B knowing which
+    frontend is attached. With --launch it also writes the opencode.json and
+    execs OpenCode against it.
+    """
+    import threading
+
+    from .mct.openai_shim import serve
+
+    httpd, service = serve(args.workspace, host=args.host, port=args.port,
+                           model=args.model, use_model=not args.no_model)
+    base = f"http://{args.host}:{args.port}/v1"
+    print(f"MCT serving at {base}   (workspace={args.workspace}, A=claude:{args.model})")
+    print(f"  relay: {service.server.access.path}")
+    if not args.launch:
+        print("  point any OpenAI-compatible client at it; Ctrl-C to stop.")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nbye.")
+        finally:
+            httpd.shutdown(); service.close()
+        return 0
+
+    # --launch: serve in the background, then BECOME OpenCode (execvp), so the
+    # TUI owns the terminal exactly as `hugpy-agent console` does.
+    from . import console
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    ws = args.console_workspace or os.path.expanduser("~/.hugpy_agent/console")
+    os.makedirs(ws, exist_ok=True)
+    cfg_path = console.materialize(ws, console.build_mct_config(base))
+    print(f"  opencode config: {cfg_path}")
+    try:
+        console.launch(ws, key="")     # no key: the shim binds loopback
+    except console.ConsoleError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_mct_usage(args) -> int:
     """`hugpy-agent mct-usage` — one JSON document of precise token/cost
     accounting plus cache-shadow timing for an MCT workspace. Read-oriented and
@@ -594,6 +638,26 @@ def main(argv=None) -> int:
                         "a missed pull may be brokered by B against granted "
                         "roots — through B, never direct filesystem access")
     p.set_defaults(fn=cmd_mct)
+
+    p = sub.add_parser("mct-serve", help="serve MCT as an OpenAI-compatible "
+                                         "endpoint so any TUI (e.g. OpenCode) "
+                                         "can be the operator terminal")
+    p.add_argument("workspace", nargs="?",
+                   default=os.path.expanduser("~/.mct/repl"),
+                   help="MCT workspace dir (a fresh dir = a new conversation)")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="bind address (default loopback; this endpoint can "
+                        "apply changes through B, so do not expose it lightly)")
+    p.add_argument("--port", type=int, default=8770, help="bind port (default 8770)")
+    p.add_argument("--model", default="sonnet", help="A's model")
+    p.add_argument("--no-model", dest="no_model", action="store_true",
+                   help="disable B's local ranking model")
+    p.add_argument("--launch", action="store_true",
+                   help="also write opencode.json and exec OpenCode against it")
+    p.add_argument("--console-workspace", dest="console_workspace",
+                   help="dir holding the generated opencode.json "
+                        "(default ~/.hugpy_agent/console/)")
+    p.set_defaults(fn=cmd_mct_serve)
 
     p = sub.add_parser("mct-usage", help="JSON token/cost accounting + cache "
                                          "timing for an MCT workspace (polled "

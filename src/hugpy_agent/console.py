@@ -411,6 +411,40 @@ def build_config(central: str, key_env_name: str, models: dict,
     }
 
 
+def build_mct_config(base: str, model_label: str = "mct") -> dict:
+    """opencode.json pointing at a local MCT shim instead of the fleet.
+
+    Same provider mechanism as :func:`build_config` — OpenCode talks
+    OpenAI-compatible to whatever ``baseURL`` names — so MCT drops into the seam
+    that already exists rather than needing a frontend of its own.
+
+    Two deliberate differences from the fleet config:
+
+    * **No apiKey reference.** The shim binds loopback and authenticates
+      nothing; writing an ``{env:...}`` pointer would imply a secret that does
+      not exist.
+    * **Permissions are ``deny``, not ``ask``.** Here OpenCode is C — a prompt
+      and a display. The agent that edits files is A, working through B's act
+      channel where every change is brokered, snapshotted and ledgered. If
+      OpenCode also held its own edit/bash tools it would be a second, unaudited
+      actor on the same machine, and the operator could not tell which one
+      touched a file.
+    """
+    return {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "mct": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "MCT (mediated context terminal)",
+                "options": {"baseURL": base.rstrip("/")},
+                "models": {model_label: {"name": "MCT — A via B"}},
+            },
+        },
+        "model": "mct/" + model_label,
+        "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny"},
+    }
+
+
 def config_path(workspace_dir: str) -> str:
     return os.path.join(os.path.realpath(os.path.expanduser(workspace_dir)),
                         "opencode.json")
