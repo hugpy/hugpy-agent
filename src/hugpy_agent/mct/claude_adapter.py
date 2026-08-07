@@ -23,13 +23,64 @@ import tempfile
 from .protocol import make_pointer
 from .tokens import summary_from_result
 
-# Built-in Claude Code tools A must never use (defense in depth; strict MCP + the
-# allowlist already confine it, and -p mode auto-denies anything not pre-allowed).
-_DISALLOWED = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch",
-               "WebSearch", "Task", "NotebookEdit", "TodoWrite", "Agent"]
+# A's native Claude Code tools, split by whether granting one can bypass B.
+#
+# The distinction is not "safe vs dangerous" — B is unrestricted and A can already
+# reach the whole host through submit_act. It is about whether the MEDIATION
+# still means anything:
+#
+#   * OFF-HOST tools touch nothing on this filesystem. Granting them costs A its
+#     own tokens for the result and bypasses nothing, because B never mediated
+#     the web to begin with. Pure capability gain.
+#
+#   * HOST tools read and write this machine directly. Granting them does not
+#     make A *more* capable — submit_act already does everything Bash does — it
+#     makes A capable WITHOUT B. Three things stop being true: whole files land
+#     in A's context at frontier prices instead of B-selected excerpts; reads
+#     leave no snapshot, so there is no immutable record of what A saw; and the
+#     access log goes blind, reporting only the fraction that still went through
+#     B while A reads freely around it. A log that under-reports is worse than
+#     no log, so enabling these is recorded explicitly (see ``native_tools``).
+_NATIVE_OFF_HOST = ["WebSearch", "WebFetch", "TodoWrite"]
+_NATIVE_HOST = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"]
+_NEVER = ["Task", "Agent"]   # a subagent would inherit tools B cannot see
 
-_ALLOWED = ["mcp__mct__resolve", "mcp__mct__submit_pull", "mcp__mct__submit_act",
-            "mcp__mct__respond"]
+_MCT_TOOLS = ["mcp__mct__resolve", "mcp__mct__submit_pull", "mcp__mct__submit_act",
+              "mcp__mct__respond"]
+
+# Back-compat aliases: the previous flat lists, as the default posture.
+_ALLOWED = list(_MCT_TOOLS)
+_DISALLOWED = _NATIVE_HOST + _NATIVE_OFF_HOST + _NEVER
+
+
+def tool_policy(native_tools: str = "off_host") -> tuple[list, list]:
+    """Return ``(allowed, disallowed)`` for a native-tool posture.
+
+    ``none``      — MCT tools only (the original, strictest posture).
+    ``off_host``  — default: adds web + todo. Bypasses nothing.
+    ``all``       — also grants Read/Grep/Edit/Write/Bash. A can now work
+                    without B; the mediation becomes advisory.
+    """
+    allowed = list(_MCT_TOOLS)
+    if native_tools in ("off_host", "all"):
+        allowed += _NATIVE_OFF_HOST
+    if native_tools == "all":
+        allowed += _NATIVE_HOST
+    disallowed = [t for t in (_NATIVE_HOST + _NATIVE_OFF_HOST + _NEVER)
+                  if t not in allowed]
+    return allowed, disallowed
+
+
+# Appended when A holds host tools, so the cheap path stays the default one.
+_SYSTEM_NATIVE = (
+    "\n\nYou ALSO hold Claude Code's own tools (Read, Grep, Glob, Edit, Write, "
+    "Bash). They work, but they are the EXPENSIVE path: whatever they return "
+    "lands in your context in full and is billed to you, and B keeps no record "
+    "of it. Prefer submit_pull to find and read — B searches the host for free "
+    "and returns only what matters — and submit_act to change things, so the "
+    "edit is snapshotted and auditable. Reach for a native tool when B genuinely "
+    "cannot serve the need, not as the first move."
+)
 
 _SYSTEM = (
     "You are A, the reasoning model in a Mediated Context Terminal. A broker (B) "
