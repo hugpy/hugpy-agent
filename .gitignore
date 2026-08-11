@@ -29,3 +29,6 @@ logs/
 *.whl
 *.tar.gz
 *.asc
+
+# session-scratch safety copies, never source
+*.bak-*
