@@ -10,6 +10,7 @@ pull, and response it issues is brokered and recorded here.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -395,11 +396,25 @@ class MctSession:
         if spec.get("ext"):
             kw["allowed_exts"] = [e if e.startswith(".") else "." + e
                                   for e in spec["ext"]]
-        if spec.get("path_include"):
-            kw["allowed_patterns"] = list(spec["path_include"])
-        if spec.get("path_exclude"):
-            kw["exclude_patterns"] = (list(kw.get("exclude_patterns") or [])
-                                      + list(spec["path_exclude"]))
+        # path_include/path_exclude are PATH globs and are enforced HERE, not
+        # handed to abstract-search: its allowed_patterns/exclude_patterns
+        # fnmatch the BASENAME only, so "**/mct/session.py" or "*hugpy_agent*"
+        # matched nothing and every path-scoped directive silently came back
+        # not_found — A then dropped its (correct) scoping to get a hit. Each
+        # pattern is tried against the full path, the root-relative path, and
+        # the basename (fnmatch's ``*`` crosses separators, so "**/x" and
+        # "*x*" both behave as A expects).
+        inc = [str(p).lower() for p in (spec.get("path_include") or []) if str(p).strip()]
+        exc = [str(p).lower() for p in (spec.get("path_exclude") or []) if str(p).strip()]
+
+        def path_ok(path: str, rel: str) -> bool:
+            cands = (path.lower(), rel.lower(), os.path.basename(path).lower())
+            if inc and not any(fnmatch.fnmatch(c, p) for p in inc for c in cands):
+                return False
+            if exc and any(fnmatch.fnmatch(c, p) for p in exc for c in cands):
+                return False
+            return True
+
         after = _parse_when(spec.get("modified_after"))
         before = _parse_when(spec.get("modified_before"))
 
@@ -453,13 +468,15 @@ class MctSession:
                     break
                 if not path.startswith(prefix):
                     continue
+                rel = path[len(prefix):]
+                if not path_ok(path, rel):
+                    continue
                 try:
                     mtime = os.stat(path).st_mtime
                 except OSError:
                     continue
                 if (after and mtime < after) or (before and mtime >= before):
                     continue
-                rel = path[len(prefix):]
                 ptr = self._snapshot_fs_source(root_name, root, rel)
                 if not ptr:
                     continue
