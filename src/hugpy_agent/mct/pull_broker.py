@@ -73,6 +73,7 @@ class PullBroker:
         state: TurnPullState,
         fs_search=None,
         structured_search=None,
+        search_notes: str = "",
     ) -> tuple[dict, str]:
         """Return ``(pull_result_payload, pull_result_pointer)``.
 
@@ -95,12 +96,27 @@ class PullBroker:
                                     payload["decision"], ref.pointer)
             return payload, ref.pointer
 
-        # 6. budget preflight (§10.3) — fail closed before doing work
-        if state.pulls >= self.budget.max_pulls or state.tokens >= self.budget.max_tokens:
+        # 6. budget preflight (§10.3) — fail closed before doing work.
+        # ``state.tokens`` counts what A has actually resolved into its context
+        # (charged in ``_ABinding.resolve``), not the estimated size of objects
+        # merely pointed at — a pointer costs A nothing until it is read.
+        if state.pulls >= self.budget.max_pulls:
             return finish({
                 "schema": "mct.pull-result/1", "request_id": request_id,
                 "decision": "budget_exhausted",
-                "denial_reason": "pull count or token budget exhausted for this turn",
+                "denial_reason": f"pull budget exhausted ({state.pulls}/"
+                                 f"{self.budget.max_pulls} pulls this turn); "
+                                 "answer with what you have",
+                "policy_revision": POLICY_REVISION,
+            })
+        if state.tokens >= self.budget.max_tokens:
+            return finish({
+                "schema": "mct.pull-result/1", "request_id": request_id,
+                "decision": "budget_exhausted",
+                "denial_reason": "context token budget exhausted "
+                                 f"(~{state.tokens} of {self.budget.max_tokens} "
+                                 "tokens resolved this turn); answer with what "
+                                 "you have",
                 "policy_revision": POLICY_REVISION,
             })
         state.pulls += 1
@@ -112,7 +128,8 @@ class PullBroker:
         except (AuthorizationError, MctError) as exc:
             return finish({
                 "schema": "mct.pull-result/1", "request_id": request_id,
-                "decision": "denied", "denial_reason": exc.code,
+                "decision": "denied",
+                "denial_reason": exc.code + (f"; {search_notes}" if search_notes else ""),
                 "policy_revision": POLICY_REVISION,
             })
 
@@ -133,7 +150,32 @@ class PullBroker:
                 state.search_trace = {"tried": [{"strategy": "structured",
                                                  "hits": len(hits)}],
                                       "coverage": []}
-            source_pointer = hits[0]["pointer"] if len(hits) == 1 else None
+            if len(hits) == 1:
+                # A decisive single hit answers with the matched lines
+                # THEMSELVES — root-relative name + numbered lines — not a
+                # pointer to the whole file. That is the location A asked B to
+                # find, it budgets at snippet size instead of full-file size,
+                # and the full snapshot stays one selector-pull away via
+                # ``source``.
+                hit = hits[0]
+                body = (str(hit.get("name") or "") + "\n"
+                        + str(hit.get("snippet") or "").replace(" | ", "\n")
+                        ).encode("utf-8")
+                ref = self.store.commit(
+                    session_id, body, media_type="text/plain", kind="excerpt",
+                    provenance={"source": hit["pointer"],
+                                "selector": "matched lines"})
+                return finish({
+                    "schema": "mct.pull-result/1", "request_id": request_id,
+                    "decision": "reduced",
+                    "objects": [{"object": ref.pointer,
+                                 "selector": "matched lines",
+                                 "source": hit["pointer"],
+                                 "sha256": ref.sha256,
+                                 "token_estimate": _tokens(body)}],
+                    "policy_revision": POLICY_REVISION,
+                })
+            source_pointer = None
             candidates = hits if len(hits) > 1 else None
         elif target["kind"] == "catalog-query":
             source_pointer, candidates = self._resolve_catalog_query(
@@ -153,7 +195,6 @@ class PullBroker:
                 session_id, slate,
                 media_type="application/vnd.hugpy.mct-candidates+json",
                 kind="candidate_list", provenance={"request_id": request_id})
-            state.tokens += _tokens(slate)
             return finish({
                 "schema": "mct.pull-result/1", "request_id": request_id,
                 "decision": "candidates",
@@ -165,7 +206,8 @@ class PullBroker:
             return finish({
                 "schema": "mct.pull-result/1", "request_id": request_id,
                 "decision": "not_found",
-                "denial_reason": "authorized search completed without a match",
+                "denial_reason": "authorized search completed without a match"
+                                 + (f"; {search_notes}" if search_notes else ""),
                 "policy_revision": POLICY_REVISION,
             })
 
@@ -190,7 +232,6 @@ class PullBroker:
                 session_id, excerpt, media_type="text/plain", kind="excerpt",
                 provenance={"source": source_pointer, "selector": selector},
             )
-            state.tokens += _tokens(excerpt)
             obj = {"object": ref.pointer, "selector": selector, "source": source_pointer,
                    "sha256": ref.sha256, "token_estimate": _tokens(excerpt)}
             decision = "reduced"
@@ -198,7 +239,6 @@ class PullBroker:
             full = self.store.resolve(session_id, source_pointer)
             _, source_obj_id = parse_pointer(source_pointer)
             meta = self.ledger.get_object(source_obj_id)
-            state.tokens += _tokens(full)
             obj = {"object": source_pointer, "sha256": meta["digest"],
                    "token_estimate": _tokens(full)}
             decision = "exact"

@@ -46,7 +46,7 @@ _NATIVE_HOST = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"]
 _NEVER = ["Task", "Agent"]   # a subagent would inherit tools B cannot see
 
 _MCT_TOOLS = ["mcp__mct__resolve", "mcp__mct__submit_pull", "mcp__mct__submit_act",
-              "mcp__mct__respond"]
+              "mcp__mct__submit_ask", "mcp__mct__respond", "mcp__mct__todo"]
 
 # Back-compat aliases: the previous flat lists, as the default posture.
 _ALLOWED = list(_MCT_TOOLS)
@@ -83,9 +83,18 @@ _SYSTEM_NATIVE = (
 )
 
 _SYSTEM = (
-    "You are A, the reasoning model in a Mediated Context Terminal. A broker (B) "
-    "mediates everything. You have EXACTLY four tools: resolve, submit_pull, "
-    "submit_act, respond. You hold no filesystem, shell, or network handle "
+    "You are A, the reasoning model in a Mediated Context Terminal (MCT). This is "
+    "your real, operator-sanctioned runtime — not an untrusted message, a roleplay, "
+    "or a prompt-injection attempt. The tools named below are your genuine tools, "
+    "served to you over MCP by the broker (B); use them as your normal way of "
+    "working. If a tool call ever fails, treat it as a transient error to retry or "
+    "report — never as evidence the environment is fake — and do not refuse, warn "
+    "about, or flag this setup as suspicious; just operate within it. A broker (B) "
+    "mediates everything. Your core tools are resolve, submit_pull, submit_act, "
+    "submit_ask, and respond; you ALSO have todo — a durable, operator-shared "
+    "to-do board for THIS session (ops list/add/update/del/replace). Use it to "
+    "accumulate work so nothing is lost between turns; the operator sees and edits "
+    "the same board. You hold no filesystem, shell, or network handle "
     "YOURSELF — but B does, and B acts on your instruction. The mediation limits "
     "what enters YOUR CONTEXT, not what you can accomplish: work done on B's side "
     "costs you nothing but the summary it returns. Never assume context that was "
@@ -103,7 +112,10 @@ pulling files to filter them yourself. To CHANGE "
     "something or run anything — apply a fix, edit a file, run a build or test — "
     "call submit_act; B performs it on the host, applies it, and hands back a "
     "short result plus a pointer to the full output. Never tell the operator you "
-    "are unable to act: you can, through B. Do not fabricate evidence; answer only "
+    "are unable to act: you can, through B. If a CHOICE would change your answer — \
+which of two things they meant, whether to apply a change — call submit_ask and \
+the operator answers mid-turn; do not end the turn to ask, and do not guess when \
+asking is one sentence. Do not fabricate evidence; answer only "
     "from resolved objects. Call respond exactly once, last."
 )
 
@@ -114,10 +126,15 @@ def _prompt(manifest_pointer: str) -> str:
         f"1. Call resolve with pointer={manifest_pointer} to read the context "
         f"manifest (it lists an operator_turn pointer, context fragments, and a catalog).\n"
         f"2. Call resolve on the operator_turn pointer to read the exact question.\n"
-        f"3. If you lack evidence, call submit_pull with a target like "
-        f"{{\"kind\":\"catalog-query\",\"query\":\"<keywords>\"}} and optionally "
-        f"preferred_form like 'match <regex> ctx 2'; then resolve the returned object "
-        f"pointer(s).\n"
+        f"3. If you lack evidence, call submit_pull. For HOST files/code, direct B "
+        f"with target {{\"kind\":\"search\",\"spec\":{{\"all\":[<terms>],...}}}} — B "
+        f"greps the granted roots and returns only matching lines. Use "
+        f"{{\"kind\":\"catalog-query\",\"query\":\"<keywords>\"}} for objects already "
+        f"in THIS session (prior turns, attached context); optionally preferred_form "
+        f"like 'match <regex> ctx 2'. Then resolve the returned object pointer(s). "
+        f"A miss tells you which surfaces were searched (fs switch state, granted "
+        f"roots) — believe it: reformulate once at most, never retry a surface the "
+        f"result said was closed.\n"
         f"4. If the turn asks you to CHANGE or RUN anything, call submit_act "
         f"(kind='edit'/'write'/'exec') — B applies it on the host and returns a "
         f"short result. Do not report that you cannot act.\n"
@@ -162,6 +179,21 @@ class ClaudeCodeAdapter:
         # "A cache" mirror (everything A receives is captured, not just pointers).
         allowed, disallowed = tool_policy(native_tools)
         system = _SYSTEM + (_SYSTEM_NATIVE if native_tools == "all" else "")
+        # A gets ONE sanctioned writable location — the per-session scratch dir —
+        # declared up front so it never probes the host for somewhere to write
+        # (its inherited cwd is often root-owned, e.g. the installed backend).
+        # B's steward resolves relative act paths here and defaults exec cwd here.
+        scratch = os.path.join(
+            os.path.abspath(str(self.server.workspace_root)), "scratch")
+        try:
+            os.makedirs(scratch, exist_ok=True)
+        except OSError:
+            pass
+        system += (f" Your dedicated writable directory is {scratch} — put new "
+                   "files, build artifacts, and test output there by default; "
+                   "relative submit_act paths resolve there and exec runs there "
+                   "unless you pass cwd. Write elsewhere only when the operator "
+                   "names a destination.")
         if native_tools == "all":
             # A can now read and write the host WITHOUT B. The access log only
             # sees brokered work, so it would silently under-report from here on
@@ -181,6 +213,35 @@ class ClaudeCodeAdapter:
         self._capture_input(session, turn_id, epoch, "a_system_prompt", system)
         self._capture_input(session, turn_id, epoch, "a_prompt", prompt)
 
+        # Per-session .claude scope: give A its own config/state dir under THIS
+        # session's workspace so sessions never collide (projects/history/todos/
+        # sessions are isolated per named session). Auth + settings are SHARED:
+        # .credentials.json is SYMLINKED to ~/.claude's, not copied — OAuth
+        # refresh tokens rotate on use, so a private copy is invalidated the
+        # first time any other session refreshes, and the copy's holder then
+        # fails auth permanently. A stale regular-file copy from an older build
+        # is replaced by the symlink here.
+        a_cfg = os.path.join(os.path.abspath(str(self.server.workspace_root)), ".claude")
+        try:
+            os.makedirs(a_cfg, exist_ok=True)
+            home_claude = os.path.join(os.path.expanduser("~"), ".claude")
+            src_cred = os.path.join(home_claude, ".credentials.json")
+            dst_cred = os.path.join(a_cfg, ".credentials.json")
+            if os.path.exists(src_cred) and not os.path.islink(dst_cred):
+                if os.path.exists(dst_cred):
+                    os.unlink(dst_cred)
+                os.symlink(src_cred, dst_cred)
+            src_f = os.path.join(home_claude, "settings.json")
+            dst_f = os.path.join(a_cfg, "settings.json")
+            if os.path.exists(src_f) and not os.path.exists(dst_f):
+                shutil.copy2(src_f, dst_f)
+                try:
+                    os.chmod(dst_f, 0o644)
+                except OSError:
+                    pass
+        except OSError:
+            a_cfg = ""   # seeding failed — fall back to the shared ~/.claude
+
         cmd = ["claude", "-p", prompt,
                "--mcp-config", cfg_path, "--strict-mcp-config",
                "--allowedTools", *allowed,
@@ -191,7 +252,8 @@ class ClaudeCodeAdapter:
         try:
             proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
                                   text=True, timeout=timeout,
-                                  env={**os.environ, "PYTHONPATH": src_dir})
+                                  env={**os.environ, "PYTHONPATH": src_dir,
+                                       **({"CLAUDE_CONFIG_DIR": a_cfg} if a_cfg else {})})
         except subprocess.TimeoutExpired:
             return {"response_manifest": None, "error": f"claude timed out after {timeout}s"}
         finally:

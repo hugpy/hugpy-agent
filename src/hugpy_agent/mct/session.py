@@ -24,7 +24,7 @@ from .cache_epochs import EpochManager, seal_receipt_bytes
 from .capabilities import Capabilities
 from .compaction import Compaction
 from .context_builder import ContextBuilder
-from .errors import IntegrityError, ProtocolError, StateError
+from .errors import BudgetError, IntegrityError, ProtocolError, StateError
 from .ledger import Ledger
 from .objects import ObjectStore
 from .protocol import Envelope, encode, make_pointer, parse_pointer
@@ -662,9 +662,122 @@ class MctSession:
                                       path=os.path.join(root.root_path, rel))
         return self._catalog[name]
 
+    # --- the ask channel: B relays A's question to the operator -----------
+    _ASK_TIMEOUT = 300          # seconds C has to answer before A proceeds
+    _ASK_POLL = 0.25
+
+    def broker_ask(self, question: str, timeout: float | None = None) -> dict:
+        """Ask the operator a clarifying question WITHOUT ending the turn.
+
+        A ending its turn to ask "which of the two feeds did you mean?" is the
+        most expensive way to get a one-word answer: the next turn rebuilds the
+        context, re-reads the manifest, and re-pays for everything A had already
+        resolved. The operator is sitting right there and is not an LLM — the
+        round trip should cost a sentence, not a turn.
+
+        Cross-process by construction. A's MCP server cannot read C's terminal
+        (it is a child of ``claude``, with no tty), so the question goes into the
+        shared object store and B's terminal — which owns stdin — answers it.
+        Both sides poll the same ledger, so this works no matter which frontend
+        C happens to be.
+
+        Unanswered is a real outcome, not a hang: after ``timeout`` A is told
+        plainly that nobody answered and to proceed on its best assumption. A
+        turn must never be able to block forever on an absent operator."""
+        turn, epoch = getattr(self, "_active_turn", ("", ""))
+        ref = self.server.store.commit(
+            self.session_id, json.dumps({"question": question}).encode("utf-8"),
+            media_type="application/vnd.hugpy.mct-ask+json", kind="operator_ask",
+            provenance={"turn": turn, "epoch": epoch})
+        self.server.ledger.append_event(self.session_id, turn, epoch,
+                                        "ask.raised", "A.claude",
+                                        output_objects=[ref.object_id])
+        self.server.access.record("A->C", "ask", question[:160],
+                                  session=self.session_id, turn=turn,
+                                  obj=ref.pointer)
+
+        deadline = time.time() + (timeout or self._ASK_TIMEOUT)
+        while time.time() < deadline:
+            answer = self._answer_for(ref.pointer)
+            if answer is not None:
+                self.server.access.record("C->A", "answer", answer[:160],
+                                          session=self.session_id, turn=turn)
+                return {"answered": True, "answer": answer}
+            time.sleep(self._ASK_POLL)
+        self.server.ledger.append_event(self.session_id, turn, epoch,
+                                        "ask.unanswered", "B.steward")
+        self.server.access.record("C->A", "unanswered", "no reply in time",
+                                  session=self.session_id, turn=turn)
+        return {"answered": False,
+                "answer": "[no answer from the operator — proceed on your best "
+                          "assumption and say which one you made]"}
+
+    def _answer_for(self, ask_pointer: str) -> str | None:
+        for row in self.server.ledger.list_objects(self.session_id,
+                                                   kinds=["operator_answer"]):
+            try:
+                prov = json.loads(row.get("provenance") or "{}")
+            except (ValueError, TypeError):
+                continue
+            if prov.get("ask") != ask_pointer:
+                continue
+            data = self.server.store.resolve(
+                self.session_id, make_pointer(self.session_id, row["object_id"]))
+            return json.loads(data).get("answer", "")
+        return None
+
+    def pending_asks(self) -> list[dict]:
+        """Questions still awaiting the operator, oldest first — what C polls."""
+        out = []
+        for row in self.server.ledger.list_objects(self.session_id,
+                                                   kinds=["operator_ask"],
+                                                   newest_first=False):
+            ptr = make_pointer(self.session_id, row["object_id"])
+            if self._answer_for(ptr) is not None:
+                continue
+            data = self.server.store.resolve(self.session_id, ptr)
+            out.append({"pointer": ptr,
+                        "question": json.loads(data).get("question", "")})
+        return out
+
+    def answer_ask(self, ask_pointer: str, text: str) -> str:
+        """C's reply. Committed like everything else, so the clarification is
+        part of the record rather than a side channel nobody can audit."""
+        turn, epoch = getattr(self, "_active_turn", ("", ""))
+        ref = self.server.store.commit(
+            self.session_id, json.dumps({"answer": text}).encode("utf-8"),
+            media_type="application/vnd.hugpy.mct-ask+json",
+            kind="operator_answer", provenance={"ask": ask_pointer})
+        self.server.ledger.append_event(self.session_id, turn, epoch,
+                                        "ask.answered", "C.operator",
+                                        output_objects=[ref.object_id])
+        return ref.pointer
+
     # --- the act channel: B as A's hands (§6.2) ---------------------------
     _ACT_INLINE = 4000          # chars of output returned inline to A
-    _ACT_TIMEOUT = 600          # default seconds for an exec
+    _ACT_TIMEOUT = 180          # default seconds for an exec — kept BELOW the
+                                # A-adapter turn timeout (240s) so a hung command
+                                # comes back to A as an act.failed it can adapt
+                                # to, instead of outliving and killing the whole
+                                # turn; A passes timeout= explicitly for long
+                                # builds
+
+    def _scratch_dir(self) -> str:
+        """A's sanctioned writable directory (``<workspace>/scratch``) — the
+        base for relative act paths and the default exec cwd."""
+        d = os.path.join(os.path.abspath(str(self.server.workspace_root)), "scratch")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+        return d
+
+    def _act_path(self, raw) -> str:
+        """Resolve an act path: absolute stays as given, relative lands in scratch."""
+        p = os.path.expanduser(str(raw))
+        if not os.path.isabs(p):
+            p = os.path.join(self._scratch_dir(), p)
+        return os.path.abspath(p)
 
     def broker_act(self, kind: str, **kw) -> dict:
         """Execute an action on A's behalf and auto-apply it.
@@ -683,7 +796,11 @@ class MctSession:
         what B did on A's instruction.
 
         Kinds: ``write`` (path, content), ``edit`` (path, old, new, count),
-        ``exec`` (command, cwd, timeout)."""
+        ``exec`` (command, cwd, timeout).
+
+        Relative paths resolve into the session's scratch dir, and exec runs
+        there unless a cwd is given — A's one sanctioned writable location,
+        so it never has to probe the host for one."""
         import subprocess
         turn, epoch = getattr(self, "_active_turn", ("", ""))
         detail = {"kind": kind, **{k: (str(v)[:200] if k != "content" else f"<{len(str(v))} chars>")
@@ -703,7 +820,7 @@ class MctSession:
         out: dict = {"kind": kind, "ok": False}
         try:
             if kind == "write":
-                path = os.path.abspath(os.path.expanduser(kw["path"]))
+                path = self._act_path(kw["path"])
                 data = str(kw.get("content") or "")
                 before = None
                 if os.path.exists(path):
@@ -718,7 +835,7 @@ class MctSession:
                 out.update(ok=True, path=path, bytes=len(data.encode()), before=before)
 
             elif kind == "edit":
-                path = os.path.abspath(os.path.expanduser(kw["path"]))
+                path = self._act_path(kw["path"])
                 old, new = str(kw["old"]), str(kw.get("new") or "")
                 with open(path, encoding="utf-8") as fh:
                     src = fh.read()
@@ -739,7 +856,7 @@ class MctSession:
             elif kind == "exec":
                 cmd = kw["command"]
                 proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                                      cwd=kw.get("cwd") or None,
+                                      cwd=kw.get("cwd") or self._scratch_dir(),
                                       timeout=int(kw.get("timeout") or self._ACT_TIMEOUT))
                 body = (proc.stdout or "") + (("\n[stderr]\n" + proc.stderr)
                                               if proc.stderr else "")
@@ -966,12 +1083,32 @@ class MctSession:
     def new_epoch(self, reason: str) -> str:
         return self.server.epochs.change(self.session_id, reason)
 
+    def _operator_guidance(self) -> str:
+        """Operator-authored standing guidance to B on how to frame A, set from the
+        console's B-guidance sidebar (``<workspace>/operator-guidance.md``). Injected
+        as an L0 governing instruction so it always reaches A at top authority. Read
+        fresh each turn; a missing or empty file simply contributes nothing."""
+        try:
+            p = self.server.workspace_root / "operator-guidance.md"
+            if p.exists():
+                return p.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        return ""
+
     # --- manifest construction (deterministic context engine, §11) ----------
     def _build_manifest(self, turn_id, epoch, op_ref, raw_message, fragments):
         self._materialize_file_sources()  # so file sources appear in the catalog (§11.6)
         required_specs = []
         if self._policy_pointer:
             required_specs.append({"object": self._policy_pointer,
+                                   "role": "governing_instruction", "priority": 100})
+        guide = self._operator_guidance()
+        if guide:
+            gref = self.server.store.commit(
+                self.session_id, guide.encode("utf-8"), media_type="text/plain",
+                kind="operator_guidance", provenance={"role": "governing_instruction"})
+            required_specs.append({"object": gref.pointer,
                                    "role": "governing_instruction", "priority": 100})
         for spec in fragments or []:
             required_specs.append(self._materialize_required(spec))
@@ -1043,9 +1180,25 @@ class _ABinding:
         self.render = {"rendered": False, "already_rendered": False, "body_sha256": ""}
 
     # --- brokered operations the client may call ---------------------------
-    def resolve(self, pointer: str, selector: str | None, purpose: str) -> bytes:
+    def resolve(self, pointer: str, selector: str | None, purpose: str,
+                limit: int | None = None) -> bytes:
+        """Read an object into A's context — THE metering point for the turn's
+        context-token budget. Pull results only hand A pointers; tokens are
+        charged here, on the bytes actually returned (``limit`` bounds a
+        preview read so it is billed at preview size, not object size).
+        Enforcement applies to A-initiated reads (purpose ``read``); the
+        turn's own manifest/operator reads are never blocked."""
         srv = self._s.server
+        bud = srv.pull_broker.budget
+        if purpose == "read" and self._pull_state.tokens >= bud.max_tokens:
+            raise BudgetError(
+                "context token budget exhausted for this turn "
+                f"(~{self._pull_state.tokens} of {bud.max_tokens} tokens "
+                "resolved); answer with what you have")
         data = srv.store.resolve(self.session_id, pointer, selector=selector)
+        if limit is not None and len(data) > limit:
+            data = data[:limit]
+        self._pull_state.tokens += max(1, len(data) // 4)
         _, object_id = parse_pointer(pointer)
         meta = srv.ledger.get_object(object_id)
         srv.ledger.record_receipt(self.session_id, self.turn_id, self.epoch, object_id,
@@ -1062,8 +1215,15 @@ class _ABinding:
             pass
         srv.access.record("A", "read", target, detail=(selector or ""),
                           session=self.session_id, turn=self.turn_id, bytes_=len(data),
-                          obj=pointer)
+                          obj=pointer, tokens=max(1, len(data) // 4))
         return data
+
+    def budget_state(self) -> dict:
+        """The turn's remaining pull/context budget, for A to pace itself."""
+        bud = self._s.server.pull_broker.budget
+        st = self._pull_state
+        return {"pulls_left": max(0, bud.max_pulls - st.pulls),
+                "context_tokens_left": max(0, bud.max_tokens - st.tokens)}
 
     def create_object(self, data: bytes, media_type: str, kind: str, provenance: dict | None) -> str:
         ref = self._s.server.store.commit(self.session_id, data, media_type=media_type,
@@ -1097,12 +1257,28 @@ class _ABinding:
         # directory-accessibility button takes effect on THIS turn (mtime-cached).
         srv.apply_fs_policy(self._s)
         self._s._active_turn = (self.turn_id, self.epoch)  # for steward audit events
+        # Tell A what surface was actually searched — a miss should teach it
+        # the state of the world (fs switch, granted roots) instead of
+        # provoking blind keyword retries that each cost a full round trip.
+        fs_on = srv.config.allow_frontier_fs_requests
+        roots = self._s._roots
+        if not fs_on:
+            search_notes = ("host filesystem requests are OFF (operator steward "
+                            "switch) — only this session's catalog was searched. "
+                            "Do not retry host pulls; work from context, use "
+                            "submit_act, or ask the operator to enable file access")
+        elif not roots:
+            search_notes = ("host filesystem requests are ON but no roots are "
+                            "granted — only this session's catalog was searched. "
+                            "Ask the operator to grant a root")
+        else:
+            search_notes = ("searched this session's catalog and granted roots: "
+                            + ", ".join(sorted(roots)))
         payload, result_pointer = srv.pull_broker.arbitrate(
             self.session_id, self.turn_id, self.epoch, request, self._s._catalog, self._pull_state,
-            fs_search=(self._s._fs_broker_search
-                       if srv.config.allow_frontier_fs_requests else None),
-            structured_search=(self._s._fs_structured_search
-                               if srv.config.allow_frontier_fs_requests else None))
+            fs_search=(self._s._fs_broker_search if fs_on else None),
+            structured_search=(self._s._fs_structured_search if fs_on else None),
+            search_notes=search_notes)
         srv.ledger.append_event(self.session_id, self.turn_id, self.epoch,
                                 f"pull.{payload['decision']}", "B.pull-broker",
                                 input_objects=[req_oid], output_objects=[_oid(result_pointer)],
