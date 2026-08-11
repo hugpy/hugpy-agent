@@ -43,6 +43,14 @@ _ACTOR_W, _VERB_W = 16, 20
 FILE_VERBS = frozenset({"read", "serve", "peek", "write", "edit"})
 
 
+def _fmt_tokens(n) -> str:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "0"
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -58,6 +66,9 @@ class AccessLog:
         self._resolve = resolver
         self._lock = threading.Lock()
         self._fh = None
+        # Running tokens-into-A, keyed (session, turn). In-memory: a live meter,
+        # not an accounting record — TokenUsage owns the durable, precise one.
+        self._spent: dict[tuple[str, str], int] = {}
         if enabled:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,9 +84,22 @@ class AccessLog:
                 pass
             self._fh = None
 
+    def spend(self, session: str, turn: str) -> int:
+        """Tokens handed to A so far on this turn (0 when the turn is new).
+
+        Counted from A's side of the boundary — what A actually resolved into
+        its context — because that is the number being paid for. Bytes B read
+        while searching are free and deliberately excluded; conflating them
+        would make the meter read high and the mediation look worthless."""
+        return self._spent.get((session, turn), 0)
+
+    def session_spend(self, session: str) -> int:
+        return sum(v for (s, _t), v in self._spent.items() if s == session)
+
     def record(self, actor: str, verb: str, target: str, *, detail: str = "",
                session: str = "", turn: str = "", bytes_: int | None = None,
-               obj: str | None = None, path: str | None = None) -> None:
+               obj: str | None = None, path: str | None = None,
+               tokens: int | None = None) -> None:
         """Log one access. Never raises — a logging fault must not fail a turn.
 
         ``obj`` is the pointer to the bytes A was served; ``path`` is the file on
@@ -92,6 +116,11 @@ class AccessLog:
             row["object"] = obj
         if path:
             row["path"] = str(path)
+        if tokens:
+            key = (session, turn)
+            self._spent[key] = self._spent.get(key, 0) + int(tokens)
+            row["tokens"] = int(tokens)
+            row["turn_tokens"] = self._spent[key]      # rolling, as it happens
         try:
             if self._fh is not None:
                 with self._lock:
@@ -158,8 +187,9 @@ class AccessLog:
             size = f"  {r['bytes']}B" if r.get("bytes") else ""
             det = f"  {r['detail']}" if r.get("detail") else ""
             ref = f"  {r['object'].rsplit('/', 1)[-1]}" if r.get("object") and not cat else ""
+            run = f"  [Σ{_fmt_tokens(r['turn_tokens'])}]" if r.get("turn_tokens") else ""
             lines.append(f"  {r['ts'][11:23]}  {r['actor']:<10} {r['verb']:<12} "
-                         f"{r['target']}{size}{det}{ref}")
+                         f"{r['target']}{size}{det}{run}{ref}")
             if cat and r.get("object"):
                 body = self.cat(session or r.get("session", ""), r["object"], cat_bytes)
                 lines.append(f"      ┌─ {r['object'].rsplit('/', 1)[-1]}")
@@ -172,6 +202,10 @@ class AccessLog:
             if r["verb"] not in FILE_VERBS:
                 continue
             by[(r["target"], r["actor"])] = by.get((r["target"], r["actor"]), 0) + 1
+        into_a = sum(r.get("tokens", 0) for r in rows)
+        if into_a:
+            lines += ["", f"# tokens into A: {_fmt_tokens(into_a)} "
+                          f"(what A resolved; B's own reads are free)"]
         if by:
             lines += ["", "# per-file totals (A = mediated read, B = host access)"]
             for (target, actor), n in sorted(by.items(), key=lambda kv: (-kv[1], kv[0])):

@@ -141,6 +141,15 @@ def _elide(text: str, width: int) -> str:
     return f"{text[:head]}…{text[-(keep - head):]}"
 
 
+def _human_tokens(n) -> str:
+    """The rolling meter is glanced at, not read — 12.4k beats 12437."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "0"
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 def _human(n) -> str:
     try:
         n = int(n)
@@ -183,13 +192,16 @@ class LiveFeed:
     path and object pointer, so C stays a renderer."""
 
     def __init__(self, path, quiet: bool = False, label: str = "A is reasoning",
-                 path_for=None):
+                 path_for=None, asker=None):
         self.path = Path(path)
         self.quiet = quiet
         self.label = label
         # (session_id, object_id) -> blob path, so the object id on each line
         # can link to the immutable bytes A was actually served.
         self._path_for = path_for
+        # Session-like object exposing pending_asks()/answer_ask(). C owns stdin;
+        # A's MCP server is a child of `claude` with no tty and cannot prompt.
+        self._asker = asker
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True)
         self._offset = 0
@@ -205,10 +217,12 @@ class LiveFeed:
         who = _ARROW.get(actor, f"{actor} ")
         verb = str(row.get("verb", ""))[:11]
         size = _human(row.get("bytes")) if row.get("bytes") else ""
+        run = row.get("turn_tokens")
         oid = row.get("object", "")
         short = oid.rsplit("/", 1)[-1] if oid else ""
         tag = short[-6:]
-        fixed = 4 + 4 + 12 + len(size) + len(tag) + 4
+        meter = f"  {GREEN}Σ{_human_tokens(run)}{RESET}" if run else ""
+        fixed = 4 + 4 + 12 + len(size) + len(tag) + (len(str(run)) + 4 if run else 0) + 4
         shown = _elide(str(row.get("target", "")), max(20, _term_width() - fixed))
         # The PATH is the clickable thing — that is what an operator wants to
         # open. Elision is cosmetic: the link carries the full host path even
@@ -227,7 +241,7 @@ class LiveFeed:
                 except Exception:
                     url = ""
             ref = f" {DIM}·{_link(tag, url)}{RESET}"
-        return f"  {style}{who}{RESET} {DIM}{verb:<11}{RESET} {target}{right}{ref}"
+        return f"  {style}{who}{RESET} {DIM}{verb:<11}{RESET} {target}{right}{meter}{ref}"
 
     def _drain(self) -> None:
         try:
@@ -247,9 +261,37 @@ class LiveFeed:
         except OSError:
             pass
 
+    def _serve_asks(self) -> None:
+        """Answer A's mid-turn questions from C's terminal.
+
+        Safe to read stdin here: during a turn the main thread is blocked in
+        subprocess.run() with the child's stdin on /dev/null, so nothing else is
+        competing for it. A blocks on the answer, so the turn cannot finish out
+        from under the prompt."""
+        if self._asker is None:
+            return
+        try:
+            pending = self._asker.pending_asks()
+        except Exception:
+            return
+        for ask in pending:
+            self._clear()
+            sys.stdout.write(f"\n  {MAGENTA}A asks>{RESET} {ask['question']}\n")
+            sys.stdout.flush()
+            try:
+                reply = input(f"  {BOLD}you>{RESET} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                reply = ""
+            try:
+                self._asker.answer_ask(ask["pointer"],
+                                       reply or "[operator declined to answer]")
+            except Exception:
+                pass
+
     def _run(self):
         while not self._stop.is_set():
             self._drain()
+            self._serve_asks()
             if sys.stdout.isatty() and not self.quiet:
                 sys.stdout.write(f"\r{DIM}{next(self._spin)} {self.label}…{RESET}")
                 sys.stdout.flush()
@@ -267,7 +309,9 @@ class LiveFeed:
 
     def __exit__(self, *a):
         self._stop.set()
-        self._t.join()
+        # Bounded join: the feed thread may be parked in input() serving an ask.
+        # It is a daemon, so letting it go is safe; hanging C is not.
+        self._t.join(timeout=2.0)
         self._drain()          # never drop the tail of the exchange
         self._clear()
         sys.stdout.flush()
@@ -339,7 +383,7 @@ def run(workspace: str, model: str = "sonnet", use_model: bool = True,
             continue
         try:
             with LiveFeed(server.access.path, quiet=state["quiet"],
-                          path_for=server.store.path_for):
+                          path_for=server.store.path_for, asker=sess):
                 r = sess.submit_via_claude(_with_queued(state, line),
                                            model=state["model"],
                                            native_tools=state["native"])

@@ -65,6 +65,8 @@ def _relay_line(row: dict) -> str:
         bits.append(f"({row['bytes']}B)")
     if row.get("detail"):
         bits.append(f"— {row['detail']}")
+    if row.get("turn_tokens"):
+        bits.append(f"[Σ{row['turn_tokens']} tok into A]")
     return "  " + " ".join(bits)
 
 

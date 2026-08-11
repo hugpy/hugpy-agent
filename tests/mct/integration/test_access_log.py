@@ -292,3 +292,65 @@ def test_render_separates_a_and_b_totals(tmp_path, broker):
     assert "per-file totals" in out
     # the same file, reached from both sides, is reported as two distinct rows
     assert out.count("ws:notes.md") >= 2
+
+
+def test_the_meter_counts_only_what_entered_a(tmp_path, broker):
+    """B reading 44 KB while searching costs nothing; the 600 tokens A resolved
+    is the bill. Conflating them would make the meter read high and the whole
+    mediation look pointless."""
+    broker.gateway = lambda: None
+    sess = _mk(tmp_path, broker, {"notes.md": "retry policy " * 400})
+    hits = sess._fs_broker_search("retry policy", limit=1)
+    assert hits
+
+    # B has read a lot; nothing has entered A yet
+    assert broker.access.spend(sess.session_id, "t_000001") == 0
+    b_bytes = sum(r.get("bytes", 0) for r in broker.access.entries(sess.session_id)
+                  if r["actor"] == "B")
+    assert b_bytes > 1000
+
+    b = _ABinding(sess, "t_000001", "e1", hits[0]["pointer"], "0" * 64)
+    b.resolve(hits[0]["pointer"], None, "read")
+    spent = broker.access.spend(sess.session_id, "t_000001")
+    assert spent > 0
+
+
+def test_the_meter_rolls_forward_within_a_turn(tmp_path, broker):
+    broker.gateway = lambda: None
+    sess = _mk(tmp_path, broker, {"a.md": "retry policy here\n"})
+    hits = sess._fs_broker_search("retry policy", limit=1)
+    b = _ABinding(sess, "t_000001", "e1", hits[0]["pointer"], "0" * 64)
+
+    b.resolve(hits[0]["pointer"], None, "read")
+    first = broker.access.spend(sess.session_id, "t_000001")
+    b.resolve(hits[0]["pointer"], None, "read")
+    second = broker.access.spend(sess.session_id, "t_000001")
+
+    assert second > first                       # rolling, not per-record
+    rows = [r for r in broker.access.entries(sess.session_id) if r.get("turn_tokens")]
+    assert [r["turn_tokens"] for r in rows] == sorted(r["turn_tokens"] for r in rows)
+
+
+def test_turns_are_metered_separately_but_the_session_sums(tmp_path, broker):
+    broker.gateway = lambda: None
+    sess = _mk(tmp_path, broker, {"a.md": "retry policy here\n"})
+    hits = sess._fs_broker_search("retry policy", limit=1)
+    for turn in ("t_000001", "t_000002"):
+        _ABinding(sess, turn, "e1", hits[0]["pointer"], "0" * 64).resolve(
+            hits[0]["pointer"], None, "read")
+
+    one = broker.access.spend(sess.session_id, "t_000001")
+    two = broker.access.spend(sess.session_id, "t_000002")
+    assert one > 0 and two > 0
+    assert broker.access.session_spend(sess.session_id) == one + two
+
+
+def test_the_summary_states_what_the_number_means(tmp_path, broker):
+    broker.gateway = lambda: None
+    sess = _mk(tmp_path, broker, {"a.md": "retry policy here\n"})
+    hits = sess._fs_broker_search("retry policy", limit=1)
+    _ABinding(sess, "t_000001", "e1", hits[0]["pointer"], "0" * 64).resolve(
+        hits[0]["pointer"], None, "read")
+
+    out = broker.access.render(sess.session_id)
+    assert "tokens into A" in out and "B's own reads are free" in out

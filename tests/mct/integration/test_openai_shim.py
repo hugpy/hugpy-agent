@@ -171,8 +171,8 @@ def test_native_tool_postures_are_graded():
     off_a, off_d = tool_policy("off_host")
     all_a, all_d = tool_policy("all")
 
-    mct = {"mcp__mct__resolve", "mcp__mct__submit_pull",
-           "mcp__mct__submit_act", "mcp__mct__respond"}
+    mct = {"mcp__mct__resolve", "mcp__mct__submit_pull", "mcp__mct__submit_act",
+           "mcp__mct__submit_ask", "mcp__mct__respond", "mcp__mct__todo"}
     assert set(none_a) == mct
     # off_host bypasses nothing: no host reach is granted
     assert {"WebSearch", "WebFetch", "TodoWrite"} <= set(off_a)
