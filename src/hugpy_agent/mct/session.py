@@ -14,6 +14,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -454,7 +455,22 @@ class MctSession:
         alls = [str(t) for t in (spec.get("all") or []) if str(t).strip()]
         anys = [str(t) for t in (spec.get("any") or []) if str(t).strip()]
         nones = [str(t) for t in (spec.get("none") or []) if str(t).strip()]
-        if not (alls or anys):
+
+        def _rx(field):
+            """Compile the field's patterns; a bad one raises ValueError so the
+            broker can hand A the actual regex error instead of a bare miss."""
+            out = []
+            for p in (spec.get(field) or []):
+                p = str(p)
+                if not p.strip():
+                    continue
+                try:
+                    out.append(re.compile(p))
+                except re.error as exc:
+                    raise ValueError(f"invalid regex in {field}: {p!r} ({exc})")
+            return out
+        alls_rx, anys_rx, nones_rx = _rx("all_re"), _rx("any_re"), _rx("none_re")
+        if not (alls or anys or alls_rx or anys_rx):
             return []
         limit = min(int(spec.get("limit") or limit), 100)
         ctx = int(spec.get("context_lines") or 0)
@@ -502,24 +518,64 @@ class MctSession:
                         found.setdefault(str(path), []).extend(lines[:3])
             return found
 
+        def re_hits_for(rx, root):
+            """Files under ``root`` with a line matching ``rx`` — the regex rung.
+            abstract-search matches literal substrings only, so B scans here
+            itself, but enumerates candidate files through abstract-search's OWN
+            filter machinery (get_file_filters/get_files_and_dirs with the same
+            kw) so literal and regex rungs see the identical corpus."""
+            from abstract_search.filters import get_file_filters, get_files_and_dirs
+            from abstract_search.reader import read_any_file
+            found = {}
+            try:
+                dirs_, cfg, _allowed, _inc, recursive = get_file_filters(
+                    root.root_path, **kw)
+                _, files = get_files_and_dirs(directory=dirs_, cfg=cfg,
+                                              recursive=recursive)
+            except Exception:
+                return found
+            for fp in files:
+                try:
+                    if os.path.getsize(fp) > 2 * 1024 * 1024:
+                        continue                 # bound the scan: skip >2MB files
+                    text = read_any_file(fp)
+                except (OSError, ValueError, UnicodeError):
+                    continue
+                lines = []
+                for i, line in enumerate(text.split("\n"), 1):
+                    if rx.search(line):
+                        lines.append({"line": i, "content": line})
+                        if len(lines) >= 3:
+                            break
+                if lines:
+                    found[str(fp)] = lines
+            return found
+
         out: list[dict] = []
         for root_name, root in self._roots.items():
             self.server.access.record(
                 "B", "scan", f"{root_name}:{root.root_path}",
-                detail=f"all={alls} any={anys} none={nones}"[:180],
+                detail=(f"all={alls} any={anys} none={nones} "
+                        f"all_re={[r.pattern for r in alls_rx]} "
+                        f"any_re={[r.pattern for r in anys_rx]}")[:180],
                 session=self.session_id, turn=turn, path=root.root_path)
 
             keep: dict[str, list] | None = None
-            for t in alls:                       # intersection
-                got = hits_for(t, root)
+            required = ([("lit", t) for t in alls]
+                        + [("re", x) for x in alls_rx])
+            for kind_, term in required:         # intersection
+                got = hits_for(term, root) if kind_ == "lit" else re_hits_for(term, root)
                 keep = got if keep is None else {
                     p: keep[p] + got[p] for p in keep.keys() & got.keys()}
                 if not keep:
                     break
-            if anys:                             # union, then intersect with alls
+            if anys or anys_rx:                  # union, then intersect with alls
                 union: dict[str, list] = {}
                 for t in anys:
                     for p, ln in hits_for(t, root).items():
+                        union.setdefault(p, []).extend(ln)
+                for x in anys_rx:
+                    for p, ln in re_hits_for(x, root).items():
                         union.setdefault(p, []).extend(ln)
                 keep = union if keep is None else {
                     p: keep[p] + union[p] for p in keep.keys() & union.keys()}
@@ -527,6 +583,9 @@ class MctSession:
                 continue
             for t in nones:                      # veto: dropped, not demoted
                 for p in hits_for(t, root):
+                    keep.pop(p, None)
+            for x in nones_rx:
+                for p in re_hits_for(x, root):
                     keep.pop(p, None)
 
             prefix = root.root_path + os.sep
@@ -550,7 +609,8 @@ class MctSession:
                 shown = lines[: max(1, ctx or 3)]
                 out.append({
                     "name": f"fs:{root_name}:{rel}", "pointer": ptr,
-                    "score": 10.0 * (len(alls) + len(anys)),
+                    "score": 10.0 * (len(alls) + len(anys)
+                                     + len(alls_rx) + len(anys_rx)),
                     "snippet": " | ".join(
                         f"{l.get('line')}: {str(l.get('content'))[:110]}"
                         for l in shown if isinstance(l, dict)),

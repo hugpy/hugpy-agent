@@ -170,8 +170,15 @@ class PullBroker:
             # catalog query would produce. A single hit resolves straight
             # through — a precise directive that matched once needs no round
             # trip to confirm it.
-            hits = (structured_search(target.get("spec") or {}, self.K)
-                    if structured_search else [])
+            try:
+                hits = (structured_search(target.get("spec") or {}, self.K)
+                        if structured_search else [])
+            except ValueError as exc:            # e.g. an invalid regex: tell A
+                return finish({                  # the real error, not a bare miss
+                    "schema": "mct.pull-result/1", "request_id": request_id,
+                    "decision": "denied", "denial_reason": str(exc),
+                    "policy_revision": POLICY_REVISION,
+                })
             if state is not None:
                 state.search_trace = {"tried": [{"strategy": "structured",
                                                  "hits": len(hits)}],

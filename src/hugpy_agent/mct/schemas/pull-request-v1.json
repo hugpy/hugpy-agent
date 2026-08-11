@@ -136,6 +136,27 @@
        "type": "integer",
        "minimum": 0,
        "maximum": 20
+      },
+      "all_re": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Python regexes; every one must match some line in the file."
+      },
+      "any_re": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Python regexes; at least one must match some line."
+      },
+      "none_re": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Python regexes; any file with a matching line is vetoed."
       }
      }
     }
