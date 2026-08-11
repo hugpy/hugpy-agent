@@ -367,6 +367,73 @@ class MctSession:
                 "token_estimate": self._ptr_tokens(ptr)})
         return out
 
+    def _fs_browse(self, spec: dict) -> str:
+        """Answer 'what does this tree look like?' — the discovery need that
+        content search cannot serve and that used to push A to raw exec
+        (ls/pwd) for. Returns a compact, bounded listing of the granted roots:
+        no path -> every root's top levels; spec.path = '<root>' or
+        '<root>:<rel>' descends there. Root-relative names only (invariant 5).
+        Truncation is stated in-band so A can narrow in ONE follow-up."""
+        turn, _ = getattr(self, "_active_turn", ("", ""))
+        raw = str(spec.get("path") or "").strip()
+        depth = max(1, min(int(spec.get("depth") or 2), 6))
+        cap = max(20, min(int(spec.get("limit") or 200), 1000))
+        targets = []                     # (label, abs_dir)
+        if raw:
+            root_name, _, rel = raw.partition(":")
+            rel = rel.strip("/")
+            root = self._roots.get(root_name)
+            if root is None:
+                return ("no granted root named "
+                        f"{root_name!r}; granted: {', '.join(sorted(self._roots)) or 'none'}")
+            base = os.path.realpath(os.path.join(root.root_path, rel))
+            if not base.startswith(os.path.realpath(root.root_path)):
+                return f"path escapes root {root_name!r}"
+            targets.append((f"{root_name}:{rel}" if rel else f"{root_name}:", base))
+        else:
+            targets = [(f"{n}:", r.root_path) for n, r in sorted(self._roots.items())]
+        if not targets:
+            return ""
+        lines, n = [], 0
+        truncated = False
+        for label, base in targets:
+            self.server.access.record("B", "browse", label, detail=f"depth={depth}",
+                                      session=self.session_id, turn=turn, path=base)
+            lines.append(label + "/")
+            stack = [(base, 1)]
+            while stack and not truncated:
+                d, lvl = stack.pop(0)
+                try:
+                    entries = sorted(os.scandir(d),
+                                     key=lambda e: (not e.is_dir(follow_symlinks=False), e.name))
+                except OSError:
+                    continue
+                for e in entries:
+                    if e.name.startswith("."):
+                        continue
+                    if n >= cap:
+                        truncated = True
+                        break
+                    rel = os.path.relpath(e.path, base)
+                    pad = "  " * lvl
+                    if e.is_dir(follow_symlinks=False):
+                        lines.append(f"{pad}{rel}/")
+                        n += 1
+                        if lvl < depth:
+                            stack.append((e.path, lvl + 1))
+                    else:
+                        try:
+                            size = e.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            size = 0
+                        lines.append(f"{pad}{rel}  {size/1000:.1f}k" if size >= 1000
+                                     else f"{pad}{rel}  {size}b")
+                        n += 1
+        if truncated:
+            lines.append(f"…truncated at {cap} entries — pass a narrower "
+                         "spec.path or a higher spec.limit")
+        return "\n".join(lines)
+
     def _fs_structured_search(self, spec: dict, limit: int = 5) -> list[dict]:
         """Execute a structured search directive — B as A's search agent.
 
@@ -1295,6 +1362,7 @@ class _ABinding:
             self.session_id, self.turn_id, self.epoch, request, self._s._catalog, self._pull_state,
             fs_search=(self._s._fs_broker_search if fs_on else None),
             structured_search=(self._s._fs_structured_search if fs_on else None),
+            browse=(self._s._fs_browse if fs_on else None),
             search_notes=search_notes)
         srv.ledger.append_event(self.session_id, self.turn_id, self.epoch,
                                 f"pull.{payload['decision']}", "B.pull-broker",

@@ -37,22 +37,25 @@ TOOLS = [
          "required": ["pointer"]}},
     {"name": "submit_pull",
      "description": "Ask B for missing context. Provide a plain-language 'need' and a "
-                    "'target' (usually {\"kind\":\"catalog-query\",\"query\":\"...\"}). "
-                    "Optionally 'preferred_form' e.g. 'match ERROR ctx 3'. Returns a "
-                    "decision and result object pointers; then resolve those pointers. "
-                    "decision 'candidates' means the query was ambiguous: the result "
-                    "object (shown in preview) is a ranked slate of {name, pointer, "
-                    "snippet} — choose one and pull it with "
-                    "{\"kind\":\"object\",\"object\":<pointer>}. "
-                    "DIRECT B LIKE AN AGENT with "
-                    "{\"kind\":\"search\",\"spec\":{...}} instead of guessing "
-                    "keywords: spec takes all[] (every term must appear), any[] "
-                    "(at least one), none[] (drop any file containing these), "
-                    "ext[], path_include[]/path_exclude[] globs, "
-                    "modified_after/modified_before (ISO dates), limit and "
-                    "context_lines. B runs it across the granted roots for free "
-                    "and returns only matching lines — far cheaper than pulling "
-                    "files to filter them yourself.",
+                    "'target'; route by SHAPE, first try: LAYOUT (what exists / where "
+                    "things live) -> {\"kind\":\"browse\",\"spec\":{\"path\":"
+                    "\"<root>:<rel>\" or omit for a roots overview, \"depth\":N}} — "
+                    "B returns a bounded tree listing, truncation stated in-band. "
+                    "CONTENT (where is X defined / which files mention Y) -> "
+                    "{\"kind\":\"search\",\"spec\":{...}}: all[] (every term must "
+                    "appear), any[] (at least one), none[] (file-level veto), ext[], "
+                    "path_include[]/path_exclude[] PATH globs, modified_after/"
+                    "modified_before (ISO dates), limit, context_lines — terms are "
+                    "LITERAL strings, not regex (regex goes in preferred_form, e.g. "
+                    "'match ERROR ctx 3'); B returns only matching numbered lines. "
+                    "THIS session's earlier objects -> {\"kind\":\"catalog-query\","
+                    "\"query\":\"...\"} (EMPTY in a fresh session — never the first "
+                    "move for host facts). decision 'candidates' = ranked slate of "
+                    "{name, pointer, snippet}: choose one, pull it with "
+                    "{\"kind\":\"object\",\"object\":<pointer>}. Every result "
+                    "includes your remaining budget; misses name the searched "
+                    "surfaces — reroute, don't retry closed surfaces, and never "
+                    "exec ls/grep for what browse/search answer leaner.",
      "inputSchema": {"type": "object", "properties": {
          "need": {"type": "string"},
          "target": {"type": "object"},

@@ -32,10 +32,10 @@ class Capabilities:
             ptr_session, _ = parse_pointer(pointer)  # rejects path-shaped input (invariant 5)
             if ptr_session != session_id:
                 raise IsolationError("pull references an object outside this session")
-        elif kind in ("catalog-query", "search"):
-            # catalog-query searches only this session's catalog; a search
-            # directive is executed by B against the granted roots (and not at
-            # all when fs requests are off) — both confined on B's side.
+        elif kind in ("catalog-query", "search", "browse"):
+            # catalog-query searches only this session's catalog; search and
+            # browse are executed by B against the granted roots (and not at
+            # all when fs requests are off) — all confined on B's side.
             return
         else:
             raise AuthorizationError(f"unsupported pull target kind: {kind!r}")

@@ -73,6 +73,7 @@ class PullBroker:
         state: TurnPullState,
         fs_search=None,
         structured_search=None,
+        browse=None,
         search_notes: str = "",
     ) -> tuple[dict, str]:
         """Return ``(pull_result_payload, pull_result_pointer)``.
@@ -139,6 +140,31 @@ class PullBroker:
         # resolves directly; a contested slate goes back to A as decision
         # "candidates" — the frontier model chooses, B only ranks (§11.2).
         candidates = None
+        if target["kind"] == "browse":
+            # Layout discovery — the need content search cannot serve. B walks
+            # the granted roots (bounded depth/entries) and the listing itself
+            # is the answer: a reduced excerpt, budgeted at listing size when
+            # A reads it, truncation stated in-band.
+            listing = (browse(target.get("spec") or {}) or "") if browse else ""
+            if not listing:
+                return finish({
+                    "schema": "mct.pull-result/1", "request_id": request_id,
+                    "decision": "not_found",
+                    "denial_reason": "browse found nothing to list"
+                                     + (f"; {search_notes}" if search_notes else ""),
+                    "policy_revision": POLICY_REVISION,
+                })
+            ref = self.store.commit(
+                session_id, listing.encode("utf-8"), media_type="text/plain",
+                kind="listing", provenance={"request_id": request_id})
+            return finish({
+                "schema": "mct.pull-result/1", "request_id": request_id,
+                "decision": "reduced",
+                "objects": [{"object": ref.pointer, "selector": "listing",
+                             "sha256": ref.sha256,
+                             "token_estimate": _tokens(listing.encode("utf-8"))}],
+                "policy_revision": POLICY_REVISION,
+            })
         if target["kind"] == "search":
             # A directed B: run the directive, then hand back the same slate a
             # catalog query would produce. A single hit resolves straight
