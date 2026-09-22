@@ -23,6 +23,16 @@ from .ledger import Ledger
 from .protocol import make_pointer, parse_pointer
 
 
+def relative_object_path(digest: str) -> str:
+    """The store-relative, content-addressed location of ``digest`` (§7.4).
+
+    Single source of truth for the physical layout: ``ObjectStore`` resolves it
+    against its root, and ``manifest.ArtifactManifest.storage_pointer`` records
+    it as the artifact's immutable storage pointer.
+    """
+    return f"objects/sha256/{digest[:2]}/{digest[2:4]}/{digest}"
+
+
 @dataclass(frozen=True)
 class ObjectRef:
     object_id: str
@@ -46,7 +56,14 @@ class ObjectStore:
         self.session_quota_bytes = session_quota_bytes  # 0 = unlimited
 
     def _path_for_digest(self, digest: str) -> Path:
-        return self.objects_dir / digest[:2] / digest[2:4] / digest
+        return self.root / relative_object_path(digest)
+
+    def has_digest(self, digest: str) -> bool:
+        """Are these bytes physically present? (Cheap existence check for callers
+        that hold a content digest rather than an object handle — e.g.
+        ``manifest.ManifestStore``.) Says nothing about authorization: use
+        :meth:`resolve` to actually read bytes."""
+        return self._path_for_digest(digest).exists()
 
     def path_for(self, session_id: str, object_id: str) -> Path | None:
         """The physical file backing an object — so 'where is that document?' has

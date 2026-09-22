@@ -81,7 +81,8 @@ def _setup_readline():
     """Persistent cross-session input history under ~/.mct/."""
     if readline is None:
         return
-    hist = Path.home() / ".mct" / "repl_history"
+    from .._paths import mct_repl_history
+    hist = Path(mct_repl_history())
     hist.parent.mkdir(parents=True, exist_ok=True)
     try:
         readline.read_history_file(hist)
@@ -389,9 +390,30 @@ def run(workspace: str, model: str = "sonnet", use_model: bool = True,
                                            native_tools=state["native"])
             state["last"] = r
             if r.state != "Committed":   # the illusion breaks explicitly (§5.2)
-                print(f"{YELLOW}[A did not answer — B does not answer in its place.]{RESET}")
+                print(f"{YELLOW}[A did not answer — B steps in below, in its own voice.]{RESET}")
                 print(f"{DIM}  reason: {r.error or r.state}")
                 print(f"  inspect: /tail 20 · /log b · /acache{RESET}\n")
+                # B answers in A's ABSENCE, never in A's voice — §5.2 still
+                # holds: the failure is announced first, and B's reply arrives
+                # labeled B>, magenta, explicitly provisional (operator ask,
+                # 2026-08-12: a dead turn should end in an explanation, not a
+                # dead end). Re-ask A by resending; re-ask B with /b.
+                try:
+                    fallback_q = (
+                        "A (the frontier model) failed to answer the operator's "
+                        f"message — the runner reported: {r.error or r.state}. "
+                        "First, in ONE short line, say what that failure most "
+                        "likely means operationally (e.g. auth, quota, runner "
+                        "bug). Then, as yourself, give your best answer to the "
+                        "operator's message below. Be clear anything you say is "
+                        "provisional — A has not seen this turn.\n\n"
+                        "Operator's message:\n" + line)
+                    with Spinner("B is answering in A's absence"):
+                        body = _b_prompt(fallback_q, sess, server, state)
+                    print(f"{MAGENTA}B (A unavailable)> {body}{RESET}\n")
+                except Exception as b_exc:
+                    print(f"{DIM}  (B fallback unavailable too: "
+                          f"{type(b_exc).__name__}: {b_exc}){RESET}\n")
             else:
                 _print_provenance_footer(sess, server, r.turn_id, r.tokens)
         except KeyboardInterrupt:
@@ -406,7 +428,8 @@ def run(workspace: str, model: str = "sonnet", use_model: bool = True,
 def main(argv=None) -> int:
     """``python -m hugpy_agent.mct`` entry: parse args, then :func:`run`."""
     ap = argparse.ArgumentParser(description="Mediated Context Terminal (MCT)")
-    ap.add_argument("workspace", nargs="?", default=str(Path.home() / ".mct" / "repl"),
+    from .._paths import mct_repl_workspace
+    ap.add_argument("workspace", nargs="?", default=mct_repl_workspace(),
                     help="workspace dir (a fresh dir = a new conversation)")
     ap.add_argument("--model", default="sonnet", help="A's model (e.g. sonnet, opus, haiku)")
     ap.add_argument("--no-model", dest="no_model", action="store_true",

@@ -240,8 +240,15 @@ class ClaudeCodeAdapter:
             home_claude = os.path.join(os.path.expanduser("~"), ".claude")
             src_cred = os.path.join(home_claude, ".credentials.json")
             dst_cred = os.path.join(a_cfg, ".credentials.json")
+            # claude rewrites .credentials.json atomically (tmp + rename), so
+            # after a refresh dst is a REGULAR file holding the newest token and
+            # src is stale (its refresh token has rotated out). Adopt dst back
+            # into ~/.claude instead of discarding it — discarding is what left
+            # every A launch failing auth ("Failed to authenticate") silently.
+            if os.path.isfile(dst_cred) and not os.path.islink(dst_cred):
+                os.replace(dst_cred, src_cred)
             if os.path.exists(src_cred) and not os.path.islink(dst_cred):
-                if os.path.exists(dst_cred):
+                if os.path.lexists(dst_cred):
                     os.unlink(dst_cred)
                 os.symlink(src_cred, dst_cred)
             src_f = os.path.join(home_claude, "settings.json")
@@ -345,8 +352,13 @@ class ClaudeCodeAdapter:
             return (f"claude exited rc={getattr(proc, 'returncode', '?')}; "
                     f"stderr: {(getattr(proc, 'stderr', '') or '')[:300]}").strip()
         if result.get("is_error"):
+            # Carry claude's own words ("Failed to authenticate", rate limit,
+            # ...): the subtype alone left the operator guessing.
+            text = result.get("result")
+            text = str(text).strip().splitlines()[0][:200] if text else ""
             return (f"claude reported an error: subtype={result.get('subtype')} "
-                    f"api_status={result.get('api_error_status')}").strip()
+                    f"api_status={result.get('api_error_status')}"
+                    f"{' — ' + text if text else ''}").strip()
         return "A returned no answer (no respond() call and no final text)"
 
     def _capture_input(self, session, turn_id, epoch, kind, text: str) -> None:

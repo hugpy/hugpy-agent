@@ -546,19 +546,29 @@ class FleetTools:
                         if e.get(k) is not None})
         return json.dumps({"models": out, "count": len(out)})
 
-    # ── oracle: route-to-best (k93, server side k90/k91) ─────────────────
+    # ── oracle: route-to-best (k90d, server side k90a/k90b) ─────────────────
     def _oracle_shape(self, res: dict) -> str:
         """Label the response shape and surface the scorecard verdict at the
         TOP level (hard_pass / diagnosis / repair_code) — the brain must see
         quality without digging into the card. The server payload rides
         along verbatim below the surfaced keys (the loop consumes the JSON).
         The three keys are always present; None means 'no scorecard came
-        back' (typed 400s carry none)."""
+        back' (typed 400s carry none).
+
+        k99b: a k90b (was k97) authority-gate 403 — {ok:false, error,
+        missing_authority:[{kind,subject}], receipt.failure="refused",
+        scorecard.repair_code="source_authority_missing"} — is labelled
+        `refused`, not the generic `error`, so the brain can branch on it
+        without string-matching `error`. `missing_authority` already rides
+        along verbatim via the `out.update(res)` below; this only fixes the
+        label."""
         card = res.get("scorecard") if isinstance(res.get("scorecard"), dict) \
             else {}
         route = res.get("route") if isinstance(res.get("route"), dict) else {}
         if res.get("execution") == "deferred":
             status = "deferred"          # routed, NOT run (video.* today)
+        elif route.get("execution") == "refused":
+            status = "refused"           # k90b authority gate; missing_authority below
         elif route.get("execution") == "gap":
             status = "capability_gap"    # no eligible route; see scorecard
         elif res.get("ok") is False:
@@ -575,9 +585,12 @@ class FleetTools:
     def oracle_route(self, prompt: str, inputs: list = None,
                      capability: str = "", model_id: str = "",
                      quality: str = "", evaluate: bool = None,
-                     repair: bool = None) -> str:
+                     repair: bool = None, rights: dict = None,
+                     planner_mode: str = "", identity_profile: str = "") -> str:
         if inputs is not None and not isinstance(inputs, list):
             return _err("inputs must be a list of {kind, uri|text} objects")
+        if rights is not None and not isinstance(rights, dict):
+            return _err("rights must be an object (RightsManifest)")
         body = {"prompt": prompt}
         if inputs:
             body["inputs"] = inputs
@@ -587,12 +600,23 @@ class FleetTools:
             body["model_id"] = model_id
         if quality:
             body["quality"] = quality
-        # k92 passthroughs: forwarded only when supplied — a server without
+        # k90c passthroughs: forwarded only when supplied — a server without
         # the evaluator kernel yet ignores unknown JSON fields.
         if evaluate is not None:
             body["evaluate"] = bool(evaluate)
         if repair is not None:
             body["repair"] = bool(repair)
+        # k90b authority-gate passthroughs (k99b): forwarded only when
+        # supplied — `identity_profile` is the same sugar the video routes
+        # accept (folded server-side into an `identity_profile:<slug>`
+        # input ref), `rights` is a RightsManifest authorizing it, and
+        # `planner_mode` defaults server-side to `local_only`.
+        if identity_profile:
+            body["identity_profile"] = identity_profile
+        if rights is not None:
+            body["rights"] = rights
+        if planner_mode:
+            body["planner_mode"] = planner_mode
         try:
             res = self.gw.api_json("/api/oracle/route", method="POST",
                                    payload=body)
@@ -725,7 +749,7 @@ def specs(gateway, workspace: str) -> list[ToolSpec]:
         ToolSpec("models_list",
                  "List the models currently available on the fleet.",
                  _p(), ft.models_list, RISK_READONLY),
-        # ── oracle: route-to-best (k93) ───────────────────────────────
+        # ── oracle: route-to-best (k90d) ───────────────────────────────
         ToolSpec("oracle_route",
                  "One call that routes a request to the BEST fleet model and "
                  "runs it: the oracle infers the capability from the prompt "
@@ -742,7 +766,12 @@ def specs(gateway, workspace: str) -> list[ToolSpec]:
                  "storage (NOT agent-local files — upload/produce them "
                  "first, or use the narrow file tools). oracle_status is "
                  "one of executed | deferred (video.*: routed, not run) | "
-                 "capability_gap | error. Example: oracle_route(prompt="
+                 "capability_gap | refused (identity/voice authority "
+                 "missing; see top-level missing_authority) | error. "
+                 "Identity/voice-conditioned requests need `rights` "
+                 "authorizing the referenced `identity_profile` (or the "
+                 "profile's own recorded consent) or they come back "
+                 "refused. Example: oracle_route(prompt="
                  '"summarize this image", inputs=[{"kind": "image", '
                  '"uri": "/srv/shared/photo.png"}]).',
                  _p(prompt={"type": "string",
@@ -783,6 +812,34 @@ def specs(gateway, workspace: str) -> list[ToolSpec]:
                     repair={"type": "boolean",
                             "description": "optional: allow one bounded "
                                            "repair loop on a failed card"},
+                    identity_profile={"type": "string",
+                                      "description": "optional identity "
+                                                     "profile slug this "
+                                                     "request is "
+                                                     "conditioned on "
+                                                     "(sugar; folded into "
+                                                     "inputs as "
+                                                     "'identity_profile:"
+                                                     "<slug>')"},
+                    rights={"type": "object",
+                            "description": "optional RightsManifest "
+                                           "authorizing an identity/voice "
+                                           "reference this request "
+                                           "touches: {authorizations: "
+                                           "[{kind: likeness|voice|"
+                                           "dialogue_source|web_source|"
+                                           "filesystem|network|shell|"
+                                           "disclosure, subject: "
+                                           "'identity_profile:<slug>' or "
+                                           "'*', evidence, scope?, "
+                                           "granted_by?, granted_at?}], "
+                                           "denied?: [subject, ...], "
+                                           "notes?}. Not needed when the "
+                                           "referenced profile already "
+                                           "carries recorded consent."},
+                    planner_mode={"type": "string",
+                                  "description": "local_only (default, "
+                                                 "truthful) | frontier"},
                     _required=["prompt"]),
                  ft.oracle_route, rc),
         ToolSpec("oracle_capabilities",

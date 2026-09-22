@@ -47,7 +47,7 @@ import tempfile
 import urllib.error
 import urllib.request
 
-from .gateway import normalize_base, origin
+from .gateway import brain_matches_key, normalize_base, origin
 
 # The env var name OpenCode resolves at ITS runtime via the `{env:NAME}`
 # reference we write into opencode.json. Distinct from HUGPY_API_KEY on
@@ -121,6 +121,7 @@ def resolve_claude() -> str | None:
 
 
 def launch_claude_code(central: str, key: str,
+                       model: str | None = None,
                        binary: str | None = None,
                        init_prompt: str | None = None) -> "None":
     """exec Claude Code pointed at the fleet's Anthropic Messages shim.
@@ -162,6 +163,15 @@ def launch_claude_code(central: str, key: str,
     # real key configured, and gets a clean 401 from the shim instead of an
     # Anthropic login screen.
     os.environ[CLAUDE_AUTH_ENV] = key or "hugpy-open-fleet"
+    # Fleet-model selection: Claude Code validates model ids and will not send
+    # an arbitrary fleet key, so carry the pick in a custom header the
+    # /v1/messages shim honors (X-Hugpy-Model). Unset -> the shim's claude-*
+    # -> programmatic-group / agent-brain path. Appended, never clobbering an
+    # operator-set ANTHROPIC_CUSTOM_HEADERS.
+    if model:
+        _hdr = "X-Hugpy-Model: " + str(model)
+        _cur = os.environ.get("ANTHROPIC_CUSTOM_HEADERS", "").strip()
+        os.environ["ANTHROPIC_CUSTOM_HEADERS"] = (_cur + "\n" + _hdr) if _cur else _hdr
     _rebind_stdin_to_tty()
     init = (init_prompt if init_prompt is not None
             else os.environ.get("HUGPY_INIT_PROMPT", "")).strip()
@@ -361,8 +371,16 @@ def fetch_model_map(central: str, key: str,
             "the fleet at %s listed no %s models — nothing for OpenCode to serve"
             % (url, ("non-blocked" if not tasks
                      else "chat-drivable (tasks %s)" % sorted(tasks))))
+    # Match the preferred brain by exact id or bare tail after '~': the fleet
+    # catalog serves keys either as 'Org~Name' or as the bare 'Name'
+    # (e.g. 'Qwen3-Coder-Next-GGUF'), so an exact `in` check on the literal
+    # PREFERRED_DEFAULT ('Qwen~Qwen3-Coder-Next-GGUF') would miss and fall
+    # through to the alphabetically-first (often unloadable) model. Resolve to
+    # the id the fleet actually lists so OpenCode requests a model that exists.
     default = (PREFERRED_DEFAULT if PREFERRED_DEFAULT in models
-               else next(iter(models)))
+               else next((mid for mid in models
+                          if brain_matches_key(PREFERRED_DEFAULT, mid)),
+                         next(iter(models))))
     return models, default
 
 
@@ -494,6 +512,14 @@ def launch(workspace_dir: str, key: str,
     binary = binary or resolve_opencode()
     if not binary:
         raise ConsoleError(INSTALL_HINT)
+    try:
+        # Rebrand the baked-in "opencode" wordmark to "Hugpy Agent"
+        # (branding.py; same-length glyph patch, .orig-logo kept). Cosmetic
+        # only — any failure means the stock splash, never a failed launch.
+        from . import branding
+        branding.ensure_hugpy_logo(binary)
+    except Exception:
+        pass
     ws = os.path.realpath(os.path.expanduser(workspace_dir))
     if key:
         os.environ[KEY_ENV_NAME] = key
@@ -552,7 +578,7 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
         # Claude Code carries no per-workspace config we own; the whole seam is
         # the two env vars set in launch_claude_code. A missing binary raises
         # ConsoleError (cmd_console maps it to a non-zero exit + hint).
-        launch_claude_code(cfg.base, cfg.api_key)
+        launch_claude_code(cfg.base, cfg.api_key, cfg.model)
         return 0  # unreachable on success (exec)
 
     if frontend == "qwen-code":

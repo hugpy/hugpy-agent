@@ -116,6 +116,23 @@ class MctChatService:
     def close(self) -> None:
         self.server.close()
 
+    def b_answer(self, prompt: str, reason: str) -> str:
+        """B's labeled stand-in for a failed A turn (operator ask, 2026-08-12):
+        one line on what the failure means, then B's own provisional take.
+        Never in A's voice — the caller labels it as B."""
+        from .repl import _b_prompt
+        state = {"bmodel": None, "model": self.model, "frontier": True,
+                 "queue": [], "last": None, "quiet": True,
+                 "native": self.native_tools}
+        q = ("A (the frontier model) failed to answer the operator's message — "
+             f"the runner reported: {reason}. First, in ONE short line, say "
+             "what that failure most likely means operationally (e.g. auth, "
+             "quota, runner bug). Then, as yourself, give your best answer to "
+             "the operator's message below. Be clear anything you say is "
+             "provisional — A has not seen this turn.\n\n"
+             "Operator's message:\n" + prompt)
+        return _b_prompt(q, self.session, self.server, state)
+
     @staticmethod
     def _last_user(messages: list) -> str:
         for m in reversed(messages or []):
@@ -213,7 +230,7 @@ def _handler_for(service: MctChatService):
 
             if not stream:
                 r = service.turn(prompt)
-                body = self._body_of(r)
+                body = self._body_of(r, prompt)
                 return self._json(200, {
                     "id": cid, "object": "chat.completion", "created": created,
                     "model": MODEL_ID,
@@ -239,7 +256,7 @@ def _handler_for(service: MctChatService):
                 if _RELAY and not broken.is_set():
                     self._sse(_chunk(cid, created, "```\n\n"))
                 if not broken.is_set():
-                    self._sse(_chunk(cid, created, self._body_of(r)))
+                    self._sse(_chunk(cid, created, self._body_of(r, prompt)))
                     self._sse(_chunk(cid, created, None, "stop"))
                     self._sse("data: [DONE]\n\n")
             except (BrokenPipeError, ConnectionResetError):
@@ -247,12 +264,23 @@ def _handler_for(service: MctChatService):
 
         # --- shaping ---------------------------------------------------
         @staticmethod
-        def _body_of(r) -> str:
+        def _body_of(r, prompt: str = "") -> str:
             if getattr(r, "state", "") == "Committed" and getattr(r, "body", None):
                 return r.body
-            # The illusion breaks explicitly (§5.2): B never answers for A.
-            return (f"_[A did not answer — B does not answer in its place. "
-                    f"reason: {getattr(r, 'error', None) or getattr(r, 'state', '?')}]_")
+            # The illusion still breaks EXPLICITLY (§5.2) — the failure is
+            # announced before anything else — but a dead turn now ends in B's
+            # own labeled answer instead of a dead end (operator, 2026-08-12).
+            reason = getattr(r, "error", None) or getattr(r, "state", "?")
+            note = (f"_[A did not answer — B answers below, in its own voice. "
+                    f"reason: {reason}]_")
+            if not prompt:
+                return note
+            try:
+                return (note + "\n\n**B (A unavailable)>** "
+                        + service.b_answer(prompt, str(reason)))
+            except Exception as exc:
+                return note + (f"\n\n_(B fallback unavailable too: "
+                               f"{type(exc).__name__}: {exc})_")
 
         @staticmethod
         def _usage(r) -> dict:

@@ -233,6 +233,17 @@ class Journal:
             "SELECT COUNT(*) FROM tool_calls WHERE run_id=?", (run_id,)).fetchone()
         return row[0]
 
+    def successful_call_count(self, run_id: str) -> int:
+        """Journaled tool calls that actually EXECUTED and returned a
+        non-error result (status='done'). Policy-denied, interrupted and
+        errored calls are recorded status='error' and do NOT count, and
+        `final_answer` never lands here. The final_answer guard requires
+        >= 1 of these, so a rejected/failed call cannot unlock termination."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM tool_calls WHERE run_id=? AND status='done'",
+            (run_id,)).fetchone()
+        return row[0]
+
     def tool_call_rows(self, run_id: str) -> list[dict]:
         """(name, status) per journaled tool call, oldest first. Read-only;
         used by the eval harness to compute tool-accuracy (non-error calls /

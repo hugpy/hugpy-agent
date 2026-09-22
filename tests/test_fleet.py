@@ -403,6 +403,74 @@ class OracleTests(FleetHarness):
         self.assertIs(payload["evaluate"], True)
         self.assertIs(payload["repair"], False)
 
+    def test_route_k90b_authority_passthroughs_forwarded_only_when_given(self):
+        """k99b: identity_profile / rights / planner_mode are additive
+        passthroughs, same shape as k90c's evaluate/repair — absent unless
+        the caller supplies them."""
+        self.gw.on_json = lambda p, m, b: dict(self.EXECUTED)
+        self.ft.oracle_route("x")
+        payload = self.gw.json_calls[-1][2]
+        self.assertNotIn("identity_profile", payload)
+        self.assertNotIn("rights", payload)
+        self.assertNotIn("planner_mode", payload)
+
+        manifest = {"authorizations": [{"kind": "likeness",
+                                        "subject": "identity_profile:jane",
+                                        "evidence": "release on file"}]}
+        self.ft.oracle_route("x", identity_profile="jane", rights=manifest,
+                             planner_mode="frontier")
+        payload = self.gw.json_calls[-1][2]
+        self.assertEqual(payload["identity_profile"], "jane")
+        self.assertEqual(payload["rights"], manifest)
+        self.assertEqual(payload["planner_mode"], "frontier")
+
+    def test_route_rejects_non_dict_rights(self):
+        out = json.loads(self.ft.oracle_route("x", rights="likeness"))
+        self.assertIn("rights must be an object", out["error"])
+        self.assertEqual(self.gw.json_calls, [])          # never sent
+
+    def test_route_refused_shape_labelled_with_missing_authority(self):
+        """k97's authority gate 403 -> k99b's typed `refused` label (not the
+        generic `error`), with `missing_authority` surfaced top-level so
+        the brain can act on it without string-matching `error`."""
+        refused = {
+            "ok": False,
+            "error": ("video.generate.id_lock: the request's RightsManifest "
+                     "does not cover likeness of 'identity_profile:jane'"),
+            "planner_mode": "local_only",
+            "missing_authority": [{"kind": "likeness",
+                                   "subject": "identity_profile:jane"}],
+            "goal": {"objective": "make a video of jane"},
+            "route": {"capability": "video.generate.id_lock",
+                      "execution": "refused"},
+            "receipt": {"capability": "video.generate.id_lock", "model_id": "",
+                       "failure": "refused"},
+            "scorecard": {"hard_pass": False, "checks": [], "confidence": 1.0,
+                         "diagnosis": "video.generate.id_lock: the request's "
+                                      "RightsManifest does not cover likeness "
+                                      "of 'identity_profile:jane'",
+                         "repair_code": "source_authority_missing",
+                         "recommended_repair": "supply a RightsManifest "
+                                               "authorizing likeness of "
+                                               "identity_profile:jane"},
+        }
+
+        def on_json(p, m, b):
+            raise _http_err(403, refused)
+        self.gw.on_json = on_json
+        out = json.loads(self.ft.oracle_route("make a video of jane",
+                                              identity_profile="jane"))
+        self.assertEqual(out["oracle_status"], "refused")
+        self.assertNotEqual(out["oracle_status"], "error")
+        self.assertEqual(out["missing_authority"],
+                         [{"kind": "likeness", "subject": "identity_profile:jane"}])
+        self.assertIs(out["hard_pass"], False)
+        self.assertEqual(out["repair_code"], "source_authority_missing")
+        self.assertEqual(out["receipt"]["failure"], "refused")
+        self.assertIn("RightsManifest", out["error"])
+        payload = self.gw.json_calls[-1][2]
+        self.assertEqual(payload["identity_profile"], "jane")
+
     def test_route_typed_400_is_data_not_exception(self):
         body = {"ok": False,
                 "error": "model_id 'nope' is not eligible for image.caption",

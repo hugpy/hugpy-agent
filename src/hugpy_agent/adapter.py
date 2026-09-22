@@ -33,6 +33,11 @@ MODE_PROMPTED = "prompted"
 MODE_CONSTRAINED = "constrained"
 
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+# A reply that LEADS with the final_answer tool name (optionally backticked /
+# colon-separated) and then the answer as prose — explicit termination signal,
+# degraded envelope. See Adapter._marker_final_answer.
+_FINAL_MARKER_RE = re.compile(
+    r"^\s*`{0,3}final_answer`{0,3}\s*[:\n]\s*(.+?)\s*$", re.DOTALL)
 # Thinking-model reasoning spans. A Qwen3-family brain may emit <think>…</think>
 # even when asked not to; the reasoning must never reach the tool_call parser
 # or a final answer. Two patterns: a closed block, and a DANGLING open tag
@@ -192,6 +197,8 @@ class Adapter:
             # primary format). Better to accept a slightly-off format than to
             # burn a repair round-trip on it.
             call, err = self._bare_call(text)
+            if not call and not err:
+                call = self._marker_final_answer(text)
             if call:
                 out.calls.append(call)
                 out.plain_text = ""
@@ -199,12 +206,34 @@ class Adapter:
                 out.errors.append(err)
         return out
 
+    def _marker_final_answer(self, text: str):
+        """`final_answer\\n<prose>` — the model declared termination but
+        skipped the JSON envelope. The signal is explicit (this is NOT bare
+        prose, which stays rejected), so honor it: the alternative is
+        aborting a run whose answer is already in hand."""
+        m = _FINAL_MARKER_RE.match(text)
+        if m and m.group(1).strip():
+            return ToolCall("final_answer", {"answer": m.group(1).strip()},
+                            raw=text)
+        return None
+
     def _parse_call_json(self, block: str):
         try:
             data = json.loads(block)
         except json.JSONDecodeError as exc:
             return None, ("tool_call block is not valid JSON (%s). Block was: %s"
                           % (exc, block[:300]))
+        if isinstance(data, dict) and set(data) == {"final_answer"}:
+            # Shorthand small models fall into constantly: {"final_answer":
+            # "..."} instead of {"name": "final_answer", "arguments":
+            # {"answer": "..."}}. The intent is unambiguous — accept it
+            # rather than abort a run whose answer is already in hand.
+            fa = data["final_answer"]
+            if isinstance(fa, dict) and isinstance(fa.get("answer"), str):
+                return ToolCall("final_answer", {"answer": fa["answer"]},
+                                raw=block), ""
+            if isinstance(fa, str):
+                return ToolCall("final_answer", {"answer": fa}, raw=block), ""
         if not isinstance(data, dict) or not data.get("name"):
             return None, ("tool_call JSON must be an object with 'name' and "
                           "'arguments'. Got: %s" % block[:300])
@@ -238,7 +267,7 @@ class Adapter:
                     depth -= 1
                     if depth == 0:
                         candidate = text[start:i + 1]
-                        if '"name"' in candidate:
+                        if '"name"' in candidate or '"final_answer"' in candidate:
                             call, err = self._parse_call_json(candidate)
                             if call:
                                 return call, ""

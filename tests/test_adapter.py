@@ -63,6 +63,37 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(out.calls, [])
         self.assertEqual(out.errors, [])
 
+    def test_final_answer_shorthand_string(self):
+        """{"final_answer": "..."} — the envelope-less shorthand small models
+        fall into; intent is unambiguous so it must parse, not abort."""
+        out = self.ad.extract('{"final_answer": "debs: 1.0.46, 1.0.47"}')
+        self.assertEqual(out.calls[0].name, "final_answer")
+        self.assertEqual(out.calls[0].arguments, {"answer": "debs: 1.0.46, 1.0.47"})
+
+    def test_final_answer_shorthand_nested(self):
+        out = self.ad.extract(
+            'Done. {"final_answer": {"answer": "all four ported"}}')
+        self.assertEqual(out.calls[0].name, "final_answer")
+        self.assertEqual(out.calls[0].arguments, {"answer": "all four ported"})
+
+    def test_final_answer_marker_line(self):
+        """`final_answer\\n<prose>` — explicit termination signal with a
+        degraded envelope; honored. Bare prose (above) stays rejected."""
+        out = self.ad.extract(
+            "final_answer\nThe .deb files are 1.0.46, 1.0.47 and 1.0.48.")
+        self.assertEqual(out.calls[0].name, "final_answer")
+        self.assertEqual(
+            out.calls[0].arguments["answer"],
+            "The .deb files are 1.0.46, 1.0.47 and 1.0.48.")
+
+    def test_final_answer_marker_requires_leading_position(self):
+        """Merely MENTIONING final_answer mid-prose is not a termination
+        signal."""
+        out = self.ad.extract(
+            "I should call final_answer once I have listed the files.")
+        self.assertEqual(out.calls, [])
+        self.assertEqual(out.errors, [])
+
 
 class LeakTests(unittest.TestCase):
     def test_scrub_removes_leak(self):

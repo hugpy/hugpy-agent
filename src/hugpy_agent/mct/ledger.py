@@ -387,6 +387,28 @@ class Ledger:
         row = self._db.execute("SELECT * FROM objects WHERE object_id=?", (object_id,)).fetchone()
         return dict(row) if row else None
 
+    def object_by_digest(self, session_id: str, digest: str, *, kind: str | None = None,
+                         media_type: str | None = None) -> dict | None:
+        """The OLDEST object in ``session_id`` whose bytes hash to ``digest``.
+
+        The reverse of ``get_object``: handles are opaque and per-commit, so the
+        digest is the only stable way to ask "do we already hold these bytes?".
+        Content-addressed callers need it — ``manifest.ManifestStore`` resolves
+        a manifest digest (the artifact's stable id) back to a handle this way.
+        Oldest-first so the answer is stable when identical bytes were committed
+        more than once. Read-only: nothing about the chain changes here.
+        """
+        sql = "SELECT * FROM objects WHERE session_id=? AND digest=?"
+        params: list = [session_id, digest]
+        if kind is not None:
+            sql += " AND kind=?"
+            params.append(kind)
+        if media_type is not None:
+            sql += " AND media_type=?"
+            params.append(media_type)
+        row = self._db.execute(sql + " ORDER BY rowid ASC LIMIT 1", params).fetchone()
+        return dict(row) if row else None
+
     def session_object_bytes(self, session_id: str) -> int:
         row = self._db.execute(
             "SELECT COALESCE(SUM(size),0) AS n FROM objects WHERE session_id=?", (session_id,)

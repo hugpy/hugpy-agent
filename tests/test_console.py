@@ -269,7 +269,7 @@ class RunConsoleTests(unittest.TestCase):
              mock.patch("urllib.request.urlopen", fake_urlopen({"data": FLEET})), \
              mock.patch.object(console, "resolve_opencode", return_value=None), \
              mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            rc = cli.main(["console", "--workspace", ws])
+            rc = cli.main(["console", "--opencode", "--workspace", ws])
         self.assertEqual(rc, 1)
         self.assertIn("npm install -g opencode-ai", err.getvalue())
 

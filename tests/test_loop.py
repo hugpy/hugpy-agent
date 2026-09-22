@@ -120,6 +120,7 @@ class MultiStepTests(LoopHarness):
     def test_tool_error_is_data_not_crash(self):
         loop, gw, _ = self.make_loop([
             tc("fs_read", path="does-not-exist.txt"),
+            tc("fs_glob", pattern="*"),   # one SUCCESSFUL call: the final_answer guard needs it
             tc("final_answer", answer="the file is missing"),
         ])
         report = loop.run("t")
@@ -130,6 +131,7 @@ class MultiStepTests(LoopHarness):
     def test_unknown_tool_reported_to_model(self):
         loop, gw, _ = self.make_loop([
             tc("teleport", destination="mars"),
+            tc("fs_glob", pattern="*"),   # one SUCCESSFUL call: the final_answer guard needs it
             tc("final_answer", answer="no teleporter available"),
         ])
         report = loop.run("t")
@@ -192,7 +194,8 @@ class ResumeTests(LoopHarness):
         j1.record_call_start(key, rid, a_seq, "effect", {"tag": "boom"})
         j1.close()   # <- process dies mid-handler
 
-        loop, gw, _ = self.make_loop([tc("final_answer", answer="verified")])
+        loop, gw, _ = self.make_loop([tc("fs_glob", pattern="*"),   # guard needs 1 success
+                                      tc("final_answer", answer="verified")])
         report = loop.resume(rid)
         self.assertEqual(report["outcome"], "done")
         self.assertEqual(self.effect_runs, [])
@@ -226,7 +229,8 @@ class ResumeTests(LoopHarness):
         rid = report["run_id"]
         journal.close()
 
-        loop2, _, _ = self.make_loop([tc("final_answer", answer="finished")])
+        loop2, _, _ = self.make_loop([tc("fs_glob", pattern="*"),   # guard needs 1 success
+                                      tc("final_answer", answer="finished")])
         report2 = loop2.resume(rid)
         self.assertEqual(report2["outcome"], "done")
         self.assertEqual(report2["answer"], "finished")
@@ -331,7 +335,8 @@ class RemoteComputeResumeTests(LoopHarness):
         j1.record_call_start(key, rid, a_seq, "genlike", {"tag": "z"})
         j1.close()   # <- killed inside enqueue, nothing journaled
 
-        loop, gw, _ = self.make_loop([tc("final_answer", answer="ok")])
+        loop, gw, _ = self.make_loop([tc("fs_glob", pattern="*"),   # guard needs 1 success
+                                      tc("final_answer", answer="ok")])
         self._register_genlike(loop)
         report = loop.resume(rid)
         self.assertEqual(report["outcome"], "done")

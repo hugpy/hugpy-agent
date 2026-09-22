@@ -13,6 +13,8 @@ import os
 import signal
 import sys
 
+from ._paths import mct_repl_workspace, console_workspace
+
 from .config import load_config
 from .gateway import Gateway
 from .journal import Journal
@@ -320,13 +322,20 @@ def cmd_console(args) -> int:
     returns — the process execs into OpenCode."""
     from . import console as consolemod
     cfg = _cfg(args)
-    # --claude-code / --qwen-code are shorthands for --frontend <name>.
+    # Frontend selection. --claude-code/--qwen-code/--opencode are shorthands.
+    # With NO frontend requested, bare `console` opens the HEADLESS COCKPIT
+    # packaged with the agent: hot models, worker throughput and GPU capacity.
     if getattr(args, "claude_code", False):
         frontend = "claude-code"
     elif getattr(args, "qwen_code", False):
         frontend = "qwen-code"
+    elif getattr(args, "opencode", False):
+        frontend = "opencode"
     else:
-        frontend = getattr(args, "frontend", "opencode")
+        frontend = getattr(args, "frontend", None)
+    if not frontend:
+        from .fleet_console import main as fleet_main
+        return fleet_main(getattr(args, "fleet_args", []), cfg=cfg)
     try:
         return consolemod.run_console(
             cfg,
@@ -340,6 +349,51 @@ def cmd_console(args) -> int:
     except consolemod.ConsoleError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+
+
+def cmd_frontend(args) -> int:
+    """Launch one fleet harness directly, without entering the cockpit first."""
+    from . import frontends
+    from .fleet_console import Client, FleetError
+
+    cfg = _cfg(args)
+    spec = next((item for item in frontends.REGISTRY
+                 if item["id"] == args.frontend), None)
+    if spec is None:  # argparse/pre-dispatch owns this invariant.
+        print("unknown harness: %s" % args.frontend, file=sys.stderr)
+        return 2
+    client = Client(cfg.base, cfg.api_key,
+                    os.environ.get("HUGPY_OPERATOR_TOKEN", ""), cfg.timeout)
+    try:
+        argv, env = frontends.prepare(spec, client, cfg.model)
+        frontends.configure(spec, env, cfg.model)
+        os.execvpe(argv[0], argv, env)
+    except FleetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0  # execvpe does not return on success
+
+
+_DIRECT_HARNESSES = {
+    "--hermes": "hermes",
+    "--claude-code": "claude-code",
+    "--claude": "claude-code",
+    "--qwen-code": "qwen-code",
+    "--qwen": "qwen-code",
+    "--opencode": "opencode",
+    "--aider": "aider",
+}
+
+
+def _direct_harness_argv(argv):
+    """Translate ``hugpy-agent --HARNESS ...`` into the internal launcher.
+
+    Only a leading flag is special. Subcommand-local flags such as
+    ``hugpy-agent console --opencode`` retain their existing meaning.
+    """
+    if argv and argv[0] in _DIRECT_HARNESSES:
+        return ["_frontend", _DIRECT_HARNESSES[argv[0]], *argv[1:]]
+    return argv
 
 
 def cmd_mct(args) -> int:
@@ -386,7 +440,7 @@ def cmd_mct_serve(args) -> int:
     # TUI owns the terminal exactly as `hugpy-agent console` does.
     from . import console
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    ws = args.console_workspace or os.path.expanduser("~/.hugpy_agent/console")
+    ws = args.console_workspace or console_workspace()
     os.makedirs(ws, exist_ok=True)
     cfg_path = console.materialize(ws, console.build_mct_config(base))
     print(f"  opencode config: {cfg_path}")
@@ -513,10 +567,23 @@ def cmd_runs(args) -> int:
 
 
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _direct_harness_argv(argv)
     ap = argparse.ArgumentParser(
         prog="hugpy-agent",
-        description="Portable agent runtime on the hugpy fleet")
+        description="Portable agent runtime on the hugpy fleet. Direct harnesses: "
+                    "--opencode, --claude-code, --qwen-code, --hermes, --aider")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    # Internal target for the leading --{harness} aliases above. Keeping one
+    # launcher means cockpit launches and direct launches share the exact same
+    # adapter registry and child environment construction.
+    p = sub.add_parser("_frontend", help=argparse.SUPPRESS)
+    p.add_argument("frontend", choices=sorted(set(_DIRECT_HARNESSES.values())))
+    p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
+    p.add_argument("--model", help="fleet model (default env HUGPY_MODEL)")
+    p.add_argument("--workspace", help="workspace used for config resolution")
+    p.set_defaults(fn=cmd_frontend)
 
     p = sub.add_parser("run", help="run one task to completion")
     p.add_argument("task")
@@ -583,16 +650,17 @@ def main(argv=None) -> int:
                    help="skip the readiness round-trip (offline/testing)")
     p.set_defaults(fn=cmd_eval)
 
-    p = sub.add_parser("console", help="launch OpenCode (optional npm peer) "
-                                       "as the interactive fleet console")
+    p = sub.add_parser("console", help="headless fleet cockpit (bare); a frontend "
+                                       "flag launches an interactive TUI instead")
     # Deliberately NOT _add_common: the console workspace is its OWN dir
     # (default ~/.hugpy_agent/console/, where opencode.json lives), distinct
     # from the agent-loop workspace, so --workspace here must not feed the
     # shared config resolver's workspace knob.
     p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
     p.add_argument("--frontend", choices=["opencode", "claude-code", "qwen-code"],
-                   default="opencode",
-                   help="terminal frontend to launch (default opencode). "
+                   default=None,
+                   help="terminal frontend to launch. With NO frontend, bare "
+                        "`console` opens the packaged headless cockpit. "
                         "claude-code points Claude Code at the fleet's "
                         "Anthropic Messages shim (/v1/messages); qwen-code "
                         "points Qwen Code (a Claude-Code-style TUI, no "
@@ -601,6 +669,8 @@ def main(argv=None) -> int:
                    help="shorthand for --frontend claude-code")
     p.add_argument("--qwen-code", dest="qwen_code", action="store_true",
                    help="shorthand for --frontend qwen-code")
+    p.add_argument("--opencode", dest="opencode", action="store_true",
+                   help="shorthand for --frontend opencode (bare `console` is now the cockpit)")
     p.add_argument("--model", help="override the default model OpenCode opens with")
     p.add_argument("--workspace", dest="console_workspace",
                    help="console dir holding opencode.json "
@@ -622,12 +692,14 @@ def main(argv=None) -> int:
                         "just chat-drivable ones (also HUGPY_CONSOLE_ALL_MODELS=1). "
                         "opencode only; a non-chat model selected here will fail")
     p.set_defaults(fn=cmd_console)
+    p.add_argument("fleet_args", nargs=argparse.REMAINDER,
+                   help="status | workers | models | inspect MODEL | queue | metrics | plan | call | request | exec | repl")
 
     p = sub.add_parser("mct", help="Mediated Context Terminal — pointer-mediated "
                                    "chat where a confined Claude answers only "
                                    "through B's curated context")
     p.add_argument("workspace", nargs="?",
-                   default=os.path.expanduser("~/.mct/repl"),
+                   default=mct_repl_workspace(),
                    help="workspace dir (a fresh dir = a new conversation)")
     p.add_argument("--model", default="sonnet",
                    help="A's model (e.g. sonnet, opus, haiku)")
@@ -652,7 +724,7 @@ def main(argv=None) -> int:
                                          "endpoint so any TUI (e.g. OpenCode) "
                                          "can be the operator terminal")
     p.add_argument("workspace", nargs="?",
-                   default=os.path.expanduser("~/.mct/repl"),
+                   default=mct_repl_workspace(),
                    help="MCT workspace dir (a fresh dir = a new conversation)")
     p.add_argument("--host", default="127.0.0.1",
                    help="bind address (default loopback; this endpoint can "
@@ -675,7 +747,7 @@ def main(argv=None) -> int:
                                          "timing for an MCT workspace (polled "
                                          "by the fleet console steward drawer)")
     p.add_argument("workspace", nargs="?",
-                   default=os.path.expanduser("~/.mct/repl"),
+                   default=mct_repl_workspace(),
                    help="MCT workspace dir (default ~/.mct/repl)")
     p.add_argument("--turns", type=int, default=5,
                    help="how many most-recent per-turn rows to include")
@@ -686,7 +758,7 @@ def main(argv=None) -> int:
                                       "an MCT workspace — the console's directory-"
                                       "accessibility control")
     p.add_argument("workspace", nargs="?",
-                   default=os.path.expanduser("~/.mct/repl"),
+                   default=mct_repl_workspace(),
                    help="MCT workspace dir (default ~/.mct/repl)")
     p.add_argument("--allow", choices=["on", "off"],
                    help="allow (on) or disallow (off) frontier filesystem access")

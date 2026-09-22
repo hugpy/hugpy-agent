@@ -154,6 +154,7 @@ class LoopGateTests(unittest.TestCase):
     def test_readonly_mode_denies_write_and_loop_continues(self):
         loop, gw, journal = self.make_loop([
             tc("effect", tag="boom"),
+            tc("fs_glob", pattern="*"),   # one SUCCESSFUL call: the final_answer guard needs it
             tc("final_answer", answer="could not write; reported"),
         ], policy_mode="readonly")
         report = loop.run("t")
@@ -164,7 +165,7 @@ class LoopGateTests(unittest.TestCase):
         # ...and the denial is journaled like any other call result:
         rows = journal.raw_messages(report["run_id"])
         self.assertIn("policy denied", json.dumps([r["content"] for r in rows]))
-        self.assertEqual(report["tool_calls"], 1)              # recorded call
+        self.assertEqual(report["tool_calls"], 2)              # denied effect + fs_glob both recorded
 
     def test_readonly_mode_still_allows_reads(self):
         with open(os.path.join(self.ws, "f.txt"), "w") as fh:
@@ -182,6 +183,7 @@ class LoopGateTests(unittest.TestCase):
         deny and SAYS WHY, so the operator knows what to configure."""
         loop, gw, _ = self.make_loop([
             tc("effect", tag="boom"),
+            tc("fs_glob", pattern="*"),   # one SUCCESSFUL call: the final_answer guard needs it
             tc("final_answer", answer="blocked"),
         ], policy_mode="ask")
         report = loop.run("t")
@@ -204,6 +206,7 @@ class LoopGateTests(unittest.TestCase):
     def test_deny_list_blocks_even_in_auto(self):
         loop, gw, _ = self.make_loop([
             tc("effect", tag="no"),
+            tc("fs_glob", pattern="*"),   # one SUCCESSFUL call: the final_answer guard needs it
             tc("final_answer", answer="done"),
         ], policy_mode="auto", deny=["effect"])
         report = loop.run("t")

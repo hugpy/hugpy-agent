@@ -84,7 +84,8 @@ class AgentLoop:
     def __init__(self, cfg: Config, gateway: Gateway | None = None,
                  registry: Registry | None = None, journal: Journal | None = None,
                  adapter: Adapter | None = None, memory: Memory | None = None,
-                 on_event=None, comms: Comms | None = None, depth: int = 0):
+                 on_event=None, comms: Comms | None = None, depth: int = 0,
+                 object_store=None, session_id: str | None = None):
         self.cfg = cfg
         # Subagent nesting level (P2.5): 0 for an operator-started run;
         # children get parent.depth + 1. Gates whether this loop's registry
@@ -103,11 +104,20 @@ class AgentLoop:
         self.rag = (RagIndex(default_vectors_path(cfg.workspace),
                              fleet_embedder(self.gateway, cfg.workspace))
                     if cfg.rag_enabled else None)
+        # Session object store (k99b): optional, and reused — never
+        # constructed here. When a caller hands this loop an already-open
+        # MCT object store (e.g. an MCT session's `.store`/`.session_id`),
+        # `http_fetch` quarantines fetched bodies into it instead of the
+        # honest `quarantined: false` fallback. `None` by default, so every
+        # existing caller (CLI/serve/eval) is byte-for-byte unchanged.
+        self.object_store = object_store
+        self.session_id = session_id
         if registry is None:
             from .tools import build_registry
             registry = build_registry(cfg.workspace, self.gateway, self.memory,
                                       comms=self.comms, agent_loop=self,
-                                      rag=self.rag)
+                                      rag=self.rag, object_store=self.object_store,
+                                      session_id=self.session_id)
         self.registry = registry
         self.journal = journal or Journal(default_journal_path(cfg.workspace))
         self.adapter = adapter or Adapter(self._pick_mode())
@@ -386,8 +396,8 @@ class AgentLoop:
                 else:
                     self.journal.append_message(
                         run_id, "user",
-                        "You must respond with a tool call. Use `final_answer` "
-                        "if the task is complete.")
+                        "You must respond with a tool call. Investigate with a "
+                        "real tool first; use `final_answer` only once you have.")
                     self.on_event("nudge", text[:200])
                 continue
 
@@ -399,6 +409,22 @@ class AgentLoop:
                 extra_note = (" NOTE: you sent %d tool calls; only the first "
                               "was executed. Send one call per reply."
                               % len(outcome.calls))
+
+            if (call.name == "final_answer"
+                    and self.journal.successful_call_count(run_id) == 0):
+                # Terminating without ever looking is fabrication, not an
+                # answer. Requires >= 1 SUCCESSFUL (status='done') tool call:
+                # policy-denied, errored and interrupted calls do not count,
+                # so a model cannot route around this with a rejected write.
+                # Bounded by max_steps, so this cannot spin forever.
+                self.journal.append_message(
+                    run_id, "user",
+                    "You have not completed any successful tool call yet, so "
+                    "you cannot know the answer. Use a real tool that "
+                    "succeeds to investigate, then answer.")
+                self.on_event("nudge",
+                              "final_answer refused: no prior successful tool call")
+                continue
 
             if call.name == "final_answer":
                 errors, args = self.adapter.validate(
@@ -598,6 +624,13 @@ class AgentLoop:
                               max_generations=self.cfg.max_generations,
                               stop=lambda: self.stop_requested,
                               on_event=self.on_event)
+        # k99b: duck-typed session handle, so http_fetch quarantines even
+        # when `self.registry` was supplied directly (bypassing
+        # build_registry's object_store= wiring). A no-op for every other
+        # handler — nothing else reads these attributes.
+        if self.object_store is not None:
+            context.object_store = self.object_store
+            context.session_id = self.session_id
         try:
             result = self.registry.execute(spec, args, context)
         except ToolInterrupted:

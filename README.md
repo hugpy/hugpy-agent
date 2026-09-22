@@ -188,9 +188,124 @@ continuation-prompt leak) and known leak strings are scrubbed defensively.
 `usage` is null at the seam today, so token accounting is a client-side
 estimate (`gateway.estimate_tokens`).
 
+## Headless fleet console
+
+`hugpy-agent console` opens a full-screen terminal control center (including
+over SSH); when piped, it prints one status snapshot. It needs no `hcon` script,
+browser, or Node installation. Python's standard `curses` module supplies the
+terminal interface on Linux/macOS.
+
+Use **Tab** or **1–6** to move between **Models**, **Workers**, **Queue**,
+**Metrics**, **Results**, and **Frontends**. **Up/Down** selects a row; **Enter** opens its
+action menu. **/** filters rows, **C** clears filters, **R** refreshes, and
+**Q** exits. Worker/model names are picked from lists, never retyped.
+
+- Model menu: inspect capacity, load, unload, assign, test, or open an agent
+  frontend with that model (Hermes Agent, Claude Code, Qwen Code, OpenCode, Aider).
+- Frontends tab: installed/not-installed indicators; choose a frontend and then
+  select a chat-capable fleet model. A missing tool can be installed from the
+  console after an explicit confirmation, or its installation guide can be opened.
+- Worker menu: browse its models, load a chosen model, unload a resident model,
+  or inspect its resources.
+- Test dialog: enter a prompt, choose a token limit and whether evictions are
+  allowed. **T** tests the visible chat models, hot models first, one at a time.
+  **S** stops the remaining tests after the current call finishes. A failed call
+  stops the batch to avoid overlapping work after an uncertain timeout.
+- Capacity benchmark: press **M** to derive exact central quants from one verbose
+  catalog snapshot, classify GPU-only/spill/RAM-only configurations against each
+  worker, and run the deterministic nine-task grading battery. Workers run in
+  parallel; distinct models also use the worker's advertised concurrent lanes.
+  The same model's quant/config mutations remain serial. Before every task, the
+  console rechecks that the exact worker is hot, loaded, pinned to the intended
+  quant, and using the intended allocation/4-bit/MoE settings, then calls that
+  worker directly. A base quant's full bytes are charged to disk and transfer;
+  4-bit and MoE only change runtime-memory estimates. Finished base quants are
+  removed from that worker's cache to make room for cold central quants; central
+  `llm_storage` is never a deletion target. Results are retained in the console
+  and exported as JSON plus an ODS metrics workbook under
+  `~/.hugpy_agent/console/reports/`.
+- Results retain responses and failures for the current session; select a
+  result and press Enter to read it. Opening another frontend suspends the
+  console and returns to it when that program exits.
+
+Frontend adapters supply the selected fleet endpoint, model and API key only
+to the child process. Hermes uses a named custom provider with Chat Completions,
+configured in a fresh console-owned profile under `~/.hugpy_agent/console/hermes/`.
+The profile references an environment variable for the key; it retains session
+files after exit, and its path is recorded in Results. Your original Hermes
+profile is untouched. Aider uses `openai/<fleet-model>` for the main, weak and editor
+models. Claude Code uses Hugpy's Anthropic Messages shim. OpenCode refreshes its
+fleet model map; Qwen Code receives the selected model even when a different
+`OPENAI_MODEL` was previously set. These are agent frontends; inference remains
+on Hugpy's workers. Binary detection does not certify model/tool-call compatibility.
+Adapters were checked against the [Hermes provider documentation](https://hermes-agent.nousresearch.com/docs/integrations/providers/)
+and [Aider OpenAI-compatible documentation](https://aider.chat/docs/llms/openai-compat.html).
+
+Reads and calls run in the background, so navigation stays responsive. The
+screen refreshes automatically, showing snapshot age, missing data and progress.
+Load/unload confirmations name the target model and worker. Exiting does not
+cancel a request already accepted by the fleet. The commands below remain
+available for scripting; they are not required for the interactive workflow.
+
+The main view ranks models by preparation needed: **ready now**, **hot / queue
+active**, **load into free VRAM**, **transfer + load**, **eviction needed**, or
+**won't fit GPU**. Each row shows a candidate worker, historical tok/s and a start
+estimate where supported. Worker rows show free/total VRAM in GiB.
+
+```sh
+hugpy-agent console --base http://127.0.0.1:7002 status
+hugpy-agent console workers --json
+hugpy-agent console models --json
+hugpy-agent console inspect MODEL
+hugpy-agent console plan --task text-generation
+hugpy-agent console call MODEL 'Reply with hello' --max-tokens 64
+hugpy-agent console load WORKER_ID MODEL --alloc-mode gpu_only
+hugpy-agent console unload WORKER_ID MODEL
+hugpy-agent console request /llm/model-groups
+hugpy-agent console request /llm/workers/WORKER_ID/config --method POST --body @config.json
+hugpy-agent console exec MODEL -- your-headless-program its-arguments
+```
+
+Use `HUGPY_BASE` and `HUGPY_API_KEY` through the normal agent configuration.
+Operator-only APIs additionally use `HUGPY_OPERATOR_TOKEN` from the environment;
+the console never prints this token. An API key alone may not grant placement
+or control access. Explicit bases retain their path (`/api`, `/v1`, `/api/v1`);
+bare origins address central directly. Set `HUGPY_CONSOLE_TIMEOUT` to adjust the
+per-request timeout (120 seconds by default).
+
+`status`/`models`/`plan` inspect placements with at most four concurrent reads.
+`plan` provides a hot-first manual testing order, not a reservation or automatic
+sweep. `call` sends one bounded chat request without retry and defaults to
+`no_makeroom`; add `--allow-eviction` when you intend to displace other models.
+Other task types and controls are available through `request`, with an explicit
+HTTP method for mutations. A timed-out mutation or call may still be running:
+inspect queue/worker state before retrying. `load` acceptance means loading was
+requested, not that the model is ready; verify residency afterward.
+
+`exec` validates the exact catalog model and launches an existing program with
+`OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` and `OPENAI_MODEL` in its
+environment. It preserves arguments without a shell, strips the operator token,
+and returns the child's exit code. Programs must support these environment
+variables; it does not install or configure arbitrary third-party tools.
+
+Capacity classifications use central's `fits_free_vram` / `fits_total_vram`
+placement fields, including its MoE/headroom/calibration rules. The central API
+must run the accompanying source change; older servers show **capacity unknown**.
+Total VRAM fit means eviction may help, not that pinned allocations can be
+evicted. Admission, policy, context size, routing and concurrent calls can change
+the result. CPU/offload feasibility remains visible in `inspect`'s raw placement.
+
+Load estimates use matching worker/model historical measurements across recorded
+variants (conservatively the slowest); throughput shows the fastest recorded
+matching variant and is not a promise for the next call. Queue records lack
+worker attribution and remaining token budgets, so busy queues and eviction have
+**unknown** start ETA. Idle/hot is approximately zero preparation time, excluding
+prompt prefill. Missing observations are reported as unknown with visible errors;
+partial snapshots exit nonzero. JSON output is available for automation.
+
 ## Interactive console (OpenCode co-install)
 
-`hugpy-agent console` launches [OpenCode](https://opencode.ai) — the
+`hugpy-agent console --opencode` launches [OpenCode](https://opencode.ai) — the
 open-source terminal coding agent — pre-wired to the hugpy fleet: it fetches
 the fleet's live model list, writes an `opencode.json` (in
 `~/.hugpy_agent/console/` by default) with a `hugpy` provider pointed at the

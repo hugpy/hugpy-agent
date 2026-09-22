@@ -184,7 +184,8 @@ def _recall_handler(rag, query: str, k=5) -> str:
 
 
 def build_registry(workspace: str, gateway, memory=None, comms=None,
-                   agent_loop=None, rag=None) -> Registry:
+                   agent_loop=None, rag=None, object_store=None,
+                   session_id: str | None = None) -> Registry:
     """The Phase-1 built-in toolset. `final_answer` is registered as a real
     tool — a schema'd, validated termination signal beats parsing prose for
     'am I done?' (fail-closed on ambiguity).
@@ -192,14 +193,25 @@ def build_registry(workspace: str, gateway, memory=None, comms=None,
     `agent_loop` (P2.5): the AgentLoop this registry will serve. When given,
     a `spawn` tool bound to that loop is registered — unless the loop sits
     at the configured max depth (subagent.make_spawn_spec returns None
-    there; a floor-level child must not be able to recurse)."""
+    there; a floor-level child must not be able to recurse).
+
+    `object_store` / `session_id` (k99b): an already-open MCT object store
+    (`hugpy_agent.mct.objects.ObjectStore`) and the session to commit into,
+    when the caller has one reachable (e.g. an MCT session's `.store` /
+    `.session_id`). Threaded straight into `http.spec(...)` so `http_fetch`
+    quarantines fetched bodies into it instead of falling back to the
+    honest `quarantined: false` envelope. This function never constructs an
+    ObjectStore itself — reuse only, no second store. Both default to
+    `None`, so a caller that doesn't have a session gets byte-for-byte the
+    old behavior."""
     from . import fs, http, shell, fleet, lean
 
     reg = Registry()
     for spec in fs.specs(workspace):
         reg.register(spec)
     reg.register(shell.spec(workspace))
-    reg.register(http.spec())
+    reg.register(http.spec(object_store=object_store,
+                           default_session_id=session_id))
     for spec in fleet.specs(gateway, workspace):
         reg.register(spec)
     # lean (2026-07-29): the token-efficiency kit — find-by-phrase, digest,
