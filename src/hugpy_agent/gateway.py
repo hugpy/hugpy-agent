@@ -329,6 +329,11 @@ class Gateway:
     """One client instance per (base, key). Route resolution is probed lazily
     and cached; every other method is a plain request with errors-as-data."""
 
+    # Session signals (session_signals.py): identity headers + lease on every
+    # chat. True for the hugpy fleet; a third-party provider subclass turns it
+    # off so X-Hugpy-* never leaves for someone else's API.
+    session_signals = True
+
     def __init__(self, base: str, api_key: str = "", model: str = "",
                  timeout: int = 300, no_think: bool = False):
         self.base = normalize_base(base)
@@ -570,11 +575,34 @@ class Gateway:
         payload = self.build_payload(wire, model, temperature, max_tokens,
                                      stream, tools)
         body = json.dumps(payload).encode()
-        last_err = ""
         timeout = timeout or self.timeout
+        sig = None
+        if self.session_signals:
+            from . import session_signals as _ss
+            sig = _ss.signals()
+        if sig is None:
+            return self._chat_attempts(chat_url, body, timeout, retries, on_delta, {})
+        # THE choke point for session state: every hugpy model call carries
+        # session/turn/request identity and holds the session's lease while in
+        # flight; an abort (Ctrl-C, stream cut) cancels it on central.
+        with sig.request(_ss.api_prefix(chat_url), self.api_key) as rq:
+            try:
+                res = self._chat_attempts(chat_url, body, timeout, retries,
+                                          on_delta, rq.headers)
+            except BaseException:
+                rq.cancel("client abort")
+                raise
+            if not res.ok and (res.error or "").startswith("stream interrupted"):
+                rq.cancel("client stream interrupted")
+            return res
+
+    def _chat_attempts(self, chat_url, body, timeout, retries, on_delta,
+                       extra_headers) -> ChatResult:
+        last_err = ""
         for attempt in range(retries + 1):
-            req = urllib.request.Request(chat_url, data=body,
-                                         headers=self._headers("application/json"))
+            headers = self._headers("application/json")
+            headers.update(extra_headers)
+            req = urllib.request.Request(chat_url, data=body, headers=headers)
             try:
                 resp = urllib.request.urlopen(req, timeout=timeout)
             except urllib.error.HTTPError as exc:

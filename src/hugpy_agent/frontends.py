@@ -14,6 +14,7 @@ import tempfile
 
 from . import console
 from . import harness_settings as hs
+from . import session_signals  # registers the identity ENV_HOOK
 from .fleet_console import FleetError
 
 
@@ -138,7 +139,9 @@ def configure(spec, env, model, root=None):
     profile = tempfile.mkdtemp(prefix="session-", dir=root)
     config = {
         "providers": {"hugpy": {"name": "Hugpy fleet", "api": env["OPENAI_BASE_URL"],
-                                  "key_env": "HUGPY_HERMES_API_KEY", "transport": "openai_chat"}},
+                                  "key_env": "HUGPY_HERMES_API_KEY", "transport": "openai_chat",
+                                  # per-launch profile: literal identity (not secret)
+                                  "extra_headers": session_signals.harness_header_values(env)}},
         "model": {"provider": "custom:hugpy", "default": model, "api_mode": "chat_completions"},
         "auxiliary": {task: {"provider": "main"} for task in ("compression", "vision", "session_naming")},
     }

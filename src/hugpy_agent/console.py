@@ -48,6 +48,7 @@ import urllib.error
 import urllib.request
 
 from . import harness_settings as hs
+from . import session_signals
 from .gateway import brain_matches_key, normalize_base, origin
 
 # The env var name OpenCode resolves at ITS runtime via the `{env:NAME}`
@@ -145,6 +146,19 @@ def resolve_claude() -> str | None:
     return None
 
 
+def arm_session(harness: str, central: str | None, key: str = "") -> dict:
+    """Give the harness this process is about to exec() its central identity
+    (HUGPY_CLIENT_* env, which every harness's header mechanism reads) and,
+    when the fleet base is known, a detached lease keeper that watches this
+    pid (exec keeps it) and sends session_closed when the harness exits.
+    Best effort — never blocks a launch."""
+    add = session_signals.harness_env(harness, os.environ, pid=os.getpid())
+    os.environ.update(add)
+    if central and session_signals.enabled():
+        session_signals.start_lease_sidecar(central, key, harness)
+    return add
+
+
 def launch_claude_code(central: str, key: str,
                        model: str | None = None,
                        binary: str | None = None,
@@ -197,6 +211,11 @@ def launch_claude_code(central: str, key: str,
         _hdr = "X-Hugpy-Model: " + str(model)
         _cur = os.environ.get("ANTHROPIC_CUSTOM_HEADERS", "").strip()
         os.environ["ANTHROPIC_CUSTOM_HEADERS"] = (_cur + "\n" + _hdr) if _cur else _hdr
+    arm_session("claude-code", central, key)
+    if session_signals.enabled():
+        os.environ["ANTHROPIC_CUSTOM_HEADERS"] = session_signals.merge_header_lines(
+            os.environ.get("ANTHROPIC_CUSTOM_HEADERS", ""),
+            session_signals.harness_header_values())
     _rebind_stdin_to_tty()
     init = (init_prompt if init_prompt is not None
             else os.environ.get("HUGPY_INIT_PROMPT", "")).strip()
@@ -285,6 +304,45 @@ def ensure_qwen_openai_auth(settings_path: str | None = None) -> None:
         json.dump(settings, fh, indent=2)
 
 
+def write_qwen_identity_settings(path: str | None = None, environ=None) -> str:
+    """Derived qwen-code SYSTEM settings carrying central-identity headers
+    (`model.generationConfig.customHeaders`, Qwen Code 0.22.2) as `$VAR` env
+    references — qwen's settings loader resolves `$VAR`/`${VAR}`, so the one
+    shared file serves concurrent launches, each with its own env. Same file
+    and merge discipline as write_qwen_fast_model_settings: whatever system
+    settings are already in effect (incl. that fastModel file) are merged in
+    first; ~/.qwen/settings.json is never touched. Returns the path, which the
+    caller exports as QWEN_CODE_SYSTEM_SETTINGS_PATH for this launch."""
+    env = os.environ if environ is None else environ
+    path = path or os.path.expanduser(os.path.join(
+        DEFAULT_WORKSPACE, "qwen-system-settings.json"))
+    base_path = env.get(QWEN_SYSTEM_SETTINGS_ENV) or "/etc/qwen-code/settings.json"
+    settings: dict = {}
+    src = path if os.path.realpath(base_path) == os.path.realpath(path) else base_path
+    if os.path.isfile(src):
+        try:
+            with open(src, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                settings = loaded
+        except (OSError, ValueError):
+            pass
+    model = settings.get("model")
+    if not isinstance(model, dict):
+        model = settings["model"] = {}
+    gen = model.get("generationConfig")
+    if not isinstance(gen, dict):
+        gen = model["generationConfig"] = {}
+    hdrs = gen.get("customHeaders")
+    if not isinstance(hdrs, dict):
+        hdrs = gen["customHeaders"] = {}
+    hdrs.update(session_signals.harness_header_refs("qwen"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+    return path
+
+
 def launch_qwen_code(central: str, key: str, model: str | None = None,
                      binary: str | None = None) -> "None":
     """exec Qwen Code pointed at the fleet's OpenAI-compatible /v1.
@@ -318,6 +376,9 @@ def launch_qwen_code(central: str, key: str, model: str | None = None,
         print(hs.banner("qwen-code"), file=sys.stderr)
         argv += argv_add
         os.environ.update(env_add)
+    if session_signals.enabled():
+        arm_session("qwen-code", central, key)
+        os.environ[QWEN_SYSTEM_SETTINGS_ENV] = write_qwen_identity_settings()
     _rebind_stdin_to_tty()
     os.execvp(binary, argv)
 
@@ -520,6 +581,9 @@ def build_config(central: str, key_env_name: str, models: dict,
                 "options": {
                     "baseURL": base,
                     "apiKey": "{env:%s}" % key_env_name,
+                    # Session identity for central (session_signals): env
+                    # REFERENCES, filled per launch by arm_session().
+                    "headers": session_signals.harness_header_refs("opencode"),
                 },
                 "models": models,
             },
@@ -624,7 +688,8 @@ def materialize(workspace_dir: str, config: dict) -> str:
 
 def launch(workspace_dir: str, key: str,
            binary: str | None = None,
-           allow_all: bool | None = None) -> "None":
+           allow_all: bool | None = None,
+           central: str | None = None) -> "None":
     """chdir into the workspace and exec OpenCode in place (os.execvp — the
     Python process becomes the TUI; no wrapper process lingers to garble
     terminal ownership). The literal API key is exported into the child's
@@ -654,6 +719,7 @@ def launch(workspace_dir: str, key: str,
     if extra_env:
         print(hs.banner("opencode"), file=sys.stderr)
         os.environ.update(extra_env)
+    arm_session("opencode", central, key)
     os.chdir(ws)
     _rebind_stdin_to_tty()
     os.execvp(binary, argv)
@@ -767,5 +833,5 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
             materialize(ws, config)
         print("[console] reusing %s (no sync)" % path, file=sys.stderr)
 
-    launch(ws, cfg.api_key, allow_all=allow_all)
+    launch(ws, cfg.api_key, allow_all=allow_all, central=cfg.base)
     return 0  # unreachable on success (exec); keeps the signature honest

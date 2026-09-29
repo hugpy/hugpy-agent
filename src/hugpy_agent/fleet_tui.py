@@ -971,7 +971,10 @@ class Console:
         curses.def_prog_mode()
         curses.endwin()
         try:
-            result = subprocess.call(argv, env=env)
+            from . import session_signals
+            with session_signals.harness_lease(self.client.base, self.client.key, env,
+                                               frontend["id"]):
+                result = subprocess.call(argv, env=env)
             self.results.insert(0, {"action": frontend["name"], "model": model, "ok": result == 0,
                                     "exit_code": result, "profile": profile})
             self.notice = "%s exited (%s). Back in fleet console." % (frontend["name"], result)
