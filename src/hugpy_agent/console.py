@@ -47,6 +47,7 @@ import tempfile
 import urllib.error
 import urllib.request
 
+from . import harness_settings as hs
 from .gateway import brain_matches_key, normalize_base, origin
 
 # The env var name OpenCode resolves at ITS runtime via the `{env:NAME}`
@@ -66,52 +67,29 @@ PREFERRED_DEFAULT = "Qwen~Qwen3-Coder-Next-GGUF"
 
 DEFAULT_WORKSPACE = os.path.join("~", ".hugpy_agent", "console")
 
-# OpenCode's top-level `small_model` ("provider/model-id") drives session TITLE
-# generation (and other lightweight calls); without it OpenCode spends the
-# session's main model on titles. Verified against opencode 1.18.33:
-# Provider.getSmallModel honours config.small_model first, and the title path
-# is `agent.title.model ?? getSmallModel() ?? main model` — we leave the title
-# agent alone so small_model is the single knob. Override with
-# HUGPY_OPENCODE_SMALL_MODEL (bare id or "hugpy/<id>"); "off"/"none"/"" omits
-# the key and restores OpenCode's fall-back-to-main-model behaviour.
-SMALL_MODEL_ENV = "HUGPY_OPENCODE_SMALL_MODEL"
-DEFAULT_SMALL_MODEL = "Qwen2.5-Coder-1.5B-Instruct-GGUF"
-
-# Per-launch "allow everything" (OpenCode's analogue of Claude Code's
-# --dangerously-skip-permissions). Verified against opencode 1.18.33, which
-# honours BOTH of these without touching opencode.json:
-#   * OPENCODE_PERMISSION (env, JSON) — deep-merged over the config's
-#     top-level `permission` at load time;
-#   * the TUI flag `--auto` (aliases --yolo / --dangerously-skip-permissions)
-#     — auto-approves any request not explicitly denied.
-# We set both: the env turns every known permission key to "allow" (so the
-# built-in agents' own asks — doom_loop, external_directory, .env reads — are
-# lifted too), and --auto catches any key a newer OpenCode adds. The shared,
-# generated opencode.json stays on its HUGPY_CONSOLE_PERMISSION posture.
-ALLOW_ALL_ENV = "HUGPY_OPENCODE_ALLOW_ALL"
-OPENCODE_PERMISSION_KEYS = (
-    "read", "edit", "glob", "grep", "list", "bash", "task",
-    "external_directory", "todowrite", "question", "webfetch", "websearch",
-    "lsp", "doom_loop", "skill")
-ALLOW_ALL_BANNER = "opencode: all permissions ALLOWED (--allow-all)"
+# Harness settings (allow_all, small/title model) live in ONE table in
+# harness_settings.py. For OpenCode (verified 1.18.33):
+#   * small_model — top-level opencode.json `small_model` ("provider/id");
+#     the title path is `agent.title.model ?? getSmallModel() ?? main model`,
+#     and we leave the title agent alone so small_model is the single knob.
+#     HUGPY_OPENCODE_SMALL_MODEL / HUGPY_HARNESS_SMALL_MODEL override; "off"
+#     omits the key.
+#   * allow_all — per launch only: OPENCODE_PERMISSION (env JSON, deep-merged
+#     over the config's `permission`) with every known key "allow", plus the
+#     TUI's `--auto` (alias --yolo / --dangerously-skip-permissions). The
+#     shared, generated opencode.json keeps its HUGPY_CONSOLE_PERMISSION posture.
 
 
-def allow_all_requested(flag: bool | None = None, environ=None) -> bool:
-    """Explicit flag wins; otherwise HUGPY_OPENCODE_ALLOW_ALL (default 0)."""
-    if flag is not None:
-        return bool(flag)
-    env = os.environ if environ is None else environ
-    return env.get(ALLOW_ALL_ENV, "0").strip().lower() in (
-        "1", "true", "yes", "on")
-
-
-def opencode_launch_spec(binary: str, allow_all: bool) -> tuple[list, dict]:
+def opencode_launch_spec(binary: str, allow_all: bool | None = None,
+                         environ=None) -> tuple[list, dict]:
     """(argv, env additions) for one OpenCode launch. Pure — no exec, no
-    global env mutation — so the allow-all contract is unit-testable."""
+    global env mutation. allow_all None -> resolved from the environment."""
+    if allow_all is None:
+        allow_all = hs.allow_all("opencode", environ)
     if not allow_all:
         return [binary], {}
-    perm = {k: "allow" for k in OPENCODE_PERMISSION_KEYS}
-    return [binary, "--auto"], {"OPENCODE_PERMISSION": json.dumps(perm)}
+    argv_add, env_add = hs.allow_all_spec("opencode", {hs.ALLOW_ALL_ENV: "1"})
+    return [binary] + argv_add, env_add
 
 INSTALL_HINT = """\
 opencode not found. OpenCode is an optional peer — install it once with npm:
@@ -223,6 +201,19 @@ def launch_claude_code(central: str, key: str,
     init = (init_prompt if init_prompt is not None
             else os.environ.get("HUGPY_INIT_PROMPT", "")).strip()
     argv = [binary] + (["--append-system-prompt", init] if init else [])
+    # Harness settings (harness_settings table). This launcher ALWAYS points
+    # Claude Code at the hugpy shim, so the small/title model may be set here;
+    # it is never applied to a Claude Code talking to Anthropic directly.
+    small = hs.small_model("claude-code")
+    if small:
+        for name in hs.HARNESSES["claude-code"]["small_model_env"]:
+            os.environ[name] = small
+    argv_add, env_add = hs.allow_all_spec("claude-code")
+    hs.scrub(os.environ)
+    if argv_add:
+        print(hs.banner("claude-code"), file=sys.stderr)
+        argv += argv_add
+        os.environ.update(env_add)
     os.execvp(binary, argv)
 
 
@@ -317,8 +308,49 @@ def launch_qwen_code(central: str, key: str, model: str | None = None,
     os.environ[QWEN_AUTH_ENV] = key or "hugpy-open-fleet"
     os.environ.setdefault(QWEN_MODEL_ENV, model or "default")
     ensure_qwen_openai_auth()
+    argv = [binary]
+    small = hs.small_model("qwen-code")
+    if small:
+        os.environ[QWEN_SYSTEM_SETTINGS_ENV] = write_qwen_fast_model_settings(small)
+    argv_add, env_add = hs.allow_all_spec("qwen-code")
+    hs.scrub(os.environ)
+    if argv_add:
+        print(hs.banner("qwen-code"), file=sys.stderr)
+        argv += argv_add
+        os.environ.update(env_add)
     _rebind_stdin_to_tty()
-    os.execvp(binary, [binary])
+    os.execvp(binary, argv)
+
+
+QWEN_SYSTEM_SETTINGS_ENV = "QWEN_CODE_SYSTEM_SETTINGS_PATH"
+
+
+def write_qwen_fast_model_settings(small: str, path: str | None = None,
+                                   environ=None) -> str:
+    """Derived qwen-code system-settings file carrying `fastModel` (Qwen Code
+    0.22.2 generates session titles with fastModel; it has no CLI flag/env for
+    it). Pointed at via QWEN_CODE_SYSTEM_SETTINGS_PATH for this launch only, so
+    ~/.qwen/settings.json is never touched. Any system settings file already in
+    effect is merged in first, so pointing the env elsewhere loses nothing."""
+    env = os.environ if environ is None else environ
+    path = path or os.path.expanduser(os.path.join(
+        DEFAULT_WORKSPACE, "qwen-system-settings.json"))
+    base_path = env.get(QWEN_SYSTEM_SETTINGS_ENV) or "/etc/qwen-code/settings.json"
+    settings: dict = {}
+    if os.path.realpath(base_path) != os.path.realpath(path) and \
+            os.path.isfile(base_path):
+        try:
+            with open(base_path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                settings = loaded
+        except (OSError, ValueError):
+            pass
+    settings["fastModel"] = small
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+    return path
 
 
 def qwen_base(central: str) -> str:
@@ -434,18 +466,17 @@ def fetch_model_map(central: str, key: str,
 def resolve_small_model(models: dict) -> tuple[str | None, dict]:
     """(small-model id or None, models map guaranteed to list it).
 
-    The id comes from HUGPY_OPENCODE_SMALL_MODEL, else DEFAULT_SMALL_MODEL; an
-    "off"/"none"/empty value disables it. It resolves against the fleet map the
+    The id comes from harness_settings.small_model("opencode")
+    (HUGPY_OPENCODE_SMALL_MODEL > HUGPY_HARNESS_SMALL_MODEL > default); "off"
+    disables it. It resolves against the fleet map the
     same way the default brain does (exact, or equal bare tail after '~') so we
     name the id the fleet actually lists. If the fleet map lacks it, a minimal
     entry is added: OpenCode silently drops a small_model its provider does not
     list (ProviderModelNotFoundError -> main model), which would make the knob
     a no-op. The input map is never mutated."""
-    raw = os.environ.get(SMALL_MODEL_ENV, DEFAULT_SMALL_MODEL).strip()
-    if raw.lower() in ("", "off", "none", "0", "false"):
+    raw = hs.small_model("opencode")
+    if raw is None:
         return None, models
-    if raw.startswith("hugpy/"):
-        raw = raw[len("hugpy/"):]
     if raw in models:
         return raw, models
     hit = next((mid for mid in models if brain_matches_key(raw, mid)), None)
@@ -518,7 +549,7 @@ def build_config(central: str, key_env_name: str, models: dict,
     }
     if small:
         # Session titles / lightweight tasks -> a tiny fleet model, not the
-        # session's agent brain (see SMALL_MODEL_ENV above).
+        # session's agent brain (harness_settings table).
         config["small_model"] = "hugpy/" + small
     return config
 
@@ -618,9 +649,10 @@ def launch(workspace_dir: str, key: str,
     ws = os.path.realpath(os.path.expanduser(workspace_dir))
     if key:
         os.environ[KEY_ENV_NAME] = key
-    argv, extra_env = opencode_launch_spec(binary, allow_all_requested(allow_all))
+    argv, extra_env = opencode_launch_spec(binary, allow_all)
+    hs.scrub(os.environ)
     if extra_env:
-        print(ALLOW_ALL_BANNER, file=sys.stderr)
+        print(hs.banner("opencode"), file=sys.stderr)
         os.environ.update(extra_env)
     os.chdir(ws)
     _rebind_stdin_to_tty()

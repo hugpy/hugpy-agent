@@ -454,10 +454,6 @@ def cmd_frontend(args) -> int:
                     os.environ.get("HUGPY_OPERATOR_TOKEN", ""), cfg.timeout)
     try:
         argv, env = frontends.prepare(spec, client, cfg.model)
-        if getattr(args, "allow_all", None) and spec["id"] == "opencode":
-            # prepare() re-enters `console`; the env carries the flag across.
-            from .console import ALLOW_ALL_ENV
-            env[ALLOW_ALL_ENV] = "1"
         frontends.configure(spec, env, cfg.model)
         os.execvpe(argv[0], argv, env)
     except FleetError as exc:
@@ -466,15 +462,43 @@ def cmd_frontend(args) -> int:
     return 0  # execvpe does not return on success
 
 
-ALLOW_ALL_HELP = ("opencode only: start with EVERY permission allowed for this "
-                  "launch (OpenCode --auto + OPENCODE_PERMISSION all-allow; "
-                  "the shared opencode.json is not changed). Default from "
-                  "HUGPY_OPENCODE_ALLOW_ALL (0)")
+ALLOW_ALL_HELP = ("start the harness with EVERY permission/approval bypassed, "
+                  "for this launch only, via its native mechanism (opencode "
+                  "--auto + OPENCODE_PERMISSION; claude "
+                  "--dangerously-skip-permissions; qwen/hermes --yolo; aider "
+                  "--yes-always). Shared generated configs are not changed. "
+                  "Default: HUGPY_<HARNESS>_ALLOW_ALL / HUGPY_HARNESS_ALLOW_ALL (0)")
+SMALL_MODEL_HELP = ("small/title model for the harness (default "
+                    "hugpy/Qwen2.5-Coder-1.5B-Instruct-GGUF; 'off' = harness "
+                    "default). Env: HUGPY_<HARNESS>_SMALL_MODEL / "
+                    "HUGPY_HARNESS_SMALL_MODEL")
 
 
 def _add_allow_all(p) -> None:
+    """The shared harness-settings options (harness_settings table)."""
     p.add_argument("--allow-all", "--yolo", dest="allow_all",
                    action="store_true", default=None, help=ALLOW_ALL_HELP)
+    p.add_argument("--small-model", dest="small_model", default=None,
+                   help=SMALL_MODEL_HELP)
+
+
+def _export_harness_settings(args) -> None:
+    """Flags -> the generic HUGPY_HARNESS_* env, so they survive the `console`
+    re-exec the OpenCode/Claude Code/Qwen Code adapters go through."""
+    from . import harness_settings as hs
+    if getattr(args, "allow_all", None):
+        os.environ[hs.ALLOW_ALL_ENV] = "1"
+    small = getattr(args, "small_model", None)
+    if isinstance(small, str):
+        os.environ[hs.SMALL_MODEL_ENV] = small
+
+
+def cmd_launch(args) -> int:
+    """`hugpy-agent launch` — start a terminal harness; OpenCode by default.
+    Same path as `hugpy-agent --opencode` (cmd_frontend), harness selectable
+    with --harness NAME or a --NAME shorthand."""
+    args.frontend = args.harness or "opencode"
+    return cmd_frontend(args)
 
 
 _DIRECT_HARNESSES = {
@@ -674,10 +698,13 @@ def main(argv=None) -> int:
     argv = _direct_harness_argv(argv)
     ap = argparse.ArgumentParser(
         prog="hugpy-agent",
-        description="Portable agent runtime on the hugpy fleet. Direct harnesses: "
+        description="Portable agent runtime on the hugpy fleet. `hugpy-agent "
+                    "launch` starts OpenCode (default) or --harness "
+                    "claude-code|qwen-code|hermes|aider; direct aliases: "
                     "--opencode, --claude-code, --qwen-code, --hermes, --aider. "
-                    "`hugpy-agent --opencode --allow-all` (alias --yolo) starts "
-                    "OpenCode with every permission allowed for that launch")
+                    "Harness settings on every launcher: --allow-all/--yolo "
+                    "(bypass permissions for that launch), --small-model "
+                    "(title model, default hugpy/Qwen2.5-Coder-1.5B-Instruct-GGUF)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     # Internal target for the leading --{harness} aliases above. Keeping one
@@ -690,6 +717,22 @@ def main(argv=None) -> int:
     p.add_argument("--workspace", help="workspace used for config resolution")
     _add_allow_all(p)
     p.set_defaults(fn=cmd_frontend)
+
+    p = sub.add_parser("launch", help="start a terminal harness (OpenCode by "
+                                      "default) against the fleet")
+    hsel = p.add_mutually_exclusive_group()
+    hsel.add_argument("--harness", choices=sorted(set(_DIRECT_HARNESSES.values())),
+                      default=None, help="harness to start (default opencode)")
+    for flag, target in _DIRECT_HARNESSES.items():
+        hsel.add_argument(flag, dest="harness", action="store_const",
+                          const=target, help=argparse.SUPPRESS
+                          if flag != "--opencode" else
+                          "OpenCode (the default; accepted as an alias)")
+    p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
+    p.add_argument("--model", help="fleet model (default env HUGPY_MODEL)")
+    p.add_argument("--workspace", help="workspace used for config resolution")
+    _add_allow_all(p)
+    p.set_defaults(fn=cmd_launch)
 
     p = sub.add_parser("run", help="run one task to completion")
     p.add_argument("task")
@@ -927,6 +970,7 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_serve)
 
     args = ap.parse_args(argv)
+    _export_harness_settings(args)
     return args.fn(args)
 
 

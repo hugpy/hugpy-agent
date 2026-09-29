@@ -31,7 +31,7 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(env["OPENAI_BASE_URL"], "http://localhost:7002/v1")
 
     def test_aider_all_model_roles_stay_on_fleet(self):
-        argv, env = self.prepare("aider")
+        argv, env = self.prepare("aider", {"HUGPY_AIDER_SMALL_MODEL": "off"})
         for flag in ("--model", "--weak-model", "--editor-model"):
             self.assertEqual(argv[argv.index(flag) + 1], "openai/Org~Model")
         self.assertEqual(env["OPENAI_API_BASE"], "http://localhost:7002/v1")
@@ -104,35 +104,52 @@ class FrontendTests(unittest.TestCase):
         configure.assert_called_once()
         execute.assert_called_once_with(prepared[0][0], *prepared)
 
-    def test_allow_all_flag_parses_on_every_opencode_entrypoint(self):
+    def test_harness_flags_parse_on_every_launcher(self):
         seen = []
-        with patch.object(cli, "cmd_console", side_effect=lambda a: seen.append(a) or 0), \
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(cli, "cmd_console", side_effect=lambda a: seen.append(a) or 0), \
              patch.object(cli, "cmd_harness", side_effect=lambda a: seen.append(a) or 0), \
              patch.object(cli, "cmd_frontend", side_effect=lambda a: seen.append(a) or 0):
             cli.main(["console", "--opencode", "--allow-all"])
             cli.main(["console", "--opencode", "--yolo"])
-            cli.main(["harness", "--allow-all"])
+            cli.main(["harness", "--allow-all", "--small-model", "off"])
             cli.main(["--opencode", "--allow-all"])
+            cli.main(["launch", "--yolo"])
+            os.environ.pop("HUGPY_HARNESS_ALLOW_ALL", None)
             cli.main(["console", "--opencode"])
-        self.assertEqual([a.allow_all for a in seen], [True, True, True, True, None])
+            self.assertIsNone(os.environ.get("HUGPY_HARNESS_ALLOW_ALL"))
+            self.assertEqual(os.environ.get("HUGPY_HARNESS_SMALL_MODEL"), "off")
+        self.assertEqual([a.allow_all for a in seen],
+                         [True, True, True, True, True, None])
 
-    def test_direct_opencode_allow_all_carries_env_to_console(self):
-        fake_cfg = Mock(base="http://localhost:7002", api_key="k",
-                        model="m", timeout=9)
-        prepared = (["/py", "-m", "hugpy_agent.cli", "console"], {"A": "B"})
-        with patch.object(cli, "_cfg", return_value=fake_cfg), \
-             patch.object(f, "prepare", return_value=prepared), \
-             patch.object(f, "configure"), \
-             patch.object(cli.os, "execvpe") as execute:
+    def test_allow_all_flag_exports_env_for_the_console_reexec(self):
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(cli, "cmd_frontend", return_value=0):
+            os.environ.pop("HUGPY_HARNESS_ALLOW_ALL", None)
             cli.main(["--opencode", "--allow-all"])
-        self.assertEqual(execute.call_args.args[2].get("HUGPY_OPENCODE_ALLOW_ALL"), "1")
+            self.assertEqual(os.environ.get("HUGPY_HARNESS_ALLOW_ALL"), "1")
+
+    def test_launch_defaults_to_opencode_and_selects_others(self):
+        seen = []
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(cli, "cmd_frontend", side_effect=lambda a: seen.append(a.frontend) or 0):
+            cli.main(["launch"])
+            cli.main(["launch", "--opencode"])
+            cli.main(["launch", "--harness", "claude-code"])
+            cli.main(["launch", "--hermes"])
+            cli.main(["launch", "--qwen-code", "--model", "m"])
+            cli.main(["launch", "--aider"])
+        self.assertEqual(seen, ["opencode", "opencode", "claude-code",
+                                "hermes", "qwen-code", "aider"])
 
     def test_allow_all_in_help(self):
         import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
-            cli.main(["console", "--help"])
-        self.assertIn("--allow-all", buf.getvalue())
+        for cmd in (["console", "--help"], ["launch", "--help"]):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+                cli.main(cmd)
+            self.assertIn("--allow-all", buf.getvalue())
+            self.assertIn("--small-model", buf.getvalue())
 
     def test_harness_selects_opencode_console(self):
         args = Mock(base="https://fleet", model="m", workspace="/tmp/c")

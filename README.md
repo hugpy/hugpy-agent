@@ -350,6 +350,35 @@ Useful flags: `--model KEY` to open on a different model, `--no-sync` /
 console dir, and `--print-config` to inspect the generated config without
 launching. Each sync keeps the previous config as `opencode.json.bak`.
 
+### `hugpy-agent launch` and harness settings
+
+`hugpy-agent launch` starts OpenCode by default (`--opencode` is accepted as an
+alias); pick another harness with `--harness claude-code|qwen-code|hermes|aider`
+or the matching `--claude-code`/`--qwen-code`/`--hermes`/`--aider` shorthand.
+`hugpy-agent --opencode`, `console --opencode` and `harness` stay valid.
+
+Every launcher takes the same two harness settings, each applied through the
+harness's native mechanism (table: `src/hugpy_agent/harness_settings.py`):
+
+| harness | `--allow-all` / `--yolo` (this launch only) | `--small-model` (titles; default `hugpy/Qwen2.5-Coder-1.5B-Instruct-GGUF`) |
+|---|---|---|
+| opencode | `--auto` + `OPENCODE_PERMISSION` all-allow | `opencode.json` `small_model` |
+| claude-code | `--dangerously-skip-permissions` | `ANTHROPIC_SMALL_FAST_MODEL` + `ANTHROPIC_DEFAULT_HAIKU_MODEL` (hugpy shim only) |
+| qwen-code | `--yolo` | `fastModel` via a derived `QWEN_CODE_SYSTEM_SETTINGS_PATH` |
+| hermes | `--yolo` | profile `auxiliary.title_generation` |
+| aider | `--yes-always` | `--weak-model openai/<id>` |
+
+Env defaults: `HUGPY_HARNESS_ALLOW_ALL` (0) and `HUGPY_HARNESS_SMALL_MODEL`,
+or per harness `HUGPY_<OPENCODE|CLAUDE|QWEN|HERMES|AIDER>_ALLOW_ALL` /
+`..._SMALL_MODEL`; `off` disables the small model. `--allow-all` never edits
+the shared generated config and prints `<harness>: all permissions ALLOWED`.
+
+```sh
+hugpy-agent launch                 # OpenCode, prompting as configured
+hugpy-agent launch --allow-all     # OpenCode, every permission allowed
+hugpy-agent launch --harness claude-code --yolo
+```
+
 ## Terminal dispatch client
 
 `hugpy-dispatch` is a **separate, standalone tool** from the agent runtime
@@ -549,7 +578,7 @@ src/hugpy_agent/
   install.py   systemd user unit + 0600 env file + linger (injectable runner)
   eval.py      per-model eval engine: tasks + deterministic checkers, token-
                echo readiness gate, scorecard math + rendering (P3.4)
-  cli.py       harness | run | chat | resume | models | runs | serve | eval
+  cli.py       launch | harness | run | chat | resume | models | runs | serve | eval
 evals/         operator surface: tasks.py (suite) + runner.py + results/
 ```
 
