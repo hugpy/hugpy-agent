@@ -104,6 +104,36 @@ class FrontendTests(unittest.TestCase):
         configure.assert_called_once()
         execute.assert_called_once_with(prepared[0][0], *prepared)
 
+    def test_allow_all_flag_parses_on_every_opencode_entrypoint(self):
+        seen = []
+        with patch.object(cli, "cmd_console", side_effect=lambda a: seen.append(a) or 0), \
+             patch.object(cli, "cmd_harness", side_effect=lambda a: seen.append(a) or 0), \
+             patch.object(cli, "cmd_frontend", side_effect=lambda a: seen.append(a) or 0):
+            cli.main(["console", "--opencode", "--allow-all"])
+            cli.main(["console", "--opencode", "--yolo"])
+            cli.main(["harness", "--allow-all"])
+            cli.main(["--opencode", "--allow-all"])
+            cli.main(["console", "--opencode"])
+        self.assertEqual([a.allow_all for a in seen], [True, True, True, True, None])
+
+    def test_direct_opencode_allow_all_carries_env_to_console(self):
+        fake_cfg = Mock(base="http://localhost:7002", api_key="k",
+                        model="m", timeout=9)
+        prepared = (["/py", "-m", "hugpy_agent.cli", "console"], {"A": "B"})
+        with patch.object(cli, "_cfg", return_value=fake_cfg), \
+             patch.object(f, "prepare", return_value=prepared), \
+             patch.object(f, "configure"), \
+             patch.object(cli.os, "execvpe") as execute:
+            cli.main(["--opencode", "--allow-all"])
+        self.assertEqual(execute.call_args.args[2].get("HUGPY_OPENCODE_ALLOW_ALL"), "1")
+
+    def test_allow_all_in_help(self):
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            cli.main(["console", "--help"])
+        self.assertIn("--allow-all", buf.getvalue())
+
     def test_harness_selects_opencode_console(self):
         args = Mock(base="https://fleet", model="m", workspace="/tmp/c")
         with patch.object(cli, "cmd_console", return_value=7) as console_cmd:

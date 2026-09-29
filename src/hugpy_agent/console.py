@@ -66,6 +66,53 @@ PREFERRED_DEFAULT = "Qwen~Qwen3-Coder-Next-GGUF"
 
 DEFAULT_WORKSPACE = os.path.join("~", ".hugpy_agent", "console")
 
+# OpenCode's top-level `small_model` ("provider/model-id") drives session TITLE
+# generation (and other lightweight calls); without it OpenCode spends the
+# session's main model on titles. Verified against opencode 1.18.33:
+# Provider.getSmallModel honours config.small_model first, and the title path
+# is `agent.title.model ?? getSmallModel() ?? main model` — we leave the title
+# agent alone so small_model is the single knob. Override with
+# HUGPY_OPENCODE_SMALL_MODEL (bare id or "hugpy/<id>"); "off"/"none"/"" omits
+# the key and restores OpenCode's fall-back-to-main-model behaviour.
+SMALL_MODEL_ENV = "HUGPY_OPENCODE_SMALL_MODEL"
+DEFAULT_SMALL_MODEL = "Qwen2.5-Coder-1.5B-Instruct-GGUF"
+
+# Per-launch "allow everything" (OpenCode's analogue of Claude Code's
+# --dangerously-skip-permissions). Verified against opencode 1.18.33, which
+# honours BOTH of these without touching opencode.json:
+#   * OPENCODE_PERMISSION (env, JSON) — deep-merged over the config's
+#     top-level `permission` at load time;
+#   * the TUI flag `--auto` (aliases --yolo / --dangerously-skip-permissions)
+#     — auto-approves any request not explicitly denied.
+# We set both: the env turns every known permission key to "allow" (so the
+# built-in agents' own asks — doom_loop, external_directory, .env reads — are
+# lifted too), and --auto catches any key a newer OpenCode adds. The shared,
+# generated opencode.json stays on its HUGPY_CONSOLE_PERMISSION posture.
+ALLOW_ALL_ENV = "HUGPY_OPENCODE_ALLOW_ALL"
+OPENCODE_PERMISSION_KEYS = (
+    "read", "edit", "glob", "grep", "list", "bash", "task",
+    "external_directory", "todowrite", "question", "webfetch", "websearch",
+    "lsp", "doom_loop", "skill")
+ALLOW_ALL_BANNER = "opencode: all permissions ALLOWED (--allow-all)"
+
+
+def allow_all_requested(flag: bool | None = None, environ=None) -> bool:
+    """Explicit flag wins; otherwise HUGPY_OPENCODE_ALLOW_ALL (default 0)."""
+    if flag is not None:
+        return bool(flag)
+    env = os.environ if environ is None else environ
+    return env.get(ALLOW_ALL_ENV, "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def opencode_launch_spec(binary: str, allow_all: bool) -> tuple[list, dict]:
+    """(argv, env additions) for one OpenCode launch. Pure — no exec, no
+    global env mutation — so the allow-all contract is unit-testable."""
+    if not allow_all:
+        return [binary], {}
+    perm = {k: "allow" for k in OPENCODE_PERMISSION_KEYS}
+    return [binary, "--auto"], {"OPENCODE_PERMISSION": json.dumps(perm)}
+
 INSTALL_HINT = """\
 opencode not found. OpenCode is an optional peer — install it once with npm:
 
@@ -384,6 +431,31 @@ def fetch_model_map(central: str, key: str,
     return models, default
 
 
+def resolve_small_model(models: dict) -> tuple[str | None, dict]:
+    """(small-model id or None, models map guaranteed to list it).
+
+    The id comes from HUGPY_OPENCODE_SMALL_MODEL, else DEFAULT_SMALL_MODEL; an
+    "off"/"none"/empty value disables it. It resolves against the fleet map the
+    same way the default brain does (exact, or equal bare tail after '~') so we
+    name the id the fleet actually lists. If the fleet map lacks it, a minimal
+    entry is added: OpenCode silently drops a small_model its provider does not
+    list (ProviderModelNotFoundError -> main model), which would make the knob
+    a no-op. The input map is never mutated."""
+    raw = os.environ.get(SMALL_MODEL_ENV, DEFAULT_SMALL_MODEL).strip()
+    if raw.lower() in ("", "off", "none", "0", "false"):
+        return None, models
+    if raw.startswith("hugpy/"):
+        raw = raw[len("hugpy/"):]
+    if raw in models:
+        return raw, models
+    hit = next((mid for mid in models if brain_matches_key(raw, mid)), None)
+    if hit:
+        return hit, models
+    out = dict(models)
+    out[raw] = {"name": raw + " (title model)"}
+    return raw, out
+
+
 def build_config(central: str, key_env_name: str, models: dict,
                  default_model: str) -> dict:
     """The opencode.json structure for the hugpy provider.
@@ -407,7 +479,8 @@ def build_config(central: str, key_env_name: str, models: dict,
     base = normalize_base(central)
     if not base.endswith("/v1"):
         base = models_url(central)[: -len("/models")]
-    return {
+    small, models = resolve_small_model(models)
+    config = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
             "hugpy": {
@@ -443,6 +516,11 @@ def build_config(central: str, key_env_name: str, models: dict,
             },
         },
     }
+    if small:
+        # Session titles / lightweight tasks -> a tiny fleet model, not the
+        # session's agent brain (see SMALL_MODEL_ENV above).
+        config["small_model"] = "hugpy/" + small
+    return config
 
 
 def build_mct_config(base: str, model_label: str = "mct") -> dict:
@@ -514,7 +592,8 @@ def materialize(workspace_dir: str, config: dict) -> str:
 
 
 def launch(workspace_dir: str, key: str,
-           binary: str | None = None) -> "None":
+           binary: str | None = None,
+           allow_all: bool | None = None) -> "None":
     """chdir into the workspace and exec OpenCode in place (os.execvp — the
     Python process becomes the TUI; no wrapper process lingers to garble
     terminal ownership). The literal API key is exported into the child's
@@ -539,9 +618,13 @@ def launch(workspace_dir: str, key: str,
     ws = os.path.realpath(os.path.expanduser(workspace_dir))
     if key:
         os.environ[KEY_ENV_NAME] = key
+    argv, extra_env = opencode_launch_spec(binary, allow_all_requested(allow_all))
+    if extra_env:
+        print(ALLOW_ALL_BANNER, file=sys.stderr)
+        os.environ.update(extra_env)
     os.chdir(ws)
     _rebind_stdin_to_tty()
-    os.execvp(binary, [binary])
+    os.execvp(binary, argv)
 
 
 def _rebind_stdin_to_tty() -> None:
@@ -575,7 +658,8 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
                 offline: bool = False, model: str | None = None,
                 print_config: bool = False,
                 frontend: str = "opencode",
-                all_models: bool = False) -> int:
+                all_models: bool = False,
+                allow_all: bool | None = None) -> int:
     """The `hugpy-agent console` flow, factored out of cli.py for testing.
 
     `frontend` selects the terminal face. Default "opencode" keeps the existing
@@ -651,5 +735,5 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
             materialize(ws, config)
         print("[console] reusing %s (no sync)" % path, file=sys.stderr)
 
-    launch(ws, cfg.api_key)
+    launch(ws, cfg.api_key, allow_all=allow_all)
     return 0  # unreachable on success (exec); keeps the signature honest

@@ -359,6 +359,7 @@ def cmd_harness(args) -> int:
         opencode=True, console_workspace=getattr(args, "workspace", None),
         sync=True, offline=False, print_config=False,
         all_models=getattr(args, "all_models", False), fleet_args=[],
+        allow_all=getattr(args, "allow_all", None),
     )
     return cmd_console(console_args)
 
@@ -431,7 +432,8 @@ def cmd_console(args) -> int:
             model=getattr(args, "model", None),
             print_config=args.print_config,
             frontend=frontend,
-            all_models=getattr(args, "all_models", False))
+            all_models=getattr(args, "all_models", False),
+            allow_all=getattr(args, "allow_all", None))
     except consolemod.ConsoleError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -452,12 +454,27 @@ def cmd_frontend(args) -> int:
                     os.environ.get("HUGPY_OPERATOR_TOKEN", ""), cfg.timeout)
     try:
         argv, env = frontends.prepare(spec, client, cfg.model)
+        if getattr(args, "allow_all", None) and spec["id"] == "opencode":
+            # prepare() re-enters `console`; the env carries the flag across.
+            from .console import ALLOW_ALL_ENV
+            env[ALLOW_ALL_ENV] = "1"
         frontends.configure(spec, env, cfg.model)
         os.execvpe(argv[0], argv, env)
     except FleetError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     return 0  # execvpe does not return on success
+
+
+ALLOW_ALL_HELP = ("opencode only: start with EVERY permission allowed for this "
+                  "launch (OpenCode --auto + OPENCODE_PERMISSION all-allow; "
+                  "the shared opencode.json is not changed). Default from "
+                  "HUGPY_OPENCODE_ALLOW_ALL (0)")
+
+
+def _add_allow_all(p) -> None:
+    p.add_argument("--allow-all", "--yolo", dest="allow_all",
+                   action="store_true", default=None, help=ALLOW_ALL_HELP)
 
 
 _DIRECT_HARNESSES = {
@@ -658,7 +675,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="hugpy-agent",
         description="Portable agent runtime on the hugpy fleet. Direct harnesses: "
-                    "--opencode, --claude-code, --qwen-code, --hermes, --aider")
+                    "--opencode, --claude-code, --qwen-code, --hermes, --aider. "
+                    "`hugpy-agent --opencode --allow-all` (alias --yolo) starts "
+                    "OpenCode with every permission allowed for that launch")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     # Internal target for the leading --{harness} aliases above. Keeping one
@@ -669,6 +688,7 @@ def main(argv=None) -> int:
     p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
     p.add_argument("--model", help="fleet model (default env HUGPY_MODEL)")
     p.add_argument("--workspace", help="workspace used for config resolution")
+    _add_allow_all(p)
     p.set_defaults(fn=cmd_frontend)
 
     p = sub.add_parser("run", help="run one task to completion")
@@ -777,6 +797,7 @@ def main(argv=None) -> int:
                    help="list EVERY non-blocked fleet model in the picker, not "
                         "just chat-drivable ones (also HUGPY_CONSOLE_ALL_MODELS=1). "
                         "opencode only; a non-chat model selected here will fail")
+    _add_allow_all(p)
     p.set_defaults(fn=cmd_console)
     p.add_argument("fleet_args", nargs=argparse.REMAINDER,
                    help="status | workers | models | inspect MODEL | queue | metrics | plan | call | request | exec | repl")
@@ -787,6 +808,7 @@ def main(argv=None) -> int:
     p.add_argument("--workspace", help="console dir holding opencode.json")
     p.add_argument("--all-models", action="store_true",
                    help="include every non-blocked fleet model in OpenCode")
+    _add_allow_all(p)
     p.set_defaults(fn=cmd_harness)
 
     p = sub.add_parser("mct", help="Mediated Context Terminal — pointer-mediated "
