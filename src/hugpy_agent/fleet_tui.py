@@ -547,6 +547,8 @@ class Console:
         self.notice = "Connecting to fleet..."
         self.refreshing = self.busy = False
         self.last_refresh = 0
+        # toolserver health (shared client; probed on each refresh, off the UI thread)
+        self.toolserver = None
         self.closed, self.stop_tests = threading.Event(), BenchmarkControl()
 
     def send(self, kind, value):
@@ -558,6 +560,17 @@ class Console:
             return
         self.refreshing = True
         self.last_refresh = time.monotonic()
+        def toolserver_work():
+            try:
+                from . import toolserver_client
+                if toolserver_client.enabled():
+                    self.send("toolserver", toolserver_client.default_client().status())
+                else:
+                    self.send("toolserver", {"ok": False, "auth": "disabled", "tool_count": 0})
+            except Exception as exc:  # noqa: BLE001 — a status probe never takes the UI down
+                self.send("toolserver", {"ok": False, "auth": "unknown", "tool_count": 0,
+                                         "error": type(exc).__name__})
+        threading.Thread(target=toolserver_work, daemon=True).start()
         def work():
             try:
                 state = fleet.snapshot(self.read_client)
@@ -598,6 +611,8 @@ class Console:
                 # Keep positions stable while the operator is navigating.
                 updates = {r["model"]: r for r in value}
                 self.models = [updates.get(r["model"], r) for r in self.models]
+            elif kind == "toolserver":
+                self.toolserver = value
             elif kind == "refreshed":
                 self.refreshing = False
                 if not self.busy:
@@ -639,6 +654,16 @@ class Console:
             keys = set().union(*(fleet.model_keys(worker, f) for f in ("models", "models_local", "loaded_models")))
             values = [r for r in values if fleet.matches(r["model"], keys)]
         return [r for r in values if self.search.lower() in json.dumps(r).lower()]
+
+    def toolserver_line(self):
+        """Status-bar fragment: 'toolserver ok (198 tools)' / 'toolserver auth
+        rejected' / 'toolserver unreachable' / 'toolserver: probing'."""
+        if self.toolserver is None:
+            return "toolserver: probing"
+        if self.toolserver.get("auth") == "disabled":
+            return "toolserver off"
+        from .toolserver_client import status_line
+        return status_line(self.toolserver)
 
     def put(self, y, x, value, attr=0):
         height, width = self.screen.getmaxyx()
@@ -696,7 +721,7 @@ class Console:
         self.put(0, 0, "HUGPY FLEET   " + self.client.base, curses.A_BOLD)
         self.put(1, 0, "   ".join(("[%d %s]" if i == self.tab else "%d %s") % (i + 1, t) for i, t in enumerate(TABS)), curses.A_BOLD)
         age = max(0, int(time.time() - self.state["observed_at"]))
-        self.put(2, 0, "%ds old | %s | filter: %s%s" % (age, "refreshing" if self.refreshing else "live", self.search or "all", " | selected worker" if self.worker_filter else ""))
+        self.put(2, 0, "%ds old | %s | filter: %s%s | %s" % (age, "refreshing" if self.refreshing else "live", self.search or "all", " | selected worker" if self.worker_filter else "", self.toolserver_line()))
         headers = ("READINESS              WORKER         tok/s    WAIT    MODEL", "WORKER / RESOURCES", "IN-FLIGHT REQUESTS", "RECORDED MODEL / WORKER PERFORMANCE", "SESSION RESULTS — Enter to read output", "AGENT FRONTEND   INSTALLATION     FLEET CONNECTION — Enter to choose model")
         self.put(4, 0, headers[self.tab], curses.A_BOLD)
         items = self.items()

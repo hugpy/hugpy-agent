@@ -53,6 +53,13 @@ def _add_common(p: argparse.ArgumentParser, model: bool = True) -> None:
                    help="let the model think (disables /no_think suffix)")
     p.add_argument("-q", "--quiet", action="store_true",
                    help="only print the final report JSON")
+    # Toolserver bridge is default-ON (TOOLSERVER_URL + TOOLSERVER_OPERATOR_TOKEN
+    # resolve it); this run-scoped switch is the CLI spelling of
+    # HUGPY_AGENT_TOOLSERVER=0.
+    p.add_argument("--no-toolserver", dest="toolserver", action="store_false",
+                   default=None,
+                   help="do not attach the toolserver's tools "
+                        "(ts_categories/ts_list/ts_call) to this run")
 
 
 def _cfg(args) -> "Config":
@@ -75,6 +82,7 @@ def _cfg(args) -> "Config":
         "poll_interval": getattr(args, "poll_interval", None),
         "agent_node": getattr(args, "agent_node", None),
         "agent_central": getattr(args, "agent_central", None),
+        "toolserver": getattr(args, "toolserver", None),
     })
 
 
@@ -363,6 +371,11 @@ def cmd_harness(args) -> int:
     return cmd_console(console_args)
 
 
+def cmd_tui(args) -> int:
+    from .tui import run
+    return run(args.serve, args.token, session=args.session, kind=args.kind)
+
+
 def cmd_eval(args) -> int:
     """Per-model eval scorecard (P3.4). Runs the built-in suite against each
     --model through the real agent loop, gating each model on a chat token-echo
@@ -482,11 +495,20 @@ def _direct_harness_argv(argv):
     return argv
 
 
+def _apply_mct_toolserver_flag(args) -> None:
+    """MCT's A is a `claude -p` child; its toolserver grant is decided in
+    mct.claude_adapter from the process env, so --no-toolserver is spelled as
+    HUGPY_AGENT_TOOLSERVER=0 for the whole MCT process tree."""
+    if getattr(args, "toolserver", None) is False:
+        os.environ["HUGPY_AGENT_TOOLSERVER"] = "0"
+
+
 def cmd_mct(args) -> int:
     """`hugpy-agent mct` — launch the Mediated Context Terminal (the mct
     subpackage's pointer-mediated REPL): a confined Claude (A) answers only
     through B's curated context. Equivalent to `python -m hugpy_agent.mct`."""
     from .mct.repl import run
+    _apply_mct_toolserver_flag(args)
     return run(args.workspace, model=args.model, use_model=not args.no_model,
                allow_fs_requests=args.allow_fs_requests,
                quiet=getattr(args, "quiet", False),
@@ -506,6 +528,7 @@ def cmd_mct_serve(args) -> int:
 
     from .mct.openai_shim import serve
 
+    _apply_mct_toolserver_flag(args)
     httpd, service = serve(args.workspace, host=args.host, port=args.port,
                            model=args.model, use_model=not args.no_model,
                            native_tools=args.native_tools)
@@ -812,6 +835,10 @@ def main(argv=None) -> int:
                    help="Allow Frontier filesystem requests (Steward trigger): "
                         "a missed pull may be brokered by B against granted "
                         "roots — through B, never direct filesystem access")
+    p.add_argument("--no-toolserver", dest="toolserver", action="store_false",
+                   default=None,
+                   help="do not grant A the toolserver's MCP tools "
+                        "(default: granted when TOOLSERVER_URL + token resolve)")
     p.set_defaults(fn=cmd_mct)
 
     p = sub.add_parser("mct-serve", help="serve MCT as an OpenAI-compatible "
@@ -830,6 +857,9 @@ def main(argv=None) -> int:
     p.add_argument("--native-tools", dest="native_tools", default="off_host",
                    choices=["none", "off_host", "all"],
                    help="A's native Claude Code tools (see `hugpy-agent mct -h`)")
+    p.add_argument("--no-toolserver", dest="toolserver", action="store_false",
+                   default=None,
+                   help="do not grant A the toolserver's MCP tools")
     p.add_argument("--launch", action="store_true",
                    help="also write opencode.json and exec OpenCode against it")
     p.add_argument("--console-workspace", dest="console_workspace",
@@ -904,8 +934,93 @@ def main(argv=None) -> int:
                         "run until stopped)")
     p.set_defaults(fn=cmd_serve)
 
+    p = sub.add_parser("tui", help="terminal client for abstract-claude serve / hugpy-agent serve")
+    p.add_argument("--serve", help="serve URL (default: $HUGPY_AGENT_SERVE, then 127.0.0.1:9124/9125/9126)")
+    p.add_argument("--token", help="serve bearer token (default HUGPY_SERVE_TOKEN)")
+    p.add_argument("--session", help="session to open: cs-id, native uuid, or role (keeper/chat/worker/local)")
+    p.add_argument("--kind", choices=("auto", "abstract-claude", "hugpy"), default="auto",
+                   help="serve kind; auto detects from GET /api/state (default auto)")
+    p.set_defaults(fn=cmd_tui)
+
+    p = sub.add_parser("tools", help="toolserver client: list | call NAME | health "
+                                     "(TOOLSERVER_URL + TOOLSERVER_OPERATOR_TOKEN)")
+    p.add_argument("action", choices=["list", "call", "health", "status"])
+    p.add_argument("name", nargs="?", help="tool name for `call`")
+    p.add_argument("--json", dest="json_args", default=None,
+                   help="JSON object of arguments for `call` (default {})")
+    p.add_argument("--url", help="toolserver base URL (default env TOOLSERVER_URL "
+                                 "or http://127.0.0.1:7004)")
+    p.add_argument("--token", help="operator token (default env TOOLSERVER_OPERATOR_TOKEN)")
+    p.add_argument("--timeout", type=float, default=None, help="call timeout in seconds")
+    p.add_argument("--all", action="store_true",
+                   help="list: include privileged (allowlist-off) tools")
+    p.add_argument("--allow-privileged", dest="allow_privileged", action="store_true",
+                   help="call: bypass the allowlist for this one invocation")
+    p.add_argument("--json-out", dest="json_out", action="store_true",
+                   help="machine-readable output (list/health)")
+    p.set_defaults(fn=cmd_tools)
+
     args = ap.parse_args(argv)
     return args.fn(args)
+
+
+def cmd_tools(args) -> int:
+    """`hugpy-agent tools list|call NAME [--json ARGS]|health` — the shared
+    toolserver client for humans and tests. Exit: 0 ok, 1 failure, 2 auth."""
+    from .toolserver_client import ToolserverClient, ToolserverAuthError, ToolserverError
+    client = ToolserverClient(args.url, args.token,
+                              timeout=args.timeout or 120.0)
+    try:
+        if args.action in ("health", "status"):
+            st = client.health() if args.action == "health" else client.status()
+            print(json.dumps(st, indent=2) if args.json_out else
+                  "%s  url=%s  auth=%s  tools=%s  version=%s  latency=%sms%s"
+                  % ("OK" if st["ok"] else "FAIL", st["url"], st["auth"],
+                     st["tool_count"], st.get("version"), st.get("latency_ms"),
+                     ("\n  " + st["error"]) if st.get("error") else ""))
+            return 0 if st["ok"] else (2 if st["auth"] in ("missing", "rejected") else 1)
+        if args.action == "list":
+            tools = client.list_tools()
+            if args.json_out:
+                print(json.dumps([dict(t, **{"class": client.classify(t["name"]),
+                                             "allowed": client.allowed(t["name"])})
+                                  for t in tools if args.all or client.allowed(t["name"])],
+                                 indent=2))
+                return 0
+            shown = 0
+            for t in tools:
+                ok = client.allowed(t["name"])
+                if not ok and not args.all:
+                    continue
+                shown += 1
+                print("%-28s %-10s %s" % (t["name"], client.classify(t["name"]),
+                                          (t["description"] or "").split("\n")[0][:90]))
+            hidden = len(tools) - shown
+            print("# %d tools%s @ %s" % (shown, (" (+%d privileged, --all to show)" % hidden) if hidden else "",
+                                        client.url), file=sys.stderr)
+            return 0
+        # call
+        if not args.name:
+            print("tools call: a tool NAME is required", file=sys.stderr)
+            return 1
+        try:
+            call_args = json.loads(args.json_args) if args.json_args else {}
+        except ValueError as exc:
+            print("tools call: --json must be a JSON object: %s" % exc, file=sys.stderr)
+            return 1
+        if not isinstance(call_args, dict):
+            print("tools call: --json must be a JSON object", file=sys.stderr)
+            return 1
+        out = client.call(args.name, call_args, timeout=args.timeout,
+                          enforce_allowlist=not args.allow_privileged)
+        print(json.dumps(out, indent=2, default=str))
+        return 1 if isinstance(out, dict) and out.get("error") else 0
+    except ToolserverAuthError as exc:
+        print("tools: %s" % exc, file=sys.stderr)
+        return 2
+    except ToolserverError as exc:
+        print("tools: %s" % exc, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -1,0 +1,93 @@
+{
+ "id": "e65ca08359ca4376b6e68ff21dc00a4d",
+ "profile": "hugpy-fleet:Qwen3-Coder-Next-GGUF",
+ "status": "interrupted",
+ "created": 1790669173.155039,
+ "updated": 1790680306.5707395,
+ "run_id": "323260746a93",
+ "native_id": null,
+ "report": {
+  "run_id": "323260746a93",
+  "outcome": "interrupted",
+  "model": "Qwen3-Coder-Next-GGUF",
+  "steps": 13,
+  "tool_calls": 12,
+  "est_tokens": 0
+ },
+ "pending": null,
+ "events": [
+  {
+   "id": 3636,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669173.180332,
+   "kind": "user",
+   "data": "hig"
+  },
+  {
+   "id": 3637,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669173.2602699,
+   "kind": "run_start",
+   "data": [
+    "8bc7193b1f24",
+    "hig"
+   ]
+  },
+  {
+   "id": 3638,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.2685206,
+   "kind": "delta",
+   "data": "I"
+  },
+  {
+   "id": 3639,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.2932382,
+   "kind": "delta",
+   "data": "'m"
+  },
+  {
+   "id": 3640,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.327083,
+   "kind": "delta",
+   "data": " not"
+  },
+  {
+   "id": 3641,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.3501396,
+   "kind": "delta",
+   "data": " sure"
+  },
+  {
+   "id": 3642,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.3863223,
+   "kind": "delta",
+   "data": " what"
+  },
+  {
+   "id": 3643,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.4022,
+   "kind": "delta",
+   "data": " \""
+  },
+  {
+   "id": 3644,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.4448109,
+   "kind": "delta",
+   "data": "h"
+  },
+  {
+   "id": 3645,
+   "session": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "ts": 1790669191.4581957,
+   "kind": "delta",
+   "data": "ig"
+  }
+ ]
+}
