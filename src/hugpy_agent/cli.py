@@ -274,6 +274,16 @@ def cmd_serve(args) -> int:
     exit 0 — under Restart=on-failure the unit stays stopped. A second
     signal falls through to the default handler for a hard exit (every
     journal write is committed, so this is still safe)."""
+    if getattr(args, "console", False):
+        try:
+            from abstract_serve.serve_cli import main as serve_main
+        except ImportError as exc:
+            print("hugpy-agent serve --console requires `pip install hugpy-agent[serve]` (" + str(exc) + ")", file=sys.stderr)
+            return 2
+        argv = ["--host", args.host, "--port", str(args.console_port)]
+        if args.no_browser:
+            argv.append("--no-browser")
+        return serve_main(argv)
     session_service = not getattr(args, "daemon", False)
     if session_service:
         url = f"http://{args.host}:{args.port}"
@@ -866,6 +876,10 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=9126)
     p.add_argument("--no-browser", action="store_true",
                    help="do not open the session-service URL when joining or starting it")
+    p.add_argument("--console", action="store_true",
+                   help="run the shared provider-neutral Serve console")
+    p.add_argument("--console-port", type=int, default=9124,
+                   help="port for the shared Serve console (with --console)")
     p.add_argument("--task-source", dest="task_source",
                    choices=["discord-inbox", "queue"],
                    help="task source (default env HUGPY_TASK_SOURCE; none "

@@ -426,6 +426,22 @@ def build_config(central: str, key_env_name: str, models: dict,
             "bash": perm,
             "webfetch": perm,
         },
+        # One provider-neutral MCP bridge for OpenCode, Claude, GPT, and the
+        # Hugpy harness. Credentials remain environment references; they never
+        # enter opencode.json literally.
+        "mcp": {
+            "toolserver": {
+                "type": "local",
+                "enabled": True,
+                "command": [sys.executable],
+                "args": ["-m", "abstract_serve.mcp"],
+                "environment": {
+                    "TOOLSERVER_URL": "{env:TOOLSERVER_URL}",
+                    "TOOLSERVER_TOKEN": "{env:TOOLSERVER_TOKEN}",
+                    "HUGPY_OPERATOR_TOKEN": "{env:HUGPY_OPERATOR_TOKEN}",
+                },
+            },
+        },
     }
 
 
@@ -517,7 +533,7 @@ def launch(workspace_dir: str, key: str,
         # (branding.py; same-length glyph patch, .orig-logo kept). Cosmetic
         # only — any failure means the stock splash, never a failed launch.
         from . import branding
-        branding.ensure_hugpy_logo(binary)
+        binary = branding.ensure_hugpy_binary(binary)
     except Exception:
         pass
     ws = os.path.realpath(os.path.expanduser(workspace_dir))
