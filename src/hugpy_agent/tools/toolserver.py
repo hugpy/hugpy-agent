@@ -1,50 +1,48 @@
-"""Native (stdlib-only) bridge from the running abstract_toolserver into the
-hugpy-agent toolset — the CATEGORICAL contract, default ON.
+"""Bridge from the running abstract_toolserver into the hugpy-agent toolset —
+the CATEGORICAL contract, default ON.
 
-Category nesting is a TOOLSERVER feature (separate workstream): the server
-serves the whole ~250-tool surface behind THREE endpoints, so hugpy-agent never
-scrapes /endpoints or ?help and never categorizes anything itself:
+Transport, token/url resolution, the catalog cache and the allowlist all live
+in the SHARED client (``hugpy_agent.toolserver_client``); this module is the
+registry-facing skin the agent loop (chat / run / serve / subagents) uses:
 
-  POST /ts/categories {}                          -> [{category, tools, summary}]
-  POST /ts/list       {"category": str}           -> {category, count, tools:[{name, description, parameters}]}
-  POST /ts/call       {"name": str, "arguments": {}} -> exactly what that tool returns
-  (any of these may be wrapped {"result": ...} like other toolserver endpoints.)
+  meta mode (default)   three static ToolSpecs — ts_categories / ts_list /
+                        ts_call — whose handlers POST to /ts/*. The standing
+                        prompt cost is those three schemas, whatever the
+                        server's tool count.
+  flat mode (opt-in)    HUGPY_AGENT_TOOLSERVER_TOOLS=flat registers every
+                        ALLOWED toolserver tool as its own ToolSpec (native
+                        tool-calling models). A name already taken by a local
+                        tool (fs_glob…) keeps the local, jailed one.
 
-hugpy-agent's part is THIN: three static ToolSpecs whose handlers just POST to
-/ts/*. The only standing prompt cost is those three schemas. This module imports
-**no** ``abstract_*`` package and no vendor SDK, only urllib — ``import
-hugpy_agent`` works with nothing else installed.
-
-Default ON: enabled whenever a base url resolves (the default always does) and a
-bounded probe (POST /ts/categories) succeeds; when the toolserver is unreachable
+Default ON: enabled whenever the shared client resolves a url (the default
+always does) and a bounded probe succeeds; when the toolserver is unreachable
 or unauthorized the agent runs normally and states why ONCE (errors-as-data,
 never a crash, bounded timeouts so startup never hangs). Opt out with
-HUGPY_AGENT_TOOLSERVER=0.
+HUGPY_AGENT_TOOLSERVER=0 or `--no-toolserver`.
 
-Token + base resolution and the disk-token safety rule are ported faithfully
-from the reference bridge (abstract_claude/src/abstract_claude/mcp.py).
+Allowlist (see toolserver_client.classify): readonly + mutating tools are
+callable (mutating ones still pass the loop's policy gate as RISK_NETWORK);
+PRIVILEGED tools (vm_*, vmpool_*, sys_*, browser_*, fs_write_file, db_query
+writes, oauth/session control) are refused as data unless named in
+HUGPY_AGENT_TOOLSERVER_ALLOW (or '*'). HUGPY_AGENT_TOOLSERVER_DENY wins.
 """
 from __future__ import annotations
 
 import json
 import os
 import socket
-import urllib.parse
-import urllib.request
 
-from . import RISK_NETWORK, RISK_READONLY, ToolSpec
+from . import RISK_DESTRUCTIVE, RISK_NETWORK, RISK_READONLY, ToolSpec
+from .. import toolserver_client as tsc
+from ..toolserver_client import (ToolserverClient as SharedClient,   # noqa: F401
+                                 ToolserverError, parse_env_file as _parse_env_file,
+                                 file_token_ok as _file_token_ok)
 
-# ── token / base resolution (ported from abstract_claude.mcp) ────────────────
-_TOKEN_KEYS = ("TOOLSERVER_TOKEN", "HUGPY_OPERATOR_TOKEN",
-               "STATION_CONSOLE_TOOLSERVER_TOKEN", "TOOLSERVER_OPERATOR_TOKEN")
-_ENV_FILES = ("~/.config/hugpy-station/toolserver.env",
-              "~/.config/hugpy/operator.env",
-              "/etc/hugpy-station/toolserver.env",
-              "/etc/hugpy/operator.env")
-_DEFAULT_BASE = "https://toolserver.hugpy.ai"
-_LOOPBACK_HOSTS = {"localhost", "::1"}
-
-PROBE_TIMEOUT = 8.0          # bounded: startup must never hang
+# ── back-compat names (earlier callers/tests import these from here) ─────────
+_TOKEN_KEYS = tsc.TOKEN_ENV_KEYS
+_ENV_FILES = tsc.ENV_FILES
+_DEFAULT_BASE = tsc.DEFAULT_URL
+PROBE_TIMEOUT = tsc.PROBE_TIMEOUT
 CALL_TIMEOUT_CAP = None      # ts_call inherits cfg.timeout (cold GPU tools slow)
 
 # result governor caps (a huge ts_call result must not blow the context)
@@ -54,112 +52,32 @@ GOV_ENABLED = os.environ.get("HUGPY_AGENT_TOOLSERVER_GOVERNOR", "1").strip().low
     not in ("0", "false", "no", "off")
 
 # process-wide memo of a successful probe: {(base, token): ToolserverClient}.
-# Keeps every top-level run from re-probing; a failed probe is never memoized
-# (so a toolserver that comes up later is picked up on the next run).
+# A failed probe is never memoized (a toolserver that comes up later is picked
+# up on the next run).
 _CLIENT_MEMO: dict = {}
 
 
-def _parse_env_file(path: str) -> dict:
-    """{KEY: VALUE} from a KEY=VALUE file (comments, blanks, a leading
-    ``export`` and surrounding quotes tolerated); {} when unreadable."""
-    out: dict[str, str] = {}
-    try:
-        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k = k.strip()
-                if k.startswith("export "):
-                    k = k[7:].strip()
-                v = v.strip()
-                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                    v = v[1:-1]
-                if k and v and k not in out:
-                    out[k] = v
-    except OSError:
-        pass
-    return out
-
-
 def _env_file_values() -> list:
-    return [_parse_env_file(p) for p in _ENV_FILES]
-
-
-def _from_env(environ, keys):
-    for k in keys:
-        v = (environ.get(k) or "").strip()
-        if v:
-            return v
-    return ""
-
-
-def _from_files(file_values, keys):
-    """(value, that file's {KEY: VALUE}) from the first env file carrying any
-    of `keys`; ("", {}) when none."""
-    for values in file_values:
-        for k in keys:
-            if values.get(k):
-                return values[k], values
-    return "", {}
-
-
-def _file_token_ok(base: str, file_values: dict) -> bool:
-    """May a token read off DISK travel to `base`? Yes for https, loopback, the
-    host the token's own env file names (STATION_CONSOLE_TOOLSERVER) and the
-    default toolserver host. Anything else is a plaintext host chosen by nothing
-    but process env — withhold, so a lone URL never forwards the operator's file
-    token to an arbitrary host."""
-    u = urllib.parse.urlparse(base)
-    host = (u.hostname or "").lower()
-    if not host:
-        return False
-    if u.scheme == "https" or host in _LOOPBACK_HOSTS or host.startswith("127."):
-        return True
-    trusted = {urllib.parse.urlparse(_DEFAULT_BASE).hostname}
-    own = file_values.get("STATION_CONSOLE_TOOLSERVER", "")
-    if own:
-        trusted.add((urllib.parse.urlparse(own).hostname or "").lower())
-    return host in trusted
+    return tsc.env_file_values()
 
 
 def resolve_base(cfg, environ=None, file_values=None) -> str:
-    """The toolserver base url. cfg.toolserver_url wins; else env TOOLSERVER_URL
-    / STATION_CONSOLE_TOOLSERVER, then a STATION_CONSOLE_TOOLSERVER named in an
-    env file, then the default host."""
-    environ = os.environ if environ is None else environ
-    file_values = _env_file_values() if file_values is None else file_values
-    explicit = (getattr(cfg, "toolserver_url", "") or "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    return (_from_env(environ, ("TOOLSERVER_URL", "STATION_CONSOLE_TOOLSERVER"))
-            or _from_files(file_values, ("STATION_CONSOLE_TOOLSERVER",))[0]
-            or _DEFAULT_BASE).rstrip("/")
+    """The toolserver base url: cfg.toolserver_url, else TOOLSERVER_URL /
+    STATION_CONSOLE_TOOLSERVER (env, then env files), else 127.0.0.1:7004."""
+    return tsc.resolve_url((getattr(cfg, "toolserver_url", "") or ""), environ, file_values)
 
 
 def resolve_token(cfg, base: str, environ=None, file_values=None):
-    """(token, source). cfg.toolserver_token wins (sent unconditionally). Else a
-    process-env token is sent unconditionally; a file token only when
-    _file_token_ok(base). ("", "withheld"/"none") otherwise."""
-    environ = os.environ if environ is None else environ
-    file_values = _env_file_values() if file_values is None else file_values
-    explicit = (getattr(cfg, "toolserver_token", "") or "").strip()
-    if explicit:
-        return explicit, "config"
-    tok_env = _from_env(environ, _TOKEN_KEYS)
-    if tok_env:
-        return tok_env, "env"
-    tok_file, tok_src = _from_files(file_values, _TOKEN_KEYS)
-    if tok_file and _file_token_ok(base, tok_src):
-        return tok_file, "file"
-    return "", ("withheld" if tok_file else "none")
+    """(token, source). cfg.toolserver_token wins; else process env; else an
+    env-file token when the disk-token safety rule admits `base`."""
+    return tsc.resolve_token((getattr(cfg, "toolserver_token", "") or ""), base,
+                             environ, file_values)
 
 
 def resolve_locus(cfg, environ=None) -> str:
     """The agent's stable comms locus: cfg.toolserver_locus, else
-    HUGPY_AGENT_LOCUS, else cfg.agent_name, else the short hostname — lowercased
-    (messages.py lowercases loci)."""
+    HUGPY_AGENT_LOCUS, else cfg.agent_name, else the short hostname —
+    lowercased (messages.py lowercases loci)."""
     environ = os.environ if environ is None else environ
     for v in ((getattr(cfg, "toolserver_locus", "") or "").strip(),
               (environ.get("HUGPY_AGENT_LOCUS") or "").strip(),
@@ -172,50 +90,8 @@ def resolve_locus(cfg, environ=None) -> str:
         return "hugpy-agent"
 
 
-# ── HTTP ─────────────────────────────────────────────────────────────────────
-def _http(base, token, path, body, timeout):
-    """POST JSON to base+path, return the parsed reply. Raises on transport /
-    HTTP error (callers convert to data)."""
-    url = base + path
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Accept", "application/json")
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("X-Operator-Token", token)
-        req.add_header("Authorization", "Bearer " + token)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read().decode()
-    try:
-        return json.loads(raw)
-    except ValueError:
-        return {"result": raw}
-
-
-def _unwrap(resp):
-    """Toolserver endpoints may wrap payloads as {"result": ...}; unwrap once."""
-    if isinstance(resp, dict) and "result" in resp and "error" not in resp:
-        return resp["result"]
-    return resp
-
-
-# ── arg coercion / autofill (ported + comms locus) ───────────────────────────
-def _coerce(args):
-    """JSON-looking string args (arrays/objects/bools/null) -> real values, so
-    params typed as string still reach the tool. Plain strings and bare numbers
-    are left alone."""
-    out = {}
-    for k, v in (args or {}).items():
-        if isinstance(v, str):
-            s = v.strip()
-            if s[:1] in "[{" or s in ("true", "false", "null"):
-                try:
-                    v = json.loads(s)
-                except ValueError:
-                    pass
-        out[k] = v
-    return out
-
+# ── arg coercion / autofill ──────────────────────────────────────────────────
+_coerce = tsc.coerce_args
 
 # comms tools whose caller identity should default to the agent's locus.
 _LOCUS_FROM = {"comms_send", "comms_reply", "comms_ping"}   # -> from_
@@ -236,33 +112,14 @@ def _autofill(name, args, locus):
 
 
 # ── target-tool risk classification (for the policy gate) ────────────────────
-# Deterministic from the tool NAME (recorded fact). WRITE tokens win: a name
-# carrying any mutating verb is side-effecting (RISK_NETWORK); else a name
-# carrying a read verb is RISK_READONLY; an unrecognized name is conservatively
-# side-effecting (fail closed — the posture the agent's own tools already take).
-_WRITE_TOKENS = frozenset("""
-send reply ack ping add put done update remove batch open close write start
-stop run exec set spin release claim pick beat submit record ingest dedup
-archive crop resize save restore reset solve register request clear edit
-delete create kill pause promote spawn type click key scroll go upload oauth
-""".split())
-_READ_TOKENS = frozenset("""
-list get read state status find search info poll inbox schema tables columns
-query fetch see text links attributes versions jobs job symbols configs
-history summary models dirs windows monitors pointers pointer identity sessions
-session report probe focus pending duplicates trace keywords calls loads count
-detect analyze locate ocr tokens language template templates extract imports
-glob span prescreen assess board loci metrics screenshot shot ip console usage
-""".split())
+_RISK_OF = {tsc.READONLY: RISK_READONLY, tsc.MUTATING: RISK_NETWORK,
+            tsc.PRIVILEGED: RISK_DESTRUCTIVE}
 
 
-def classify_target(name: str) -> str:
-    toks = set(str(name or "").split("_"))
-    if toks & _WRITE_TOKENS:
-        return RISK_NETWORK
-    if toks & _READ_TOKENS:
-        return RISK_READONLY
-    return RISK_NETWORK
+def classify_target(name: str, args: dict | None = None) -> str:
+    """Registry risk class for a toolserver tool: readonly -> RISK_READONLY,
+    mutating -> RISK_NETWORK, privileged -> RISK_DESTRUCTIVE."""
+    return _RISK_OF.get(tsc.classify(name, args), RISK_NETWORK)
 
 
 # ── result governor ──────────────────────────────────────────────────────────
@@ -305,28 +162,33 @@ def govern_result(text, tool=""):
         if stats is None:
             return text
         marker = ("[truncated: %d more lines / %d more bytes not shown; narrow "
-                  "the ts_call arguments to fetch less]"
-                  % (stats["lines_dropped"], stats["bytes_dropped"]))
+                  "the %s arguments to fetch less]"
+                  % (stats["lines_dropped"], stats["bytes_dropped"], tool or "ts_call"))
         return kept.rstrip("\n") + "\n" + marker
     except Exception:
         return text
 
 
-# ── the client (thin /ts/* caller) + meta-tool specs ─────────────────────────
+# ── the registry-facing client (meta-tool handlers over the shared client) ───
 class ToolserverClient:
-    """Thin client for the toolserver's three /ts/* endpoints. Holds base, token
-    and the agent's locus; every method returns a JSON STRING (errors as data)."""
+    """Meta-tool handlers bound to one shared client + the agent's locus.
+    Every method returns a JSON STRING (errors as data)."""
 
-    def __init__(self, base, token, locus, call_timeout=120.0):
+    def __init__(self, base, token, locus, call_timeout=120.0, allow=None, deny=None,
+                 shared: SharedClient | None = None):
         self.base = base
         self.token = token
         self.locus = locus
         self.call_timeout = call_timeout
+        self.shared = shared or SharedClient(base, token, timeout=call_timeout,
+                                             allow=allow, deny=deny)
 
     def _post(self, path, body, timeout):
         try:
-            return _unwrap(_http(self.base, self.token, path, body, timeout)), None
-        except Exception as exc:   # transport / HTTP / decode: errors-as-data
+            return tsc._unwrap(self.shared._post(path, body, timeout)), None
+        except ToolserverError as exc:
+            return None, str(exc)
+        except Exception as exc:   # noqa: BLE001 — errors-as-data
             return None, "%s: %s" % (type(exc).__name__, exc)
 
     def probe(self):
@@ -351,6 +213,10 @@ class ToolserverClient:
                               PROBE_TIMEOUT)
         if err is not None:
             return json.dumps({"error": "toolserver /ts/list failed: %s" % err})
+        if isinstance(out, dict) and isinstance(out.get("tools"), list):
+            for t in out["tools"]:
+                if isinstance(t, dict) and t.get("name"):
+                    t["allowed"] = self.shared.allowed(t["name"])
         return govern_result(json.dumps(out, default=str), "ts_list")
 
     # -- ts_call --
@@ -360,14 +226,12 @@ class ToolserverClient:
             return json.dumps({"error": "ts_call requires a tool name (use "
                                "ts_categories then ts_list to find one)"})
         call_args = _autofill(target, _coerce(arguments or {}), self.locus)
-        out, err = self._post("/ts/call", {"name": target, "arguments": call_args},
-                              self.call_timeout)
-        if err is not None:
-            return json.dumps({"error": "%s call failed: %s" % (target, err)})
-        return govern_result(json.dumps(out, default=str), target)
+        text = self.shared.call_json(target, call_args, self.call_timeout)
+        return govern_result(text, target)
 
     def risk_of_call(self, args) -> str:
-        return classify_target((args or {}).get("name"))
+        args = args or {}
+        return classify_target(args.get("name"), args.get("arguments") or {})
 
 
 # Exact descriptions (operator-specified — do not paraphrase).
@@ -411,41 +275,87 @@ def build_specs(client: ToolserverClient) -> list:
     ]
 
 
-def specs(cfg, on_event=None, environ=None, client=None) -> list:
+def flat_specs(client: ToolserverClient, taken=()) -> list:
+    """One ToolSpec per ALLOWED toolserver tool (flat mode). Names in `taken`
+    (already-registered local tools) are skipped so the jailed local tool
+    keeps its name."""
+    out = []
+    try:
+        tools = client.shared.list_tools()
+    except ToolserverError:
+        return out
+    taken = set(taken or ())
+    for t in tools:
+        name = t["name"]
+        if name in taken or not client.shared.allowed(name):
+            continue
+        out.append(ToolSpec(
+            name=name, description=t["description"] or name,
+            parameters=t["input_schema"],
+            handler=(lambda _n: (lambda **kw: client.call(_n, kw)))(name),
+            risk_class=classify_target(name),
+            dynamic_risk=(lambda _n: (lambda a: classify_target(_n, a)))(name)))
+    return out
+
+
+def make_client(cfg, environ=None) -> ToolserverClient:
+    """Build (without probing) the registry-facing client for `cfg`."""
+    environ = os.environ if environ is None else environ
+    file_values = _env_file_values()
+    base = resolve_base(cfg, environ, file_values)
+    token, _src = resolve_token(cfg, base, environ, file_values)
+    try:
+        call_timeout = float(getattr(cfg, "timeout", 120) or 120)
+    except (TypeError, ValueError):
+        call_timeout = 120.0
+    return ToolserverClient(base, token, resolve_locus(cfg, environ),
+                            call_timeout=call_timeout,
+                            allow=getattr(cfg, "toolserver_allow", None),
+                            deny=getattr(cfg, "toolserver_deny", None))
+
+
+def specs(cfg, on_event=None, environ=None, client=None, taken=()) -> list:
     """Build the toolserver ToolSpecs for a registry.
 
     Default ON: probes POST /ts/categories (bounded); on success returns the
-    three meta-tools, on any failure emits ONE event stating why and returns []
-    so the agent runs normally. `client` is injectable for tests (its .probe()
-    is still honored, so an injected transport exercises the same path)."""
+    meta-tools (plus every allowed tool in flat mode), on any failure emits ONE
+    event stating why and returns [] so the agent runs normally. `client` is
+    injectable for tests (its .probe() is still honored)."""
     emit = on_event or (lambda *a, **k: None)
-    if not getattr(cfg, "toolserver", True):
+    environ = os.environ if environ is None else environ
+    if not getattr(cfg, "toolserver", True) or not tsc.enabled(environ):
         emit("toolserver", "disabled", "HUGPY_AGENT_TOOLSERVER is off")
         return []
-    environ = os.environ if environ is None else environ
 
     if client is None:
         file_values = _env_file_values()
         base = resolve_base(cfg, environ, file_values)
         token, tok_src = resolve_token(cfg, base, environ, file_values)
-        memo = _CLIENT_MEMO.get((base, token))
+        # memo key carries the allowlist too: a run with a different
+        # allow/deny must not inherit another run's verdicts.
+        key = (base, token, tuple(getattr(cfg, "toolserver_allow", None) or ()),
+               tuple(getattr(cfg, "toolserver_deny", None) or ()))
+        memo = _CLIENT_MEMO.get(key)
         if memo is not None:
-            return build_specs(memo)
-        locus = resolve_locus(cfg, environ)
-        try:
-            call_timeout = float(getattr(cfg, "timeout", 120) or 120)
-        except (TypeError, ValueError):
-            call_timeout = 120.0
-        client = ToolserverClient(base, token, locus, call_timeout=call_timeout)
-        ok, detail = client.probe()
-        if not ok:
-            emit("toolserver", "unavailable",
-                 "%s unreachable (token %s): %s; agent runs without toolserver "
-                 "tools" % (base, tok_src, detail))
-            return []
-        _CLIENT_MEMO[(base, token)] = client
-        emit("toolserver", "ready",
-             "%s (token %s); ts_categories/ts_list/ts_call available"
-             % (base, tok_src))
+            client = memo
+        else:
+            client = make_client(cfg, environ)
+            ok, detail = client.probe()
+            if not ok:
+                emit("toolserver", "unavailable",
+                     "%s unreachable (token %s): %s; agent runs without toolserver "
+                     "tools" % (base, tok_src, detail))
+                return []
+            _CLIENT_MEMO[key] = client
+            emit("toolserver", "ready",
+                 "%s (token %s); ts_categories/ts_list/ts_call available"
+                 % (base, tok_src))
 
-    return build_specs(client)
+    out = build_specs(client)
+    mode = (getattr(cfg, "toolserver_tools", "") or environ.get("HUGPY_AGENT_TOOLSERVER_TOOLS")
+            or "meta").strip().lower()
+    if mode == "flat":
+        flat = flat_specs(client, taken)
+        emit("toolserver", "flat", "%d toolserver tools registered directly" % len(flat))
+        out.extend(flat)
+    return out

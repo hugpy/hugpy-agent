@@ -1,0 +1,31 @@
+{
+ "session_id": "cs-synthetic00000000000000000000",
+ "busy": true,
+ "queue": {"session_id": "cs-synthetic00000000000000000000", "auto": true, "busy": true, "paused": false,
+           "items": [{"id": "m2", "text": "queued follow-up", "ts": 1790680001.0}]},
+ "events": [
+  {"type": "user", "text": "hello", "via": "deterministic", "message_ids": ["m1"], "session_id": "cs-synthetic00000000000000000000", "seq": 1, "ts": 1790680000.0},
+  {"type": "status", "state": "compiling", "message_ids": ["m1"], "session_id": "cs-synthetic00000000000000000000", "seq": 2, "ts": 1790680000.1},
+  {"type": "system", "model": "claude-opus-4-8", "tools": 3, "tool_names": ["Bash", "Read", "Edit"], "session_id": "cs-synthetic00000000000000000000", "seq": 3, "ts": 1790680000.2},
+  {"type": "text", "text": "Sure, ", "session_id": "cs-synthetic00000000000000000000", "seq": 4, "ts": 1790680000.3},
+  {"type": "text", "text": "reading the file.", "session_id": "cs-synthetic00000000000000000000", "seq": 5, "ts": 1790680000.4},
+  {"type": "thinking", "text": "The operator wants the file.\nI should read it.", "session_id": "cs-synthetic00000000000000000000", "seq": 6, "ts": 1790680000.5},
+  {"type": "tool", "name": "Read", "summary": "Read /tmp/x", "input": "{\"file_path\": \"/tmp/x\"}", "session_id": "cs-synthetic00000000000000000000", "seq": 7, "ts": 1790680000.6},
+  {"type": "tool_result", "is_error": false, "text": "line 1\nline 2", "session_id": "cs-synthetic00000000000000000000", "seq": 8, "ts": 1790680000.7},
+  {"type": "tool", "name": "commandExecution", "summary": "ls -la", "item": {"command": "ls -la"}, "status": "started", "session_id": "cs-synthetic00000000000000000000", "seq": 9, "ts": 1790680000.8},
+  {"type": "tool_result", "text": "total 0\n", "session_id": "cs-synthetic00000000000000000000", "seq": 10, "ts": 1790680000.9},
+  {"type": "tool", "name": "commandExecution", "summary": "ls -la", "item": {"command": "ls -la", "exit": 0}, "status": "completed", "session_id": "cs-synthetic00000000000000000000", "seq": 11, "ts": 1790680001.0},
+  {"type": "tool_use", "name": "shell", "input": {"cmd": "uptime"}, "text": "shell uptime", "session_id": "cs-synthetic00000000000000000000", "seq": 12, "ts": 1790680001.1},
+  {"type": "tool_result", "name": "shell", "text": "up 3 days", "full": "up 3 days, load 0.1", "is_error": false, "session_id": "cs-synthetic00000000000000000000", "seq": 13, "ts": 1790680001.2},
+  {"type": "approval", "request_id": "r1", "method": "item/commandExecution/requestApproval", "params": {"command": "rm -rf build", "cwd": "/srv"}, "session_id": "cs-synthetic00000000000000000000", "seq": 14, "ts": 1790680001.3},
+  {"type": "question", "request_id": "q1", "question": "Run shell `uptime`?", "options": ["Approve", "Approve all shell this run", "Deny"], "session_id": "cs-synthetic00000000000000000000", "seq": 15, "ts": 1790680001.4},
+  {"type": "approval_resolved", "request_id": "r1", "session_id": "cs-synthetic00000000000000000000", "seq": 16, "ts": 1790680001.5},
+  {"type": "usage", "usage": {"total": {"input_tokens": 1200, "output_tokens": 300}, "last": {"input_tokens": 100, "output_tokens": 20}, "modelContextWindow": 200000}, "session_id": "cs-synthetic00000000000000000000", "seq": 17, "ts": 1790680001.6},
+  {"type": "note", "text": "Quota fallback engaged", "quota_fallback": "claude-sonnet-5", "from_model": "claude-opus-4-8", "session_id": "cs-synthetic00000000000000000000", "seq": 18, "ts": 1790680001.7},
+  {"type": "session", "native_id": "1fe77174-9abd-4f3a-ac69-cbd3545b2e63", "model": "claude-opus-4-8", "session_id": "cs-synthetic00000000000000000000", "seq": 19, "ts": 1790680001.8},
+  {"type": "backend", "backend": "hugpy", "text": "Switched shared conversation to hugpy; prior history retained.", "session_id": "cs-synthetic00000000000000000000", "seq": 20, "ts": 1790680001.9},
+  {"type": "rollover", "old_native_id": "1fe77174-9abd-4f3a-ac69-cbd3545b2e63", "native_id": "2aa88285-0000-4000-8000-000000000000", "carried": 2, "session_id": "cs-synthetic00000000000000000000", "seq": 21, "ts": 1790680002.0},
+  {"type": "done", "result": "Sure, reading the file.", "rc": 0, "error": null, "message_ids": ["m1"], "session_id": "cs-synthetic00000000000000000000", "seq": 22, "ts": 1790680002.1},
+  {"type": "done", "result": "", "rc": 1, "error": "Held after a serve restart; retry to resume.", "held": true, "message_ids": ["m2"], "session_id": "cs-synthetic00000000000000000000", "seq": 23, "ts": 1790680002.2}
+ ]
+}

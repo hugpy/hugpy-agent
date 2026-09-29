@@ -243,7 +243,9 @@ def build_registry(workspace: str, gateway, memory=None, comms=None,
     if cfg is not None and getattr(cfg, "toolserver", True):
         try:
             from . import toolserver as _ts
-            for spec in _ts.specs(cfg, on_event=on_event):
+            # `taken`: in flat mode a toolserver tool never shadows a local,
+            # jailed tool of the same name (fs_glob and friends).
+            for spec in _ts.specs(cfg, on_event=on_event, taken=reg.names()):
                 reg.register(spec)
         except Exception:  # noqa: BLE001 — the toolset must never fail to build
             pass

@@ -1,0 +1,64 @@
+{
+ "config": {
+  "listen_host": "127.0.0.1",
+  "listen_port": 9111,
+  "default_model": "claude-opus-4-8",
+  "quota_fallback_model": "claude-opus-4-8",
+  "preflight_quota_check": true,
+  "fresh_session_per_launch": true,
+  "fresh_session_mode": "dir",
+  "keep_sessions": 30,
+  "rollover_mode": "auto",
+  "rollover_context_tokens": 240000,
+  "rollover_grace_s": 60,
+  "rollover_ledger_fresh_turns": 5
+ },
+ "live_settings": {
+  "_trimmed": true
+ },
+ "template_settings": {
+  "_trimmed": true
+ },
+ "template_dotclaude": {
+  "_trimmed": true
+ },
+ "oauth": "stored token: yes (sk-ant-oat01\u2026, 108 chars); source: abstract_claude store",
+ "version": "2.1.284 (Claude Code)",
+ "bool_keys": [
+  "enableArtifact",
+  "workflowKeywordTriggerEnabled",
+  "promptSuggestionEnabled",
+  "awaySummaryEnabled",
+  "skipDangerousModePermissionPrompt",
+  "autoCompactEnabled",
+  "switchModelsOnFlag",
+  "autoScrollEnabled",
+  "fileCheckpointingEnabled",
+  "terminalProgressBarEnabled",
+  "remoteControlAtStartup",
+  "inputNeededNotifEnabled",
+  "agentPushNotifEnabled"
+ ],
+ "effort_values": [
+  "low",
+  "medium",
+  "high",
+  "xhigh"
+ ],
+ "perm_modes": [
+  "acceptEdits",
+  "auto",
+  "bypassPermissions",
+  "default",
+  "plan"
+ ],
+ "mcp_tools": {
+  "_trimmed": true
+ },
+ "live_settings_path": "/srv/vm_mgr/.claude/settings.json",
+ "root": "/srv/vm_mgr/hugpy-station/abstract-claude",
+ "busy": {
+  "busy": false,
+  "turns": []
+ }
+}

@@ -1,0 +1,71 @@
+{
+ "service": "hugpy-agent",
+ "protocol_version": 1,
+ "root": "/srv/vm_mgr/.local/state/hugpy-agent-serve",
+ "workspace": "/srv/vm_mgr/hugpy-station/local-keeper",
+ "config": {
+  "default_profile": "hugpy-fleet",
+  "default_model": "Qwen3-Coder-Next-GGUF"
+ },
+ "profiles": [
+  {
+   "id": "hugpy-fleet",
+   "label": "Hugpy Fleet",
+   "protocol": "hugpy",
+   "model": "Qwen3-Coder-Next-GGUF",
+   "available": true,
+   "reason": "",
+   "tools": "Hugpy Agent + Toolserver"
+  },
+  {
+   "id": "gpt",
+   "label": "GPT",
+   "protocol": "openai-responses",
+   "model": "gpt-5.4",
+   "available": false,
+   "reason": "Credential is not configured",
+   "tools": "Hugpy Agent + Toolserver"
+  },
+  {
+   "id": "claude",
+   "label": "Claude",
+   "protocol": "anthropic",
+   "model": "claude-opus-4-8",
+   "available": false,
+   "reason": "Credential is not configured",
+   "tools": "Hugpy Agent + Toolserver"
+  },
+  {
+   "id": "claude-code",
+   "label": "Claude Code",
+   "protocol": "claude-code",
+   "model": "",
+   "available": true,
+   "reason": "",
+   "tools": "client configuration"
+  }
+ ],
+ "sessions": [
+  {
+   "id": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "profile": "hugpy-fleet:Qwen3-Coder-Next-GGUF",
+   "status": "interrupted",
+   "created": 1790669173.155039,
+   "updated": 1790680306.5707395
+  },
+  {
+   "id": "ccd56cbe17d548bea5c13b1a798cf8c3",
+   "profile": "hugpy-fleet:Qwen3-Coder-Next-GGUF",
+   "status": "done",
+   "created": 1790678034.15391,
+   "updated": 1790678943.6390047
+  },
+  {
+   "id": "dbc49ebb832a4d688dabd53cbc13dbb1",
+   "profile": "hugpy-fleet:Qwen2.5-3B-Instruct-GGUF",
+   "status": "done",
+   "created": 1790616532.4711177,
+   "updated": 1790676543.246263
+  }
+ ]
+}

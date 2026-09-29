@@ -53,6 +53,43 @@ _ALLOWED = list(_MCT_TOOLS)
 _DISALLOWED = _NATIVE_HOST + _NATIVE_OFF_HOST + _NEVER
 
 
+def toolserver_grant(environ=None, client=None) -> dict | None:
+    """The toolserver as an MCP server for A (operator decision 2026-09-29:
+    every hugpy-agent harness has the toolserver integrated).
+
+    Returns ``{"server": <mcpServers entry>, "allowed": [mcp__toolserver__<t>…],
+    "disallowed": [...], "count": n, "url": ...}`` or None when the bridge is
+    off (HUGPY_AGENT_TOOLSERVER=0 / `--no-toolserver`) or the server is not
+    reachable/authorized right now (A then runs exactly as before — the
+    toolserver is additive, never a dependency).
+
+    The grant follows the shared allowlist: readonly + mutating tools are
+    named in --allowedTools; PRIVILEGED ones (vm_*, sys_*, fs_write_file, …)
+    are named in --disallowedTools unless HUGPY_AGENT_TOOLSERVER_ALLOW lists
+    them. The token travels in the mcp-config file (0600 tempfile) as the
+    X-Operator-Token header the toolserver's operator gate checks."""
+    from .. import toolserver_client as tsc
+    environ = os.environ if environ is None else environ
+    if not tsc.enabled(environ):
+        return None
+    try:
+        client = client or tsc.default_client(environ)
+        status = client.status()
+        if not status.get("ok"):
+            return None
+        tools = client.list_tools()
+    except Exception:  # noqa: BLE001 — never let a probe break A's turn
+        return None
+    allowed = ["mcp__toolserver__" + t["name"] for t in tools if client.allowed(t["name"])]
+    disallowed = ["mcp__toolserver__" + t["name"] for t in tools if not client.allowed(t["name"])]
+    server = {"type": "http", "url": client.url + "/mcp?mode=flat"}
+    if client.token:
+        server["headers"] = {tsc.HEADER: client.token,
+                             "Authorization": "Bearer " + client.token}
+    return {"server": server, "allowed": allowed, "disallowed": disallowed,
+            "count": len(allowed), "url": client.url}
+
+
 def tool_policy(native_tools: str = "off_host") -> tuple[list, list]:
     """Return ``(allowed, disallowed)`` for a native-tool posture.
 
@@ -182,6 +219,11 @@ class ClaudeCodeAdapter:
             "args": ["-m", "hugpy_agent.mct.mct_mcp_server"],
             "env": env_for_server,
         }}}
+        # Toolserver (shared client): a second MCP server next to B's, holding
+        # the allowlisted tool surface. None = off/unreachable -> A unchanged.
+        ts_grant = toolserver_grant()
+        if ts_grant:
+            cfg["mcpServers"]["toolserver"] = ts_grant["server"]
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
             json.dump(cfg, fh)
@@ -192,6 +234,26 @@ class ClaudeCodeAdapter:
         # "A cache" mirror (everything A receives is captured, not just pointers).
         allowed, disallowed = tool_policy(native_tools)
         system = _SYSTEM + (_SYSTEM_NATIVE if native_tools == "all" else "")
+        if ts_grant:
+            allowed = allowed + ts_grant["allowed"]
+            disallowed = disallowed + ts_grant["disallowed"]
+            system += (" You also hold the station toolserver's tools (mcp__toolserver__*: "
+                       "fs_*, exchange_*, ledger_*, todo_*, comms_*, …); prefer B's "
+                       "resolve/submit_pull for files under the workspace so the "
+                       "access log stays complete.")
+            # The ledger records that A holds an unmediated surface (same
+            # posture as native_tools=all: the log must not imply coverage).
+            try:
+                self.server.ledger.append_event(
+                    session.session_id, turn_id, epoch,
+                    "a.toolserver_tools", "B.a-adapter")
+                self.server.access.record(
+                    "A", "unmediated", "toolserver tools granted",
+                    detail="%d toolserver tools via %s bypass B"
+                           % (ts_grant["count"], ts_grant["url"]),
+                    session=session.session_id, turn=turn_id)
+            except Exception:
+                pass
         # A gets ONE sanctioned writable location — the per-session scratch dir —
         # declared up front so it never probes the host for somewhere to write
         # (its inherited cwd is often root-owned, e.g. the installed backend).

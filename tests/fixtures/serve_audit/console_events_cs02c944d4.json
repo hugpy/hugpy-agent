@@ -1,0 +1,912 @@
+{
+ "events": [
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "ffb8d0725cad495db602b4f29ddfbdf0"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 860,
+   "ts": 1789617743.2974656
+  },
+  {
+   "type": "user",
+   "text": "No, I\u2019m not sending anything repeatedly\u2014you\u2019re seeing repeated messages because of how our conversation is being processed or displayed (e.g., due to a technical glitch, message buffering, or misalignment in message delivery). If it feels like the same thing is coming up over and over, please let me",
+   "via": "local",
+   "message_ids": [
+    "ffb8d0725cad495db602b4f29ddfbdf0"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 867,
+   "ts": 1789617751.8166893
+  },
+  {
+   "type": "system",
+   "model": "claude-haiku-4-5-20251001",
+   "tools": 33,
+   "tool_names": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 869,
+   "ts": 1789617755.8804817
+  },
+  {
+   "type": "text",
+   "text": "Understood\u2014no problem. I've processed the merge task and have the final coher",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 870,
+   "ts": 1789617759.5478306
+  },
+  {
+   "type": "text",
+   "text": "ent prompt:\n\n**Every",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 871,
+   "ts": 1789617759.6016405
+  },
+  {
+   "type": "text",
+   "text": " session should explicitly display its standing session name at the top of the chat, next to the session id. Implement one consistent metadata line (copy, duration, time, model, tokens) across",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 872,
+   "ts": 1789617759.732806
+  },
+  {
+   "type": "text",
+   "text": " prompt, tool calls/results, response, turn, and session\u2014uniform throughout the board. Do not integrate the old abstract-claude serve test instance into the hugpy locus; it is dead",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 873,
+   "ts": 1789617759.882321
+  },
+  {
+   "type": "text",
+   "text": "weight and a liability.**\n\nReady",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 874,
+   "ts": 1789617759.8977075
+  },
+  {
+   "type": "text",
+   "text": " for the next request when you have one.",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 875,
+   "ts": 1789617760.0478902
+  },
+  {
+   "type": "session",
+   "native_id": "1fe77174-9abd-4f3a-ac69-cbd3545b2e63",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 876,
+   "ts": 1789617760.9264135
+  },
+  {
+   "type": "done",
+   "result": "Understood\u2014no problem. I've processed the merge task and have the final coherent prompt:\n\n**Every session should explicitly display its standing session name at the top of the chat, next to the session id. Implement one consistent metadata line (copy, duration, time, model, tokens) across prompt, to",
+   "rc": 0,
+   "message_ids": [
+    "ffb8d0725cad495db602b4f29ddfbdf0"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 877,
+   "ts": 1789617760.9354448
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "3ee7ef0d81eb4c9ea6f96d683be42d1c"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 939,
+   "ts": 1789617846.4935367
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "3ee7ef0d81eb4c9ea6f96d683be42d1c",
+    "b21a86cba66b489e9c1194c16626ae3b"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 946,
+   "ts": 1789617852.7286086
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Turn interrupted during B compilation",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "3ee7ef0d81eb4c9ea6f96d683be42d1c",
+    "b21a86cba66b489e9c1194c16626ae3b"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 950,
+   "ts": 1789617861.5505593
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "3ee7ef0d81eb4c9ea6f96d683be42d1c",
+    "b21a86cba66b489e9c1194c16626ae3b"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 951,
+   "ts": 1789617862.4090376
+  },
+  {
+   "type": "user",
+   "text": "It looks like you're reacting to something unexpected or confusing\u2014maybe a message, event, or system behavior that just popped up? To help clarify where it\u2019s coming from and what\u2019s going on, could you share a bit more context? For example:\n\n- What exactly did you see or experience?\n- When did it hap",
+   "via": "local",
+   "message_ids": [
+    "3ee7ef0d81eb4c9ea6f96d683be42d1c",
+    "b21a86cba66b489e9c1194c16626ae3b"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 956,
+   "ts": 1789617873.7487144
+  },
+  {
+   "type": "system",
+   "model": "claude-haiku-4-5-20251001",
+   "tools": 33,
+   "tool_names": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 959,
+   "ts": 1789617876.96056
+  },
+  {
+   "type": "text",
+   "text": "Thanks for the clarity. The led",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 963,
+   "ts": 1789617882.7748976
+  },
+  {
+   "type": "text",
+   "text": "ger has clarified the situation: the repeated merge-prompt messages were **",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 964,
+   "ts": 1789617882.9065924
+  },
+  {
+   "type": "text",
+   "text": "client-side resends** (you resending the same task),",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 965,
+   "ts": 1789617883.0404286
+  },
+  {
+   "type": "text",
+   "text": " not a server-side queue/reminder replay. That's why they kept appearing\u2014",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 966,
+   "ts": 1789617883.169913
+  },
+  {
+   "type": "text",
+   "text": "no server loop to fix, just message resends",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 967,
+   "ts": 1789617883.302085
+  },
+  {
+   "type": "text",
+   "text": " on the client end.\n\n**",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 968,
+   "ts": 1789617883.3847342
+  },
+  {
+   "type": "text",
+   "text": "On the",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 969,
+   "ts": 1789617883.513127
+  },
+  {
+   "type": "text",
+   "text": " delivery front:** ASK 1+2+3 are now shipped and live-verified:",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 970,
+   "ts": 1789617883.6427987
+  },
+  {
+   "type": "text",
+   "text": "\n\n1",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 971,
+   "ts": 1789617883.6955566
+  },
+  {
+   "type": "text",
+   "text": ". **Metadata line + session",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 972,
+   "ts": 1789617883.829784
+  },
+  {
+   "type": "text",
+   "text": " name display** \u2014 keeper-live",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 973,
+   "ts": 1789617883.9848564
+  },
+  {
+   "type": "text",
+   "text": ".js implements the ONE consistent",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 974,
+   "ts": 1789617884.1254406
+  },
+  {
+   "type": "text",
+   "text": " line (time \u00b7 duration \u00b7 tokens",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 975,
+   "ts": 1789617884.2819808
+  },
+  {
+   "type": "text",
+   "text": " \u00b7 model \u00b7 cost \u00b7 copy",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 976,
+   "ts": 1789617884.432167
+  },
+  {
+   "type": "text",
+   "text": ") on prompt, tool",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 977,
+   "ts": 1789617884.5707831
+  },
+  {
+   "type": "text",
+   "text": " calls, response, turn, and session. Header shows",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 978,
+   "ts": 1789617884.7224865
+  },
+  {
+   "type": "text",
+   "text": " standing session name before the id",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 979,
+   "ts": 1789617884.8540108
+  },
+  {
+   "type": "text",
+   "text": ". Both :9124 and :9125 serve ?v=20260917e.",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 980,
+   "ts": 1789617885.012172
+  },
+  {
+   "type": "text",
+   "text": "\n\n2. **Hugpy l",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 981,
+   "ts": 1789617885.2645044
+  },
+  {
+   "type": "text",
+   "text": "ocus integrated** \u2014 Station 1.0.101 (hugpy-station, 2411430) now frames hugpy's own :9125 serve at `/ac",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 982,
+   "ts": 1789617885.4320867
+  },
+  {
+   "type": "text",
+   "text": "/@hugpy/` via per-locus registry. Verified",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 983,
+   "ts": 1789617885.563877
+  },
+  {
+   "type": "text",
+   "text": ": `/ac/@hugpy/` proxies roster",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 984,
+   "ts": 1789617885.694971
+  },
+  {
+   "type": "text",
+   "text": " and API calls to hugpy's serve.\n\n3. **:",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 985,
+   "ts": 1789617885.826186
+  },
+  {
+   "type": "text",
+   "text": "9111 stray instance** \u2014 Still running (deadweight, unused). Kill when the operator says:",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 986,
+   "ts": 1789617885.9582193
+  },
+  {
+   "type": "text",
+   "text": " `pkill -u solcatcher -f 'abstract-claude serve'`.\n\nWhat",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 987,
+   "ts": 1789617886.0440817
+  },
+  {
+   "type": "text",
+   "text": " would help you move forward?",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 988,
+   "ts": 1789617886.1848962
+  },
+  {
+   "type": "session",
+   "native_id": "1fe77174-9abd-4f3a-ac69-cbd3545b2e63",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 991,
+   "ts": 1789617889.1304243
+  },
+  {
+   "type": "done",
+   "result": "Thanks for the clarity. The ledger has clarified the situation: the repeated merge-prompt messages were **client-side resends** (you resending the same task), not a server-side queue/reminder replay. That's why they kept appearing\u2014no server loop to fix, just message resends on the client end.\n\n**On ",
+   "rc": 0,
+   "message_ids": [
+    "3ee7ef0d81eb4c9ea6f96d683be42d1c",
+    "b21a86cba66b489e9c1194c16626ae3b"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 992,
+   "ts": 1789617889.1389134
+  },
+  {
+   "type": "backend",
+   "backend": "hugpy",
+   "text": "Switched shared conversation to hugpy; prior history retained.",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11103,
+   "ts": 1790643267.4090383
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11104,
+   "ts": 1790643272.0609229
+  },
+  {
+   "type": "user",
+   "text": "hi",
+   "via": "deterministic",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11105,
+   "ts": 1790643272.0662138
+  },
+  {
+   "type": "session",
+   "native_id": "4370262dd6ed46f896644eac510e7602",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11106,
+   "ts": 1790643272.0927258
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy turn interrupted; review originals before retrying",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11117,
+   "ts": 1790643323.8008776
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11118,
+   "ts": 1790643324.1088617
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11119,
+   "ts": 1790643338.434531
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11120,
+   "ts": 1790643338.4619703
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11121,
+   "ts": 1790643339.130238
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11122,
+   "ts": 1790643339.1351433
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11123,
+   "ts": 1790643339.1474485
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11124,
+   "ts": 1790643340.800506
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11125,
+   "ts": 1790643340.8071048
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11126,
+   "ts": 1790643340.826434
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11127,
+   "ts": 1790643342.3343146
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11128,
+   "ts": 1790643342.3413923
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11129,
+   "ts": 1790643342.3650248
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11130,
+   "ts": 1790643344.1746829
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11131,
+   "ts": 1790643344.1804461
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11132,
+   "ts": 1790643344.2001078
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11133,
+   "ts": 1790643345.6835794
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11134,
+   "ts": 1790643345.689792
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11135,
+   "ts": 1790643345.7109342
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11136,
+   "ts": 1790643347.200524
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11137,
+   "ts": 1790643347.2069724
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11138,
+   "ts": 1790643347.2240703
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11139,
+   "ts": 1790643348.733129
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11140,
+   "ts": 1790643348.7385495
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11141,
+   "ts": 1790643348.7540498
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11142,
+   "ts": 1790643350.254273
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11143,
+   "ts": 1790643350.2606242
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11144,
+   "ts": 1790643350.2779148
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11145,
+   "ts": 1790643351.7744808
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11146,
+   "ts": 1790643351.7810273
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11147,
+   "ts": 1790643351.8014894
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11148,
+   "ts": 1790643353.308986
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11149,
+   "ts": 1790643353.3157384
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11150,
+   "ts": 1790643353.3383672
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11151,
+   "ts": 1790643354.8198519
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11152,
+   "ts": 1790643354.8279867
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11153,
+   "ts": 1790643354.845363
+  },
+  {
+   "type": "status",
+   "state": "compiling",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11154,
+   "ts": 1790643356.9920418
+  },
+  {
+   "type": "user",
+   "text": "hi ssdfdsf",
+   "via": "local",
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11155,
+   "ts": 1790643356.9990146
+  },
+  {
+   "type": "done",
+   "rc": 1,
+   "error": "Hugpy Agent: Service is busy; wait for the active turn or stop it",
+   "result": "",
+   "held": true,
+   "message_ids": [
+    "94a0b9a212b540dca0c8136fd2a85914",
+    "0ed93538a9f8427e82fa7801a4f8b8da"
+   ],
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "seq": 11156,
+   "ts": 1790643357.0156834
+  }
+ ],
+ "busy": false,
+ "queue": {
+  "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+  "auto": true,
+  "busy": false,
+  "paused": false,
+  "items": []
+ }
+}

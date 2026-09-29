@@ -1,0 +1,856 @@
+{
+ "roles": [
+  {
+   "archived_at": 1790638584,
+   "archived_by": "operator-ui",
+   "archived_from": "cs-9646e9a6b3554ccba691bf259c1a8ae1",
+   "backend": "hugpy",
+   "bound_at": 1790564974,
+   "by": "operator-ui",
+   "created": 1790638584,
+   "label": "Keeper",
+   "model": "hugpy-fleet:Qwen3-Coder-Next-GGUF",
+   "model_at": 1790669169,
+   "model_by": "operator-ui",
+   "role": "keeper",
+   "rolled_at": 1789922789,
+   "rolled_from": "a72bb599-968e-4189-9fe7-9cb68cae4a36",
+   "session_id": "cs-cd165265d096407f92fcc4d54f2c2bd9",
+   "standing": true,
+   "live_session_id": "cs-cd165265d096407f92fcc4d54f2c2bd9",
+   "archived": false,
+   "pending_model": null,
+   "default_model": "",
+   "ensuring": false
+  },
+  {
+   "backend": "claude",
+   "by": "startup",
+   "created": 1789590842,
+   "label": "Chat",
+   "model": "claude-opus-4-8",
+   "pending_at": 1789849356,
+   "pending_by": "operator-ui",
+   "pending_model": "claude-opus-5",
+   "role": "chat",
+   "session_id": "547bcd67-4925-4397-8bf7-26d3eb9b1721",
+   "standing": true,
+   "live_session_id": "547bcd67-4925-4397-8bf7-26d3eb9b1721",
+   "archived": false,
+   "default_model": "claude-opus-4-8",
+   "ensuring": false
+  },
+  {
+   "backend": "hugpy",
+   "by": "operator-ui",
+   "created": 1789590848,
+   "label": "Worker",
+   "model": "hugpy-fleet:Qwen3-32B",
+   "model_at": 1790643267,
+   "model_by": "operator-ui",
+   "role": "worker",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "standing": true,
+   "live_session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "archived": false,
+   "pending_model": null,
+   "default_model": "",
+   "ensuring": false
+  },
+  {
+   "backend": "b",
+   "label": "Local",
+   "model": "",
+   "role": "local",
+   "session_id": "local",
+   "standing": true,
+   "live_session_id": "local",
+   "archived": false,
+   "pending_model": null,
+   "default_model": "",
+   "ensuring": false
+  }
+ ],
+ "state_path": "/srv/vm_mgr/hugpy-station/abstract-claude/roster.json",
+ "worker_model": "",
+ "defaults": {
+  "keeper": "",
+  "chat": "claude-opus-4-8",
+  "worker": ""
+ },
+ "history": [
+  {
+   "by": "operator-ui",
+   "role": "keeper",
+   "session_id": "562691da-01d4-47e7-909d-5edd4fea2428",
+   "ts": 1789615536
+  },
+  {
+   "by": "operator-ui",
+   "role": "keeper",
+   "session_id": "0b1d949e-78d3-48d7-acee-9a87e5d778b3",
+   "ts": 1789617818
+  }
+ ],
+ "models": [
+  "claude-fable-5-1",
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-sonnet-5",
+  "claude-haiku-4-5"
+ ],
+ "model_info": [
+  {
+   "id": "claude-fable-5-1",
+   "label": "Claude Fable 5.1",
+   "ctx": "1M",
+   "out": "128K"
+  },
+  {
+   "id": "claude-opus-5",
+   "label": "Claude Opus 5",
+   "ctx": "1M",
+   "out": "128K"
+  },
+  {
+   "id": "claude-opus-4-8",
+   "label": "Claude Opus 4.8",
+   "ctx": "1M",
+   "out": "128K"
+  }
+ ],
+ "models_source": "cache",
+ "models_error": null,
+ "provider_options": [
+  {
+   "backend": "claude",
+   "model": "",
+   "label": "Claude \u00b7 default"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-fable-5-1",
+   "label": "Claude \u00b7 Claude Fable 5.1"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-opus-5",
+   "label": "Claude \u00b7 Claude Opus 5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-opus-4-8",
+   "label": "Claude \u00b7 Claude Opus 4.8"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-sonnet-5",
+   "label": "Claude \u00b7 Claude Sonnet 5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-haiku-4-5",
+   "label": "Claude \u00b7 claude-haiku-4-5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-sonnet-5-5",
+   "label": "Claude \u00b7 Claude Sonnet 5.5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-opus-5-5",
+   "label": "Claude \u00b7 Claude Opus 5.5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-fable-5",
+   "label": "Claude \u00b7 Claude Fable 5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-opus-4-7",
+   "label": "Claude \u00b7 Claude Opus 4.7"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-sonnet-4-6",
+   "label": "Claude \u00b7 Claude Sonnet 4.6"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-opus-4-6",
+   "label": "Claude \u00b7 Claude Opus 4.6"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-opus-4-5-20251101",
+   "label": "Claude \u00b7 Claude Opus 4.5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-haiku-4-5-20251001",
+   "label": "Claude \u00b7 Claude Haiku 4.5"
+  },
+  {
+   "backend": "claude",
+   "model": "claude-sonnet-4-5-20250929",
+   "label": "Claude \u00b7 Claude Sonnet 4.5"
+  },
+  {
+   "backend": "gpt",
+   "model": "",
+   "label": "GPT \u00b7 configured default"
+  },
+  {
+   "backend": "gpt",
+   "model": "gpt-6-astra",
+   "label": "GPT \u00b7 GPT-6-Astra"
+  },
+  {
+   "backend": "gpt",
+   "model": "gpt-5.6-sol",
+   "label": "GPT \u00b7 GPT-5.6-Sol"
+  },
+  {
+   "backend": "gpt",
+   "model": "gpt-5.6-terra",
+   "label": "GPT \u00b7 GPT-5.6-Terra"
+  },
+  {
+   "backend": "gpt",
+   "model": "gpt-5.6-luna",
+   "label": "GPT \u00b7 GPT-5.6-Luna"
+  },
+  {
+   "backend": "gpt",
+   "model": "gpt-5.5",
+   "label": "GPT \u00b7 GPT-5.5"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet",
+   "label": "Hugpy \u00b7 default"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-3B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2.5-3B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-VL-3B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2.5-VL-3B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Surogate-3.5-2B",
+   "label": "Hugpy \u00b7 Surogate-3.5-2B"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3-32B",
+   "label": "Hugpy \u00b7 Qwen3-32B"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:tiny-random-gpt2",
+   "label": "Hugpy \u00b7 tiny-random-gpt2"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:MiniCPM-V-4.6",
+   "label": "Hugpy \u00b7 MiniCPM-V-4.6"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-AEON-Ultimate-Uncensored-GPTQ-Pro-FOEM-4bit-g128",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-AEON-Ultimate-Uncensored-GPTQ-Pro-FOEM-4bit-g128"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:llama2_7b_chat_uncensored-GPTQ",
+   "label": "Hugpy \u00b7 llama2_7b_chat_uncensored-GPTQ"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:OpenMythos",
+   "label": "Hugpy \u00b7 OpenMythos"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:MN-GRAND-23.5B-Gutenberg-UNCENSORED-V2-GLM4.7-Thinking",
+   "label": "Hugpy \u00b7 MN-GRAND-23.5B-Gutenberg-UNCENSORED-V2-GLM4.7-Thinking"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-NVFP4",
+   "label": "Hugpy \u00b7 Qwen3.6-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-NVFP4"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-Coder-32B-4bit",
+   "label": "Hugpy \u00b7 Qwen2.5-Coder-32B-4bit"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3-1.7B-Thinking-Distil",
+   "label": "Hugpy \u00b7 Qwen3-1.7B-Thinking-Distil"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:GLM-4.7-Flash-NVFP4",
+   "label": "Hugpy \u00b7 GLM-4.7-Flash-NVFP4"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Hunyuan3D-2mini",
+   "label": "Hugpy \u00b7 Hunyuan3D-2mini"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Hunyuan3D-2mv",
+   "label": "Hugpy \u00b7 Hunyuan3D-2mv"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:whisper-large-v3",
+   "label": "Hugpy \u00b7 whisper-large-v3"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3-0.6B-AX637",
+   "label": "Hugpy \u00b7 Qwen3-0.6B-AX637"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:MiniMax-M3-uncensored",
+   "label": "Hugpy \u00b7 MiniMax-M3-uncensored"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:evolai-tf-model",
+   "label": "Hugpy \u00b7 evolai-tf-model"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:gemma-4-31B-it-uncensored",
+   "label": "Hugpy \u00b7 gemma-4-31B-it-uncensored"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:GLM-5.3-UNCENSORED-FP8",
+   "label": "Hugpy \u00b7 GLM-5.3-UNCENSORED-FP8"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:qwen3.5-test-stage1-lora",
+   "label": "Hugpy \u00b7 qwen3.5-test-stage1-lora"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:test-save-tiny-random-llama3-smashed-pro",
+   "label": "Hugpy \u00b7 test-save-tiny-random-llama3-smashed-pro"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:DAN-Qwen3-1.7B",
+   "label": "Hugpy \u00b7 DAN-Qwen3-1.7B"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:FramePackI2V_HY",
+   "label": "Hugpy \u00b7 FramePackI2V_HY"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Keural-Cortex-8B-SFT",
+   "label": "Hugpy \u00b7 Keural-Cortex-8B-SFT"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwythos-9B-Claude-Mythos-5-1M",
+   "label": "Hugpy \u00b7 Qwythos-9B-Claude-Mythos-5-1M"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:QwenPaw-Flash-9B-heretic",
+   "label": "Hugpy \u00b7 QwenPaw-Flash-9B-heretic"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-27B-Uncensored-MLX",
+   "label": "Hugpy \u00b7 Qwen3.8-27B-Uncensored-MLX"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-VL-3B-Instruct",
+   "label": "Hugpy \u00b7 Qwen2.5-VL-3B-Instruct"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.5-0.8B",
+   "label": "Hugpy \u00b7 Qwen3.5-0.8B"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:convert_awq_w4a16_asym-e2e",
+   "label": "Hugpy \u00b7 convert_awq_w4a16_asym-e2e"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-Coder-1.5B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2.5-Coder-1.5B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:HYZ-01-0.6B",
+   "label": "Hugpy \u00b7 HYZ-01-0.6B"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:gemma-4-12B-it-uncensored",
+   "label": "Hugpy \u00b7 gemma-4-12B-it-uncensored"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:GLM-5.3-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 GLM-5.3-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Gemma-3-4B-VL-it-Gemini-Pro-Heretic-Uncensored-Thinking_GGUF",
+   "label": "Hugpy \u00b7 Gemma-3-4B-VL-it-Gemini-Pro-Heretic-Uncensored-Thinking_GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Kimi-K3-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 Kimi-K3-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:ggml-org~Qwen3.8-27B-GGUF",
+   "label": "Hugpy \u00b7 ggml-org~Qwen3.8-27B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8_4B_Distilled_GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8_4B_Distilled_GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:allura-org_Qwen3.6-35B-A3B-Anko-GGUF",
+   "label": "Hugpy \u00b7 allura-org_Qwen3.6-35B-A3B-Anko-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:MN-GRAND-23.5B-Gutenberg-UNCENSORED-V2-GLM4.7-Thinking-NEO-Imatrix-GGUF",
+   "label": "Hugpy \u00b7 MN-GRAND-23.5B-Gutenberg-UNCENSORED-V2-GLM4.7-Thinking-NEO-Imatrix-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-OBLITERATED",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-OBLITERATED"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-27B-OBLITERATED",
+   "label": "Hugpy \u00b7 Qwen3.8-27B-OBLITERATED"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-27B-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-27B-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-14B-A3B-FableVibes-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-14B-A3B-FableVibes-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-14B-A3B-vibetuned-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-14B-A3B-vibetuned-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-VL-7B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2.5-VL-7B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3-0.6B-GGUF",
+   "label": "Hugpy \u00b7 Qwen3-0.6B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-A3B-CoderX-MTP-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-A3B-CoderX-MTP-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:unsloth~LFM2.5-VL-3B-GGUF",
+   "label": "Hugpy \u00b7 unsloth~LFM2.5-VL-3B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:unsloth~LFM2.5-VL-1.6B-GGUF",
+   "label": "Hugpy \u00b7 unsloth~LFM2.5-VL-1.6B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:unsloth~Qwen3.8-27B-GGUF",
+   "label": "Hugpy \u00b7 unsloth~Qwen3.8-27B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-Coder-32B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2.5-Coder-32B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:LFM2.5-350M-home-assistant-sft",
+   "label": "Hugpy \u00b7 LFM2.5-350M-home-assistant-sft"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:LuffyTheFox-Qwen3.6-35B-A3B-Uncensored-Wasserstein-GGUF",
+   "label": "Hugpy \u00b7 LuffyTheFox-Qwen3.6-35B-A3B-Uncensored-Wasserstein-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.5-9B-DFlash-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.5-9B-DFlash-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:AtomicChat~Qwen3.8-27B-GGUF",
+   "label": "Hugpy \u00b7 AtomicChat~Qwen3.8-27B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-2B-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-2B-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Huihui-Step3-VL-10B-abliterated-GGUF",
+   "label": "Hugpy \u00b7 Huihui-Step3-VL-10B-abliterated-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-Miraculix-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-Miraculix-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:gemma-4-12B-it-abliterated-uncensored-GGUF",
+   "label": "Hugpy \u00b7 gemma-4-12B-it-abliterated-uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Swift-Qwen3.8-27B-Uncensored-MTP-i1-GGUF",
+   "label": "Hugpy \u00b7 Swift-Qwen3.8-27B-Uncensored-MTP-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-Claude-4.7-Opus-Reasoning-Distilled-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-Claude-4.7-Opus-Reasoning-Distilled-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Swift-Qwen3.8-27B-Uncensored-BF16-i1-GGUF",
+   "label": "Hugpy \u00b7 Swift-Qwen3.8-27B-Uncensored-BF16-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-Seven-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-Seven-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen35B-Agent-R2-Abliterated-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen35B-Agent-R2-Abliterated-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-9B-heretic-uncensored-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-9B-heretic-uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-Jormungandr-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-Jormungandr-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:mythospice-limarp-70b-GGUF",
+   "label": "Hugpy \u00b7 mythospice-limarp-70b-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF",
+   "label": "Hugpy \u00b7 gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Gemma-4-Queen-31B-it-uncensored-heretic-i1-GGUF",
+   "label": "Hugpy \u00b7 Gemma-4-Queen-31B-it-uncensored-heretic-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-Queen-27B-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-Queen-27B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Ministral-3B-Heresy-Unfiltered-i1-GGUF",
+   "label": "Hugpy \u00b7 Ministral-3B-Heresy-Unfiltered-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:liujgoj-v1-qwen3-8b-base-GGUF",
+   "label": "Hugpy \u00b7 liujgoj-v1-qwen3-8b-base-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-Flash-Next-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-Flash-Next-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-Heretic2-Uncensored-Finetune-Thinking-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-Heretic2-Uncensored-Finetune-Thinking-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-Jormungandr-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-Jormungandr-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Ornith-1.5-9B-uncensored-GGUF",
+   "label": "Hugpy \u00b7 Ornith-1.5-9B-uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-9B-heretic-uncensored-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-9B-heretic-uncensored-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-27B-TWIN-TURBO-Fable-Cold-Fusion-709-ULTRA-HERETIC-Uncensored-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-27B-TWIN-TURBO-Fable-Cold-Fusion-709-ULTRA-HERETIC-Uncensored-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-9B-Distill-uncensored-heretic-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-9B-Distill-uncensored-heretic-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-Akka-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-Akka-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-NEO-CODE-Di-IMatrix-MAX-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-NEO-CODE-Di-IMatrix-MAX-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-4B-Distill-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-4B-Distill-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-2B-Distill-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-2B-Distill-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-9B-Distill-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-9B-Distill-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-9B-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-9B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-27B-UNCENSORED-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-27B-UNCENSORED-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Ornith-1.5-9B-UNCENSORED-GGUF",
+   "label": "Hugpy \u00b7 Ornith-1.5-9B-UNCENSORED-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-27B-AEON-Ultimate-Uncensored-MTP-i1-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-27B-AEON-Ultimate-Uncensored-MTP-i1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-Fable-5-Distill-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-Fable-5-Distill-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:flux2-klein-9b-uncensored-text-encoder",
+   "label": "Hugpy \u00b7 flux2-klein-9b-uncensored-text-encoder"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Echo-Mini",
+   "label": "Hugpy \u00b7 Echo-Mini"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:LiquidAI~LFM2.5-VL-3B-GGUF",
+   "label": "Hugpy \u00b7 LiquidAI~LFM2.5-VL-3B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:LiquidAI~LFM2.5-VL-1.6B-GGUF",
+   "label": "Hugpy \u00b7 LiquidAI~LFM2.5-VL-1.6B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-Uncensored-Genesis-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-Uncensored-Genesis-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:LFM2-VL-1.6B-GGUF",
+   "label": "Hugpy \u00b7 LFM2-VL-1.6B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.8-27B-Uncensored-YMQ-MTP-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.8-27B-Uncensored-YMQ-MTP-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.5-9B-DeepSeek-V4-Flash-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.5-9B-DeepSeek-V4-Flash-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-imatrix-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-imatrix-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Llama-Safe-Model-v1-GGUF",
+   "label": "Hugpy \u00b7 Llama-Safe-Model-v1-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:LFM2.5-VL-3B-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 LFM2.5-VL-3B-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-11B-A3B-Niwaki-4bit-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-11B-A3B-Niwaki-4bit-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3-Coder-Next-GGUF",
+   "label": "Hugpy \u00b7 Qwen3-Coder-Next-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2-7B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2-7B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-7B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen2.5-Coder-3B-Instruct-GGUF",
+   "label": "Hugpy \u00b7 Qwen2.5-Coder-3B-Instruct-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:qwen3.8-27b_euskara-GGUF",
+   "label": "Hugpy \u00b7 qwen3.8-27b_euskara-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-abliterated-v4-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-abliterated-v4-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-Uncensored-Wasserstein-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-Uncensored-Wasserstein-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:ThinkingCap-Qwen3.6-27B-Q4_K_M-GGUF",
+   "label": "Hugpy \u00b7 ThinkingCap-Qwen3.6-27B-Q4_K_M-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Llama-3.2-3B-Instruct-uncensored-GGUF",
+   "label": "Hugpy \u00b7 Llama-3.2-3B-Instruct-uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:orcarouter_Qwen3.8-27B-Uncensored-GGUF",
+   "label": "Hugpy \u00b7 orcarouter_Qwen3.8-27B-Uncensored-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:LiquidAI_LFM2.5-VL-3B-GGUF",
+   "label": "Hugpy \u00b7 LiquidAI_LFM2.5-VL-3B-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-Uncensored-Genesis-Hermes-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-Uncensored-Genesis-Hermes-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Qwen3.6-35B-A3B-Hi-Fi-GGUF",
+   "label": "Hugpy \u00b7 Qwen3.6-35B-A3B-Hi-Fi-GGUF"
+  },
+  {
+   "backend": "hugpy",
+   "model": "hugpy-fleet:Keye-VL-2.0-30B-A3B-GGUF",
+   "label": "Hugpy \u00b7 Keye-VL-2.0-30B-A3B-GGUF"
+  }
+ ]
+}

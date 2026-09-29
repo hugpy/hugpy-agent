@@ -148,7 +148,56 @@ class Runtime:
                 "workspace": self.cfg.workspace,
                 "config": {"default_profile": default, "default_model": profiles[default].get("model", "")},
                 "profiles": [public_profile(n, p) for n, p in profiles.items()],
+                "toolserver": self.toolserver_status(),
                 "sessions": self.store.query("SELECT id,profile,status,created,updated FROM sessions ORDER BY updated DESC LIMIT 100")}
+
+    def toolserver_client(self):
+        """The shared toolserver client for this service's config (None when
+        the bridge is switched off)."""
+        from ..toolserver_client import ToolserverClient, enabled
+        if not getattr(self.cfg, "toolserver", True) or not enabled():
+            return None
+        client = getattr(self, "_toolserver", None)
+        if client is None:
+            client = self._toolserver = ToolserverClient.from_config(self.cfg)
+            client.probe_timeout = 3.0     # /api/state is polled: a dead toolserver must not stall it
+        return client
+
+    def toolserver_status(self):
+        """{url, ok, tool_count, auth, ...} for /api/state — cached by the
+        client (STATUS_TTL), so polling never re-probes per request."""
+        client = self.toolserver_client()
+        if client is None:
+            return {"url": "", "ok": False, "tool_count": 0, "auth": "disabled", "enabled": False}
+        try:
+            status = client.status(max_age=60)
+        except Exception as exc:  # noqa: BLE001 — /api/state must never fail on the bridge
+            status = {"url": client.url, "ok": False, "tool_count": 0, "auth": "unknown", "error": str(exc)}
+        status["enabled"] = True
+        return status
+
+    def tools(self):
+        """GET /api/tools: the toolserver catalog as the loop sees it, with the
+        allowlist verdict and risk class per tool."""
+        from ..tools.toolserver import classify_target
+        status = self.toolserver_status()
+        client = self.toolserver_client()
+        tools = []
+        if client is not None and status.get("ok"):
+            try:
+                tools = [{"name": t["name"], "description": t["description"],
+                          "input_schema": t["input_schema"],
+                          "class": client.classify(t["name"]),
+                          "risk": classify_target(t["name"]),
+                          "allowed": client.allowed(t["name"])}
+                         for t in client.list_tools()]
+            except Exception as exc:  # noqa: BLE001
+                status = dict(status, ok=False, error=str(exc))
+        return {"toolserver": status, "mode": getattr(self.cfg, "toolserver_tools", "meta") or "meta",
+                "meta_tools": ["ts_categories", "ts_list", "ts_call"] if status.get("ok") else [],
+                "allow": list(getattr(self.cfg, "toolserver_allow", []) or []),
+                "deny": list(getattr(self.cfg, "toolserver_deny", []) or []),
+                "tools": tools}
 
     def create(self, profile=None):
         default, profiles = self.profiles()

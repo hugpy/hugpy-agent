@@ -69,6 +69,8 @@ def handler(runtime, token):
                         for p in profiles if p.get("available") and p["protocol"] == "hugpy"]})
                 if not post and path in ("/api/state", "/api/profiles"):
                     return self.reply(200, runtime.state())
+                if not post and path == "/api/tools":
+                    return self.reply(200, runtime.tools())
                 if post and path == "/api/sessions":
                     return self.reply(201, runtime.create(self.body().get("profile")))
                 parts = path.strip("/").split("/")

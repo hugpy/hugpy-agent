@@ -656,6 +656,16 @@ class MctSession:
         terms = [t for t in (query or "").lower().split() if t]
         if not terms:
             return []
+        # Record the brokered search itself even when an earlier rung (the
+        # central finder or abstract-search) supplies the hit.  The later
+        # legacy walk records peeks, but without this boundary event a search
+        # that finds a file before the walk is invisible in the access feed.
+        for root_name, root in self._roots.items():
+            self.server.access.record(
+                "B", "scan", f"{root_name}:{root.root_path}",
+                detail=f"query={query[:160]}", session=self.session_id,
+                turn=self._active_turn[0] if self._active_turn else "",
+                path=root.root_path)
         out = self._abstract_search_candidates(query, limit)
         if len(out) >= limit:
             return out[:limit]
