@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hugpy.ai/mct/schemas/envelope-v1.json",
+  "title": "MCT control-plane envelope",
+  "description": "Compact control-plane message exchanged between B and A. Design ref: §6.1, §8.1, §8.2. Carries references and routing metadata only — never prompts, excerpts, responses, or summaries inline (invariant 3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "type", "session_id", "turn_id", "sequence", "epoch"],
+  "properties": {
+    "v": {
+      "type": "string",
+      "const": "mct/1",
+      "description": "Protocol version. Mismatch is rejected during negotiation (§23 Protocol)."
+    },
+    "type": {
+      "type": "string",
+      "description": "Message type. Direction and meaning defined in §8.2.",
+      "enum": [
+        "context.ready",
+        "pull.requested",
+        "pull.ready",
+        "pull.denied",
+        "response.started",
+        "response.ready",
+        "receipt.ready",
+        "turn.cancelled",
+        "epoch.changed",
+        "error"
+      ]
+    },
+    "session_id": { "$ref": "#/$defs/session_id" },
+    "turn_id": { "$ref": "#/$defs/turn_id" },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic per-session sequence. Stale/duplicate/future values are rejected or deterministically buffered (§15.1)."
+    },
+    "epoch": { "$ref": "#/$defs/epoch" },
+    "object": {
+      "$ref": "#/$defs/pointer",
+      "description": "Opaque object handle. Required for message types that reference a payload object (validated at the application layer per §8.2, not by this schema)."
+    },
+    "sha256": {
+      "$ref": "#/$defs/sha256",
+      "description": "Digest of the referenced object. Resolver verifies before exposing bytes (invariant 4)."
+    },
+    "media_type": {
+      "type": "string",
+      "description": "IANA/vendor media type of the referenced object."
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Byte count of the referenced object; used for preflight budgeting."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Replay key. Replays return the original decision/result and never double-render or double-infer (§15.2)."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Lease/pointer expiry (RFC 3339 UTC)."
+    },
+    "error_code": {
+      "type": "string",
+      "description": "Present only when type == 'error'. Detailed body lives in a pointed error_detail object, never inline (§6.1)."
+    }
+  },
+  "$defs": {
+    "session_id": {
+      "type": "string",
+      "pattern": "^s_[A-Za-z0-9]+$",
+      "description": "Session identifier, e.g. s_01J..."
+    },
+    "turn_id": {
+      "type": "string",
+      "pattern": "^t_[0-9]{6,}$",
+      "description": "Monotonic turn identifier, e.g. t_000042."
+    },
+    "epoch": {
+      "type": "string",
+      "pattern": "^e_[A-Za-z0-9]+$",
+      "description": "Epoch identifier for one continuous A runtime/context lineage (§12.3)."
+    },
+    "pointer": {
+      "type": "string",
+      "pattern": "^mct://broker/session/s_[A-Za-z0-9]+/object/o_[A-Za-z0-9_]+$",
+      "description": "Opaque, session-scoped object handle. NOT a filesystem path (invariant 5). No bearer secret is embedded (§7.2)."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 digest."
+    }
+  }
+}

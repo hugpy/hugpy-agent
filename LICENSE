@@ -1,0 +1,41 @@
+hugpy — Source-Available License
+
+Copyright (c) 2026 putkoff (hugpy.ai). All rights reserved.
+
+Permission is granted, free of charge, to use this software ("hugpy") for
+personal and non-commercial purposes, and for time-limited commercial
+evaluation, subject to the following conditions:
+
+1. Non-commercial use means use by an individual for personal purposes, or
+   use by a non-profit or educational institution for its own internal
+   purposes. Any use by, for, or on behalf of a for-profit business or in
+   connection with revenue-generating activity is commercial use — including
+   internal business use, use in producing goods or services, and use on
+   paid engagements.
+
+2. Commercial use requires a commercial license from the copyright holder.
+   Exception: a business may evaluate the software internally for up to
+   thirty (30) days free of charge; continued use after that requires a
+   commercial license.
+
+3. Redistribution of this software, in source or binary form, modified or
+   unmodified, is not permitted without prior written permission from the
+   copyright holder. Downloading the software from an official distribution
+   channel (PyPI, npm, hugpy.ai) is not redistribution.
+
+4. Modification for personal use or internal evaluation is permitted;
+   distribution of modified versions is not.
+
+5. This notice must be retained in all copies or substantial portions of
+   the software.
+
+6. Any use outside these terms automatically terminates this license.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+For commercial licensing or redistribution permission: https://hugpy.ai

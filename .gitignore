@@ -1,0 +1,34 @@
+# Secrets / local config — never committed (design: no secrets in the tree).
+.env
+
+# SQLite journals (run ledgers are per-deployment state, not source).
+*.db
+*.db-wal
+*.db-shm
+
+# Python build/runtime droppings.
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Live-acceptance workspaces (P2.6/P2.7 evidence kept out of the tree).
+.hugpy_agent/
+.p27-acceptance-home/
+
+# Eval scorecards (P3.4): timestamped live runs are per-run evidence, not
+# source — the chosen summary is committed explicitly (git add -f).
+evals/results/*.json
+evals/results/*.txt
+
+logs/
+*.pyo
+*.whl
+*.tar.gz
+*.asc
+
+# session-scratch safety copies, never source
+*.bak-*

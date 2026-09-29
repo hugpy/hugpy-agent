@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hugpy.ai/mct/schemas/response-v1.json",
+  "title": "MCT response manifest",
+  "description": "A's final assistant-facing content, by reference. Object kind 'response_body'/manifest. Design ref: §7.3, §8.6, §16. B validates digest, turn, epoch, policy before rendering exactly once (invariants 11, 14).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "session_id", "turn_id", "epoch", "body", "format", "final", "body_sha256"],
+  "properties": {
+    "schema": { "type": "string", "const": "mct.response/1" },
+    "session_id": { "type": "string", "pattern": "^s_[A-Za-z0-9]+$" },
+    "turn_id": { "type": "string", "pattern": "^t_[0-9]{6,}$" },
+    "epoch": { "type": "string", "pattern": "^e_[A-Za-z0-9]+$" },
+    "body": {
+      "$ref": "#/$defs/pointer",
+      "description": "Pointer to the sealed response body object in the write-only outbox."
+    },
+    "format": {
+      "type": "string",
+      "enum": ["text/markdown", "text/plain"],
+      "description": "Rendered format. Terminal-escape injection is rejected unless explicitly supported (§16.3)."
+    },
+    "final": { "type": "boolean" },
+    "opened_context": {
+      "$ref": "#/$defs/pointer",
+      "description": "Pointer to the context_receipt: what A actually opened (§12.2, invariant 6)."
+    },
+    "proposed_actions": {
+      "type": "array",
+      "description": "Zero or more action_proposal pointers. An empty array is the default; side effects require the separate proposal flow (§13.5).",
+      "items": { "$ref": "#/$defs/pointer" }
+    },
+    "body_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Digest of the complete response body; B verifies before commit (§16.2)."
+    }
+  },
+  "$defs": {
+    "pointer": {
+      "type": "string",
+      "pattern": "^mct://broker/session/s_[A-Za-z0-9]+/object/o_[A-Za-z0-9_]+$"
+    }
+  }
+}

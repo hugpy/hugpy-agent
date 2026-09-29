@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hugpy.ai/mct/schemas/context-v1.json",
+  "title": "MCT context manifest",
+  "description": "Ordered set of context fragments selected for one A turn. Object kind 'context_manifest'. Design ref: §7.3, §8.3, §11. Sent to A by pointer only; A resolves fragments through B (invariant 3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "session_id", "turn_id", "epoch", "operator_turn", "fragments", "budget"],
+  "properties": {
+    "schema": { "type": "string", "const": "mct.context/1" },
+    "session_id": { "type": "string", "pattern": "^s_[A-Za-z0-9]+$" },
+    "turn_id": { "type": "string", "pattern": "^t_[0-9]{6,}$" },
+    "epoch": { "type": "string", "pattern": "^e_[A-Za-z0-9]+$" },
+    "operator_turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The exact current operator prompt as a required object (invariant 2, §11.3, decision: A always sees exact prompt).",
+      "required": ["object", "required", "verbatim"],
+      "properties": {
+        "object": { "$ref": "#/$defs/pointer" },
+        "required": { "type": "boolean", "const": true, "description": "The operator turn is always required." },
+        "verbatim": { "type": "boolean", "const": true, "description": "Rendered/opened verbatim; never silently summarized (invariant 2)." }
+      }
+    },
+    "fragments": {
+      "type": "array",
+      "description": "Optional context fragments packed under budget. Required fragments bypass scoring (§11.2).",
+      "items": { "$ref": "#/$defs/fragment" }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum_input_tokens", "reserved_output_tokens", "pull_tokens_remaining"],
+      "properties": {
+        "maximum_input_tokens": { "type": "integer", "minimum": 0 },
+        "reserved_output_tokens": { "type": "integer", "minimum": 0 },
+        "pull_tokens_remaining": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "catalog": {
+      "$ref": "#/$defs/pointer",
+      "description": "Pointer to a context_catalog describing available categories without exposing contents (§11.6)."
+    },
+    "previous_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Digest of the prior manifest, for cache-prefix reasoning (§12.4)."
+    }
+  },
+  "$defs": {
+    "pointer": {
+      "type": "string",
+      "pattern": "^mct://broker/session/s_[A-Za-z0-9]+/object/o_[A-Za-z0-9_]+$"
+    },
+    "fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object", "role", "priority", "token_estimate"],
+      "properties": {
+        "object": { "$ref": "#/$defs/pointer" },
+        "role": {
+          "type": "string",
+          "description": "Semantic role of the fragment (§11).",
+          "enum": [
+            "governing_instruction",
+            "decision_memory",
+            "active_task_brief",
+            "operator_preference",
+            "entity_index",
+            "source_excerpt",
+            "tool_result_abstract",
+            "open_question",
+            "episodic_summary",
+            "source_catalog"
+          ]
+        },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "source": { "type": "string", "description": "Named origin, e.g. 'session-policy'." },
+        "source_objects": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Object IDs this fragment was derived from — reversibility lineage (invariant 8)."
+        },
+        "revision": { "type": "integer", "minimum": 0 },
+        "token_estimate": { "type": "integer", "minimum": 0 },
+        "required": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}
