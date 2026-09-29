@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hugpy-agent"
+version = "0.1.72"
+description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "putkoff", email = "support@hugpy.ai" }
+]
+keywords = ["hugpy", "agent", "llm", "ai", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only"
+]
+# Deliberately dependency-free: a remote machine with only Python can run it.
+dependencies = ["hugpy-tools"]
+
+# Optional extras. The base stays dependency-free and NO extra pins an
+# ``abstract-*`` package or a vendor SDK (anthropic / openai / google …).
+# Third-party CAPABILITIES plug in over the ``hugpy_agent.adapters`` entry-point
+# group (see ``hugpy_agent/adapters.py``): install the provider package
+# separately and it registers itself; hugpy-agent never imports it. For example
+# the in-process local finder is provided by ``abstract-toolserver[files]`` (or
+# any package that registers a ``local_search`` adapter); absent one, B degrades
+# to the central HTTP finder.
+#
+# `pip install hugpy-agent[mct]` adds the Mediated Context Terminal
+# (hugpy_agent.mct) and its only third-party dependency, jsonschema, used to
+# validate the control-plane envelopes. mct code ships in the wheel but this dep
+# installs only on request, so `import hugpy_agent.mct` requires the extra.
+[project.optional-dependencies]
+mct = ["jsonschema>=4.0"]
+
+[project.urls]
+Homepage = "https://hugpy.ai"
+Repository = "https://github.com/hugpy/hugpy-agent"
+Issues = "https://github.com/hugpy/hugpy-agent/issues"
+
+[project.scripts]
+hugpy-agent = "hugpy_agent.cli:main"
+hugpy-agent-serve = "hugpy_agent.service.http:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"hugpy_agent.service" = ["index.html"]
+"hugpy_agent.mct" = ["schemas/*.json"]

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hugpy.ai/mct/schemas/pull-result-v1.json",
+  "title": "MCT pull result",
+  "description": "Fulfilled, reduced, redacted, or denied pull. Object kind 'pull_result'. Design ref: §7.3, §8.5, §10.2. Every returned object retains source lineage (invariant 8).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "request_id", "decision", "policy_revision"],
+  "properties": {
+    "schema": { "type": "string", "const": "mct.pull-result/1" },
+    "request_id": { "type": "string", "pattern": "^pr_[0-9]{4,}$" },
+    "decision": {
+      "type": "string",
+      "description": "Arbitration outcome (§10.2).",
+      "enum": [
+        "exact",
+        "reduced",
+        "summarized",
+        "redacted",
+        "candidates",
+        "approval_required",
+        "denied",
+        "not_found",
+        "budget_exhausted"
+      ]
+    },
+    "objects": {
+      "type": "array",
+      "description": "Result objects. Present for exact/reduced/summarized/redacted; typically empty for denied/not_found/budget_exhausted/approval_required.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object", "sha256"],
+        "properties": {
+          "object": { "$ref": "#/$defs/pointer" },
+          "selector": { "type": "string", "description": "e.g. 'lines 819-873'." },
+          "source": {
+            "$ref": "#/$defs/pointer",
+            "description": "Immutable source snapshot the excerpt was cut from (invariant 8, §13.4)."
+          },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "token_estimate": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "omitted": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Accounting for content deliberately not returned (§25.4).",
+      "properties": {
+        "source_bytes": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string" }
+      }
+    },
+    "denial_reason": {
+      "type": "string",
+      "description": "Explicit, structured reason so A can reformulate rather than repeat (§10.3). Present for denied/not_found/budget_exhausted/approval_required."
+    },
+    "policy_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Policy snapshot revision that governed this decision (§18.2)."
+    }
+  },
+  "$defs": {
+    "pointer": {
+      "type": "string",
+      "pattern": "^mct://broker/session/s_[A-Za-z0-9]+/object/o_[A-Za-z0-9_]+$"
+    }
+  }
+}

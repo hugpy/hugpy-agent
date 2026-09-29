@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# hugpy-dispatch — pure-terminal dispatch client for the hugpy agent fleet.
+#
+# Dispatches a task to an enrolled hugpy agent node, polls central until it
+# finishes, and prints the result. Bash + curl + python3 (JSON parsing) only
+# — no Python client, no venv. Self-installing: `hugpy-dispatch install`
+# copies this file onto PATH.
+#
+# Usage:
+#   hugpy-dispatch "task text..."                dispatch to the default node
+#   hugpy-dispatch -n <node> "task text..."       dispatch to a specific node
+#   hugpy-dispatch nodes                          list enrolled nodes
+#   hugpy-dispatch install [--prefix DIR]         install onto PATH
+#   hugpy-dispatch help                           this message
+#
+# Config (real env vars win; else sourced from ~/.config/hugpy/dispatch.env):
+#   HUGPY_CENTRAL          base URL of central's API (default: https://dev.hugpy.ai/api)
+#   HUGPY_OPERATOR_TOKEN   operator token, required for every call (X-Operator-Token)
+#   HUGPY_DISPATCH_NODE    default node id (agn_...) or name, used when -n is omitted
+#
+# A dispatched task's `result` travels the wire as a STRING — when the node
+# returns structured output it arrives json.dumps'd. This client tries
+# json.loads on it and pretty-prints if it parses; otherwise it prints the
+# raw string as-is.
+set -euo pipefail
+
+# ── constants ────────────────────────────────────────────────────────────
+_DEFAULT_CENTRAL="https://dev.hugpy.ai/api"
+_CONFIG_DIR="${HOME}/.config/hugpy"
+_CONFIG_FILE="${_CONFIG_DIR}/dispatch.env"
+_CURL_MAX_TIME=15
+_POLL_INTERVAL=2
+_DEFAULT_TIMEOUT=300
+
+# ── output helpers ───────────────────────────────────────────────────────
+_err() { printf 'hugpy-dispatch: %s\n' "$*" >&2; }
+_die() { _err "$*"; exit 1; }
+
+# ── config resolution: real env vars win; else source the config file ────
+_load_config() {
+    # "Real env vars win" — snapshot whatever the caller already exported
+    # for our three vars, source the config file (which may set the same
+    # names), then restore the caller's original values over whatever the
+    # file set. A var neither the caller nor the file set stays unset, and
+    # picks up its hardcoded default below.
+    local orig_central="${HUGPY_CENTRAL-}"
+    local had_central="${HUGPY_CENTRAL+x}"
+    local orig_token="${HUGPY_OPERATOR_TOKEN-}"
+    local had_token="${HUGPY_OPERATOR_TOKEN+x}"
+    local orig_node="${HUGPY_DISPATCH_NODE-}"
+    local had_node="${HUGPY_DISPATCH_NODE+x}"
+
+    if [[ -f "$_CONFIG_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$_CONFIG_FILE"
+    fi
+
+    [[ -n "$had_central" ]] && HUGPY_CENTRAL="$orig_central"
+    [[ -n "$had_token" ]] && HUGPY_OPERATOR_TOKEN="$orig_token"
+    [[ -n "$had_node" ]] && HUGPY_DISPATCH_NODE="$orig_node"
+
+    : "${HUGPY_CENTRAL:=$_DEFAULT_CENTRAL}"
+    : "${HUGPY_OPERATOR_TOKEN:=}"
+    : "${HUGPY_DISPATCH_NODE:=}"
+    HUGPY_CENTRAL="${HUGPY_CENTRAL%/}"
+}
+
+_require_token() {
+    if [[ -z "${HUGPY_OPERATOR_TOKEN:-}" ]]; then
+        _die "HUGPY_OPERATOR_TOKEN is not set. Export it, or fill it into ${_CONFIG_FILE} (run 'hugpy-dispatch install' to create the template)."
+    fi
+}
+
+# ── HTTP ─────────────────────────────────────────────────────────────────
+# _api_call METHOD PATH [BODY_JSON] -> prints body on stdout on 2xx, else
+# dies with a message that distinguishes network / auth / 4xx failures.
+# (curl's -f suppresses the response body on error responses, so we check
+# the code ourselves instead — -fsS's -f is deliberately NOT used here.)
+_api_call() {
+    local method="$1" path="$2" body="${3:-}"
+    local url="${HUGPY_CENTRAL}${path}"
+    local tmp
+    tmp="$(mktemp)"
+    local code rc
+    set +e
+    if [[ -n "$body" ]]; then
+        code=$(curl --max-time "$_CURL_MAX_TIME" -sS -o "$tmp" -w '%{http_code}' \
+            -X "$method" "$url" \
+            -H "X-Operator-Token: ${HUGPY_OPERATOR_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$body")
+    else
+        code=$(curl --max-time "$_CURL_MAX_TIME" -sS -o "$tmp" -w '%{http_code}' \
+            -X "$method" "$url" \
+            -H "X-Operator-Token: ${HUGPY_OPERATOR_TOKEN}")
+    fi
+    rc=$?
+    set -e
+    _HTTP_CODE="${code:-000}"
+    local out
+    out="$(cat "$tmp" 2>/dev/null || true)"
+    rm -f "$tmp"
+
+    if [[ $rc -ne 0 ]]; then
+        _die "network error reaching ${url} (curl exit ${rc}, timeout or connection failure)"
+    fi
+    case "$_HTTP_CODE" in
+        2*)
+            printf '%s' "$out"
+            return 0
+            ;;
+        401|403)
+            _die "auth rejected ($_HTTP_CODE) by ${HUGPY_CENTRAL} — check HUGPY_OPERATOR_TOKEN. ${out}"
+            ;;
+        404)
+            _die "not found (404): ${method} ${path} — ${out}"
+            ;;
+        *)
+            _die "request failed ($_HTTP_CODE): ${method} ${path} — ${out}"
+            ;;
+    esac
+}
+
+# ── node resolution ──────────────────────────────────────────────────────
+# _resolve_node NODE_ID_OR_NAME -> prints resolved node id on stdout
+_resolve_node() {
+    local want="$1"
+    if [[ "$want" == agn_* ]]; then
+        printf '%s\n' "$want"
+        return 0
+    fi
+    local nodes_json
+    nodes_json="$(_api_call GET /agent/nodes)"
+    local resolved
+    resolved="$(printf '%s' "$nodes_json" | python3 -c '
+import json, sys
+want = sys.argv[1]
+try:
+    nodes = json.load(sys.stdin)
+except Exception:
+    print("", end="")
+    sys.exit(0)
+candidates = [n for n in nodes if n.get("name") == want]
+if not candidates:
+    print("", end="")
+    sys.exit(0)
+non_revoked = [n for n in candidates if not n.get("revoked")]
+pool = non_revoked or candidates
+pool.sort(key=lambda n: (n.get("last_seen") or 0), reverse=True)
+print(pool[0].get("id", ""), end="")
+' "$want")"
+    if [[ -z "$resolved" ]]; then
+        _die "no agent node found matching name '${want}' (checked GET /agent/nodes). Use the exact node id (agn_...) or check 'hugpy-dispatch nodes'."
+    fi
+    printf '%s\n' "$resolved"
+}
+
+# ── subcommand: nodes ────────────────────────────────────────────────────
+_cmd_nodes() {
+    _require_token
+    local nodes_json
+    nodes_json="$(_api_call GET /agent/nodes)"
+    printf '%s' "$nodes_json" | python3 -c '
+import json, sys, time
+
+def ago(ts):
+    if not ts:
+        return "never"
+    d = max(0, time.time() - float(ts))
+    if d < 60:
+        return f"{int(d)}s ago"
+    if d < 3600:
+        return f"{int(d/60)}m ago"
+    if d < 86400:
+        return f"{int(d/3600)}h ago"
+    return f"{int(d/86400)}d ago"
+
+try:
+    nodes = json.load(sys.stdin)
+except Exception:
+    nodes = []
+
+rows = [("ID", "NAME", "STATUS", "REVOKED", "LAST_SEEN", "CURRENT_TASK")]
+for n in nodes:
+    rows.append((
+        n.get("id", ""),
+        n.get("name", ""),
+        n.get("status") or "-",
+        "yes" if n.get("revoked") else "no",
+        ago(n.get("last_seen")),
+        n.get("current_task") or "-",
+    ))
+
+widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+for i, r in enumerate(rows):
+    line = "  ".join(c.ljust(widths[j]) for j, c in enumerate(r))
+    print(line)
+    if i == 0:
+        print("  ".join("-" * w for w in widths))
+
+if len(rows) == 1:
+    print("(no agent nodes enrolled)")
+'
+}
+
+# ── subcommand: dispatch (default) ──────────────────────────────────────
+_cmd_dispatch() {
+    local node_arg="${HUGPY_DISPATCH_NODE:-}"
+    local timeout="$_DEFAULT_TIMEOUT"
+    local task=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--node)
+                [[ $# -ge 2 ]] || _die "$1 requires an argument"
+                node_arg="$2"
+                shift 2
+                ;;
+            --timeout)
+                [[ $# -ge 2 ]] || _die "$1 requires an argument"
+                timeout="$2"
+                shift 2
+                ;;
+            --)
+                shift
+                task="$*"
+                break
+                ;;
+            -*)
+                _die "unknown option: $1 (see 'hugpy-dispatch help')"
+                ;;
+            *)
+                if [[ -z "$task" ]]; then
+                    task="$1"
+                else
+                    task="$task $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    [[ -n "$task" ]] || _die "no task text given. Usage: hugpy-dispatch [-n NODE] \"task text\""
+    [[ -n "$node_arg" ]] || _die "no target node. Pass -n/--node, or set HUGPY_DISPATCH_NODE in ${_CONFIG_FILE}."
+    _require_token
+
+    local node_id
+    node_id="$(_resolve_node "$node_arg")"
+
+    local body
+    body="$(python3 -c 'import json, sys; print(json.dumps({"task": sys.argv[1]}))' "$task")"
+
+    local dispatch_json
+    dispatch_json="$(_api_call POST "/agent/${node_id}/dispatch" "$body")"
+
+    local seq
+    seq="$(printf '%s' "$dispatch_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("seq",""))')"
+    [[ -n "$seq" ]] || _die "dispatch succeeded but no 'seq' in response: ${dispatch_json}"
+
+    _err "dispatched to ${node_id} as task seq=${seq}; polling every ${_POLL_INTERVAL}s (timeout ${timeout}s)..."
+
+    local elapsed=0
+    while true; do
+        local task_json
+        task_json="$(_api_call GET "/agent/${node_id}/tasks/${seq}")"
+        local status
+        status="$(printf '%s' "$task_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+
+        case "$status" in
+            done)
+                local result
+                result="$(printf '%s' "$task_json" | python3 -c 'import json,sys; r=json.load(sys.stdin).get("result"); print(r if r is not None else "")')"
+                python3 -c '
+import json, sys
+raw = sys.argv[1]
+if raw == "":
+    sys.exit(0)
+try:
+    parsed = json.loads(raw)
+except Exception:
+    print(raw)
+else:
+    print(json.dumps(parsed, indent=2, ensure_ascii=False))
+' "$result"
+                exit 0
+                ;;
+            error)
+                local result
+                result="$(printf '%s' "$task_json" | python3 -c 'import json,sys; r=json.load(sys.stdin).get("result"); print(r if r is not None else "")')"
+                {
+                    python3 -c '
+import json, sys
+raw = sys.argv[1]
+if raw == "":
+    sys.exit(0)
+try:
+    parsed = json.loads(raw)
+except Exception:
+    print(raw)
+else:
+    print(json.dumps(parsed, indent=2, ensure_ascii=False))
+' "$result"
+                } >&2
+                exit 1
+                ;;
+            queued|running)
+                : # keep polling
+                ;;
+            *)
+                _err "unexpected task status '${status}' for ${node_id}/${seq}: ${task_json}"
+                ;;
+        esac
+
+        if [[ "$elapsed" -ge "$timeout" ]]; then
+            _err "timed out after ${timeout}s waiting on node=${node_id} seq=${seq} (still pollable: hugpy-dispatch -n ${node_id} nodes, or GET /agent/${node_id}/tasks/${seq})"
+            printf 'node=%s seq=%s\n' "$node_id" "$seq" >&2
+            exit 2
+        fi
+        sleep "$_POLL_INTERVAL"
+        elapsed=$((elapsed + _POLL_INTERVAL))
+    done
+}
+
+# ── subcommand: install ──────────────────────────────────────────────────
+_cmd_install() {
+    local prefix="${HOME}/.local/bin"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --prefix)
+                [[ $# -ge 2 ]] || _die "$1 requires an argument"
+                prefix="$2"
+                shift 2
+                ;;
+            *)
+                _die "unknown install option: $1"
+                ;;
+        esac
+    done
+
+    mkdir -p "$prefix"
+    local dest="${prefix}/hugpy-dispatch"
+
+    # $0 is only a readable file when this script was invoked as a file
+    # (installed copy, or `bash /path/to/hugpy-dispatch install`). When
+    # piped in via `curl | bash -s install`, $0 is the shell itself (e.g.
+    # "bash") and has no script content to copy — fetch the script fresh
+    # from central instead.
+    if [[ -r "$0" ]] && [[ "$0" != "bash" ]] && [[ "$0" != "sh" ]] && [[ -f "$0" ]]; then
+        cp "$0" "$dest"
+    else
+        _err "no local script file at \$0='${0}' (likely piped via stdin) — fetching fresh copy from central instead"
+        local central="${HUGPY_CENTRAL:-$_DEFAULT_CENTRAL}"
+        central="${central%/}"
+        if ! curl --max-time "$_CURL_MAX_TIME" -fsSL -o "$dest" "${central}/agent/client.sh"; then
+            _die "failed to download install source from ${central}/agent/client.sh"
+        fi
+    fi
+    chmod +x "$dest"
+    _err "installed: ${dest}"
+
+    case ":${PATH}:" in
+        *":${prefix}:"*)
+            ;;
+        *)
+            _err "warning: ${prefix} is not on your PATH. Add this to your shell rc:"
+            _err "    export PATH=\"${prefix}:\$PATH\""
+            ;;
+    esac
+
+    mkdir -p "$_CONFIG_DIR"
+    if [[ ! -f "$_CONFIG_FILE" ]]; then
+        cat > "$_CONFIG_FILE" <<EOF
+# hugpy-dispatch config — sourced when the matching env var is not already
+# set in your real environment. Keep this file mode 600 (it holds a secret).
+#
+# HUGPY_CENTRAL="https://dev.hugpy.ai/api"
+# HUGPY_OPERATOR_TOKEN="fill-me-in"
+# HUGPY_DISPATCH_NODE="demo-node-vm"
+EOF
+        chmod 600 "$_CONFIG_FILE"
+        _err "created config template: ${_CONFIG_FILE} (mode 600) — fill in HUGPY_OPERATOR_TOKEN"
+    else
+        _err "config already exists: ${_CONFIG_FILE} (left untouched)"
+    fi
+}
+
+# ── usage ────────────────────────────────────────────────────────────────
+_usage() {
+    cat <<'EOF'
+hugpy-dispatch — dispatch a task to a hugpy agent node from the terminal.
+
+USAGE
+  hugpy-dispatch [-n|--node NODE] [--timeout SECS] "task text..."
+  hugpy-dispatch nodes
+  hugpy-dispatch install [--prefix DIR]
+  hugpy-dispatch help
+
+DISPATCH (default action)
+  Dispatches "task text..." to NODE (or $HUGPY_DISPATCH_NODE if -n is
+  omitted), polls every 2s, and prints the result.
+    exit 0  task finished (status=done)   -> result on stdout
+    exit 1  task finished (status=error)  -> result on stderr
+    exit 2  timed out (default 300s)      -> node id + seq on stderr,
+                                             task remains pollable
+
+NODES
+  Prints a table of enrolled nodes: id, name, status, revoked, last_seen,
+  current_task.
+
+INSTALL
+  Copies this script to $HOME/.local/bin (or --prefix DIR), makes it
+  executable, and creates a config template at ~/.config/hugpy/dispatch.env
+  (mode 600) if one doesn't already exist. Idempotent — safe to re-run.
+  One-liner from any box:
+    curl -fsSL https://dev.hugpy.ai/api/agent/client.sh | bash -s install
+
+CONFIG (~/.config/hugpy/dispatch.env, mode 600)
+  Real environment variables always win over the config file.
+    HUGPY_CENTRAL          base API URL (default: https://dev.hugpy.ai/api)
+    HUGPY_OPERATOR_TOKEN   operator token (required for every call)
+    HUGPY_DISPATCH_NODE    default node id or name
+
+NOTE ON RESULTS
+  A task's result travels the wire as a plain string. When a node returns
+  structured output it arrives json.dumps'd; this client tries to parse and
+  pretty-print it, and falls back to printing the raw string.
+EOF
+}
+
+# ── main ─────────────────────────────────────────────────────────────────
+main() {
+    _load_config
+
+    if [[ $# -eq 0 ]]; then
+        _usage
+        exit 0
+    fi
+
+    case "$1" in
+        help|-h|--help)
+            _usage
+            exit 0
+            ;;
+        nodes)
+            shift
+            _cmd_nodes "$@"
+            ;;
+        install)
+            shift
+            _cmd_install "$@"
+            ;;
+        *)
+            _cmd_dispatch "$@"
+            ;;
+    esac
+}
+
+main "$@"

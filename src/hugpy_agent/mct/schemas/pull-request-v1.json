@@ -1,0 +1,198 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://hugpy.ai/mct/schemas/pull-request-v1.json",
+ "title": "MCT pull request",
+ "description": "A's request for missing information. Object kind 'pull_request'. Design ref: §7.3, §8.4, §10. A pull cannot widen authority; B is the sole arbiter (invariant 12, §13.6). The pull text itself is untrusted input to the broker.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "schema",
+  "session_id",
+  "turn_id",
+  "epoch",
+  "request_id",
+  "need",
+  "target"
+ ],
+ "properties": {
+  "schema": {
+   "type": "string",
+   "const": "mct.pull-request/1"
+  },
+  "session_id": {
+   "type": "string",
+   "pattern": "^s_[A-Za-z0-9]+$"
+  },
+  "turn_id": {
+   "type": "string",
+   "pattern": "^t_[0-9]{6,}$"
+  },
+  "epoch": {
+   "type": "string",
+   "pattern": "^e_[A-Za-z0-9]+$"
+  },
+  "request_id": {
+   "type": "string",
+   "pattern": "^pr_[0-9]{4,}$"
+  },
+  "need": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 2000,
+   "description": "Plain-language statement of what is missing. Untrusted; cannot alter policy or roots (§13.6)."
+  },
+  "target": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind"
+   ],
+   "description": "What to resolve. Never a host path — A holds only opaque handles and catalog categories (invariant 5).",
+   "properties": {
+    "kind": {
+     "type": "string",
+     "enum": [
+      "catalog-query",
+      "object",
+      "selector",
+      "search",
+      "browse"
+     ],
+     "description": "catalog-query: search a named catalog category; object: an already-known opaque handle; selector: a bounded selector over a known object; search: a structured directive B executes on A's behalf. browse: a bounded listing of the granted roots' layout (spec.path is root-relative, never a host path)."
+    },
+    "query": {
+     "type": "string",
+     "description": "For kind=catalog-query."
+    },
+    "object": {
+     "$ref": "#/$defs/pointer",
+     "description": "For kind=object/selector."
+    },
+    "selector": {
+     "type": "string",
+     "description": "For kind=selector: lines/bytes/JSON-path/AST-symbol/match spec."
+    },
+    "spec": {
+     "type": "object",
+     "additionalProperties": false,
+     "description": "For kind=search. A directs B like an agent: what to look for, what to rule out, where to look, and when. Still a directive, never a path — B resolves it against granted roots only (invariant 5) and a pull cannot widen authority (invariant 12).",
+     "properties": {
+      "all": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Every term must appear in the file."
+      },
+      "any": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "At least one term must appear."
+      },
+      "none": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "No file containing any of these is returned."
+      },
+      "ext": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Restrict to these extensions, e.g. ['.ts','.tsx']."
+      },
+      "path_include": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Glob(s) the path must match."
+      },
+      "path_exclude": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Glob(s) the path must not match."
+      },
+      "modified_after": {
+       "type": "string",
+       "description": "ISO date/datetime; only files modified at or after this."
+      },
+      "modified_before": {
+       "type": "string",
+       "description": "ISO date/datetime; only files modified before this."
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 100
+      },
+      "context_lines": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 20
+      },
+      "all_re": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Python regexes; every one must match some line in the file."
+      },
+      "any_re": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Python regexes; at least one must match some line."
+      },
+      "none_re": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Python regexes; any file with a matching line is vetoed."
+      }
+     }
+    }
+   }
+  },
+  "preferred_form": {
+   "type": "string",
+   "description": "Requested shape, e.g. 'matching lines with 20 lines of surrounding context'. Advisory; B chooses the least expansive satisfactory form (§10.1 step 7)."
+  },
+  "maximum_tokens": {
+   "type": "integer",
+   "minimum": 1,
+   "description": "A's self-imposed ceiling; still bounded by remaining turn budget (§10.3)."
+  },
+  "reason": {
+   "type": "string",
+   "maxLength": 2000
+  },
+  "required_fidelity": {
+   "type": "string",
+   "enum": [
+    "verbatim-source",
+    "reduced",
+    "summary"
+   ],
+   "default": "reduced"
+  },
+  "allow_summary_fallback": {
+   "type": "boolean",
+   "default": false
+  }
+ },
+ "$defs": {
+  "pointer": {
+   "type": "string",
+   "pattern": "^mct://broker/session/s_[A-Za-z0-9]+/object/o_[A-Za-z0-9_]+$"
+  }
+ }
+}

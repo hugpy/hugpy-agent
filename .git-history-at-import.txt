@@ -1,0 +1,31 @@
+cb2a1ab Test report_result: result route, cursor-advance rules, full body
+9f09258 Add NodeClient.report_result + report task outcomes to central
+c9b65a1 P3.2 README: serve --node section + node.py in the layout
+d4f7790 P3.2 offline tests: node client, source cadence/backoff, wire acceptance
+ab6b2a0 P3.2 node mode: register/heartbeat/pull client + serve --node source
+63ec170 P3.2 config: agent node settings (central, node flag, name, caps, state)
+644f8af P3.4 first live scorecard: flux2-klein vs Qwen3-Coder-Next
+957dda3 P3.4 eval CLI subcommand + operator surface (evals/)
+a7d76ab P3.4 eval harness engine: deterministic per-model scoring
+dacaf57 P2.6 live-acceptance script (wait-gate + remember/recall evidence)
+1cd9b12 P2.7 enrollment + systemd unit + serve daemon
+4533ffa P2.6 embed-RAG memory: SQLite vector index, recall tool, run-start auto-recall
+463a4b2 P2.5 subagents (spawn tool): delegated child loops, strict-subset authority
+6bfb931 P2.4 agent-level loop-guard: nudge at N identical calls, abort at 2N
+31f5f72 P2.3 ask_operator tool + escalation gate
+5b44f02 P2.2 audit log (append-only JSONL)
+9c7b71e P2.1 policy engine + permission modes
+5020064 fleet: keywords tool reads live keybert 'combined' field (+ regression test)
+94528f9 think management for Qwen3-family brain (flux2-klein) + new default model
+f121b38 live validation notes: /v1 key enforcement flipped on dev mid-2026-07-14
+41cf7fd Phase 1.5 tests + README + live-smoke ML section
+7d77478 fleet ML suite: sync amenities, file amenities, async generation (Phase 1.5)
+82222b7 probe discipline: no probe by default, per-box cached, 3x cheaper (dev incident 2026-07-14)
+9ad1ed2 live-run hardening: probe timeout + explicit final_answer file contract
+7108500 tests: offline suite (76 cases) + gated live smoke script
+bc52e3a loop + cli: assess->act->observe core with crash resume, compaction, reports
+372ec3e tools + memory: registry, fs jail, shell, http_fetch, fleet vision, markdown memory
+822c1f0 journal: SQLite WAL run ledger with record-before-execute idempotency
+0bef234 adapter: three-tier tool calling (native | prompted Qwen/Hermes | constrained)
+43cf5a3 gateway: OpenAI-compat client for the hugpy fleet
+77ee02e scaffold: package skeleton + config resolution (env > .env > agent.toml)

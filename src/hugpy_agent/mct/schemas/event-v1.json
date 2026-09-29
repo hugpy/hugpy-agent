@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hugpy.ai/mct/schemas/event-v1.json",
+  "title": "MCT ledger event",
+  "description": "Append-only, hash-chained event recording one state transition. Design ref: §14. No prompt or secret bodies appear here — only object IDs, digests, sizes, decision codes, timing (§18.3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "session_id", "turn_id", "sequence", "epoch", "type", "actor", "timestamp"],
+  "properties": {
+    "event_id": { "type": "string", "pattern": "^ev_[A-Za-z0-9]+$" },
+    "session_id": { "type": "string", "pattern": "^s_[A-Za-z0-9]+$" },
+    "turn_id": { "type": "string", "pattern": "^t_[0-9]{6,}$" },
+    "sequence": { "type": "integer", "minimum": 0, "description": "Monotonic per-session (§14.2)." },
+    "epoch": { "type": "string", "pattern": "^e_[A-Za-z0-9]+$" },
+    "type": {
+      "type": "string",
+      "description": "Transition kind, e.g. 'turn.ingested', 'context.built', 'pull.fulfilled', 'response.rendered', 'epoch.changed'. Extensible; not enumerated here to avoid coupling the ledger to a frozen message list.",
+      "minLength": 1
+    },
+    "actor": {
+      "type": "string",
+      "description": "Component that produced the event, e.g. 'B.gateway', 'B.pull-broker', 'A.adapter'."
+    },
+    "input_objects": { "type": "array", "items": { "type": "string" } },
+    "output_objects": { "type": "array", "items": { "type": "string" } },
+    "policy_revision": { "type": "integer", "minimum": 0 },
+    "idempotency_key": { "type": "string", "description": "Retry key; replays are folded, not re-applied (§14.2, §15.2)." },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "previous_event_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash of the previous event for tamper-evident chaining (§14.2)."
+    }
+  }
+}
