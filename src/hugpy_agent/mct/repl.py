@@ -40,9 +40,13 @@ In-session commands:
                              A pulls only B-whitelisted sources. On: a missed
                              pull may be brokered by B against granted roots —
                              through B, never direct filesystem access
-  /b <text>                  prompt B directly (the broker answers from its own
-                             state via the hugpy fleet model; offline it answers
-                             deterministically from the ledger/catalog)
+  /b <text>                  prompt B directly. Lookup-first: state questions,
+                             'where is / find / which entries mention X', acks,
+                             help, and anything against an empty state are
+                             answered by string search (metadata line shows
+                             'tokens 0 · lookup'); only synthesis over real
+                             content reaches the fleet model (one in flight,
+                             skipped while central's queue is backed up)
   /bstate                    view B: policy, catalog, facts, epochs, token spend
   /bmodel <name>             switch B's model (fleet model id; default from config)
   /exit                      quit
@@ -488,60 +492,20 @@ def _print_provenance_footer(sess, server, turn_id, tokens=None):
 
 def _b_state_text(sess, server, state) -> str:
     """One-screen view of B — what the broker itself knows right now."""
-    lines = []
-    pol = getattr(sess, "_policy_text", None) or "(none set)"
-    lines.append(f"policy: {pol}")
-    try:
-        sess._materialize_file_sources()
-        names = sorted(sess._catalog)
-    except Exception:
-        names = []
-    lines.append(f"catalog ({len(names)}): {', '.join(names) or '(empty)'}")
-    try:
-        facts = server.compaction.facts(sess.session_id)
-        lines.append(f"derived memory ({len(facts)}):")
-        for f in facts[-8:]:
-            lines.append(f"  [{f.kind}] {f.text}")
-    except Exception:
-        pass
-    try:
-        lines.append("tokens: " + server.tokens.render(sess.session_id).strip().splitlines()[-1])
-    except Exception:
-        pass
-    r = state.get("last")
-    if r is not None:
-        lines.append(f"last turn: {r.turn_id} state={r.state}"
-                     + (f" error={r.error}" if getattr(r, "error", None) else ""))
-    lines.append(f"rolling log: {server.ledger.event_log_path}")
-    return "\n".join(lines)
+    from .b_lookup import collect_state
+    return collect_state(sess, server, state).readout()
 
 
 def _b_prompt(text: str, sess, server, state) -> str:
-    """B answers as itself. Fleet-model-backed when the hugpy gateway is
-    reachable; deterministic (state readout) otherwise. B never impersonates A
+    """B answers as itself — lookup-first (b_lookup): state questions, searches,
+    acks, help, and anything against an EMPTY state are answered without
+    inference; only synthesis over non-empty state reaches the fleet model
+    (one in flight per workspace, skipped while central's queue is backed up).
+    Every reply ends with the (timestamp · tokens · duration · model) line —
+    'tokens 0 · lookup' means no inference was spent. B never impersonates A
     and never invents context — its grounding is its own broker state."""
-    ground = _b_state_text(sess, server, state)
-    try:
-        from hugpy_agent.config import load_config
-        from hugpy_agent.gateway import Gateway
-        cfg = load_config()
-        gw = Gateway.from_config(cfg)
-        sysmsg = (
-            "You are B — the broker/curator of a Mediated Context Terminal. "
-            "You curate bounded context for A (a confined Claude) and keep the "
-            "ledger, catalog, and derived memory. Answer the operator directly, "
-            "concisely, in first person as B. Ground every claim in the state "
-            "below; when the state does not contain the answer, say so plainly.\n\n"
-            "=== your current state ===\n" + ground)
-        model = state.get("bmodel") or None
-        res = gw.chat([{"role": "system", "content": sysmsg},
-                       {"role": "user", "content": text}],
-                      model=model, max_tokens=700)
-        body = getattr(res, "text", None) or getattr(res, "content", None) or str(res)
-        return body.strip()
-    except Exception as exc:
-        return ("[B offline — deterministic answer]\n"
-                f"(gateway unavailable: {type(exc).__name__}: {exc})\n\n" + ground)
+    from .b_lookup import respond
+    return respond(text, sess, server, state, model=state.get("bmodel") or None)["reply"]
 
 
 def _command(line: str, sess, server, state) -> bool:
