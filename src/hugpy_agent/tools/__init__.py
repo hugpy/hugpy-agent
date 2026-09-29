@@ -82,6 +82,12 @@ class ToolSpec:
     handler: Callable[..., str]
     risk_class: str = RISK_READONLY
     needs_context: bool = False            # handler takes a _context kwarg
+    # Optional per-CALL risk resolver: given the call args, returns the
+    # effective risk class (e.g. ts_call classifies by the TARGET tool). None
+    # (the default) means the static risk_class is the whole story. policy.decide
+    # and the loop's audit/escalation read this via policy.effective_risk, so a
+    # dispatching tool is gated by what it actually does, not by a placeholder.
+    dynamic_risk: Callable[[dict], str] | None = None
 
 
 class Registry:
@@ -185,7 +191,8 @@ def _recall_handler(rag, query: str, k=5) -> str:
 
 def build_registry(workspace: str, gateway, memory=None, comms=None,
                    agent_loop=None, rag=None, object_store=None,
-                   session_id: str | None = None) -> Registry:
+                   session_id: str | None = None, cfg=None,
+                   on_event=None) -> Registry:
     """The Phase-1 built-in toolset. `final_answer` is registered as a real
     tool — a schema'd, validated termination signal beats parsing prose for
     'am I done?' (fail-closed on ambiguity).
@@ -219,6 +226,29 @@ def build_registry(workspace: str, gateway, memory=None, comms=None,
     # keeper driving this agent inherits the cheap paths by default.
     for spec in lean.specs(gateway, workspace):
         reg.register(spec)
+    # hugpy_tools (2026-09-24): fs/text/data/web toolset from the hugpy-tools package.
+    try:
+        from . import toolset_tools
+    except ImportError:
+        toolset_tools = None
+    if toolset_tools is not None:
+        for spec in toolset_tools.specs(workspace):
+            reg.register(spec)
+    # toolserver (2026-09-25): the running abstract_toolserver's whole tool
+    # surface behind three category meta-tools (ts_categories/ts_list/ts_call),
+    # default ON. Only attempted when a Config is supplied (loop/serve/node);
+    # the bare test callers pass no cfg and get exactly the old toolset with no
+    # network probe. Errors-as-data: an unreachable toolserver registers
+    # nothing and states why once via on_event.
+    if cfg is not None and getattr(cfg, "toolserver", True):
+        try:
+            from . import toolserver as _ts
+            # `taken`: in flat mode a toolserver tool never shadows a local,
+            # jailed tool of the same name (fs_glob and friends).
+            for spec in _ts.specs(cfg, on_event=on_event, taken=reg.names()):
+                reg.register(spec)
+        except Exception:  # noqa: BLE001 — the toolset must never fail to build
+            pass
     # ask_operator (P2.3): a direct line to the human. Risk READONLY — it
     # only sends a message and waits; it mutates nothing and is safe to
     # re-execute on resume (the operator just gets asked again).

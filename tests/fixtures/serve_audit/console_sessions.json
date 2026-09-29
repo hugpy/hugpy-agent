@@ -1,0 +1,121 @@
+{
+ "sessions": [
+  {
+   "id": "cs-cd165265d096407f92fcc4d54f2c2bd9",
+   "backend": "hugpy",
+   "native_id": "e65ca08359ca4376b6e68ff21dc00a4d",
+   "created": 1790638584.3714235,
+   "updated": 1790680305.6744056,
+   "auto": 0,
+   "paused": 1,
+   "cwd": "/srv/vm_mgr",
+   "model": "hugpy-fleet:Qwen3-Coder-Next-GGUF",
+   "effort": "",
+   "dangerous": false,
+   "label": "",
+   "shared_history": true,
+   "imported_history": [],
+   "session_id": "cs-cd165265d096407f92fcc4d54f2c2bd9",
+   "busy": false
+  },
+  {
+   "id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "backend": "hugpy",
+   "native_id": "4370262dd6ed46f896644eac510e7602",
+   "created": 1789617743.1959913,
+   "updated": 1790643357.015792,
+   "auto": 1,
+   "paused": 0,
+   "cwd": "/srv/vm_mgr",
+   "model": "hugpy-fleet:Qwen3-32B",
+   "effort": "",
+   "dangerous": false,
+   "label": "",
+   "shared_history": true,
+   "imported_history": [
+    {
+     "role": "user",
+     "text": "You are the WORKER session of this console, pinned to a small fast model. You take bounded tasks only: grep-class searches, bulk board/db reads and writes, file listings, and mechanical edits handed to you with exact instructions. Report results tersely and never widen scope. Reply with one line acknowledging your role, then wait."
+    }
+   ],
+   "handoff_context": "n (e.g., `--think` defaults to ON because Qwen3-family brains are unusable for t",
+   "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0",
+   "busy": false
+  },
+  {
+   "id": "cs-acabccbf1e1f4c8888dd4aded537c9dd",
+   "backend": "claude",
+   "native_id": "1b65b7b1-450e-461c-b126-12f29d55d02d",
+   "created": 1790638677.7740595,
+   "updated": 1790643303.3060274,
+   "auto": 1,
+   "paused": 1,
+   "cwd": "/srv/vm_mgr",
+   "model": "claude-sonnet-5",
+   "effort": "",
+   "dangerous": false,
+   "label": "",
+   "session_id": "cs-acabccbf1e1f4c8888dd4aded537c9dd",
+   "busy": false,
+   "imported_history": []
+  },
+  {
+   "id": "cs-8272f76d03bd4051a45b6468d1e89ab0",
+   "backend": "hugpy",
+   "native_id": "8b32b09d27df4a3b9e7a13925ff24056",
+   "created": 1790615931.5738788,
+   "updated": 1790638765.3062615,
+   "auto": 1,
+   "paused": 0,
+   "cwd": "/srv/vm_mgr",
+   "model": "hugpy-fleet:Qwen2.5-3B-Instruct-GGUF",
+   "effort": "",
+   "dangerous": false,
+   "label": "Serve provider verification",
+   "shared_history": true,
+   "imported_history": [],
+   "session_id": "cs-8272f76d03bd4051a45b6468d1e89ab0",
+   "busy": false
+  },
+  {
+   "id": "cs-2121ba8c2933421f8a6bca4281dc7b0a",
+   "backend": "claude",
+   "native_id": "b119c5e0-3093-46fa-942b-cc5dd004fa07",
+   "created": 1790638658.6464276,
+   "updated": 1790638708.9950569,
+   "auto": 1,
+   "paused": 1,
+   "cwd": "/srv/vm_mgr",
+   "model": "claude-sonnet-5",
+   "effort": "",
+   "dangerous": false,
+   "label": "",
+   "session_id": "cs-2121ba8c2933421f8a6bca4281dc7b0a",
+   "busy": false,
+   "imported_history": []
+  },
+  {
+   "id": "cs-401e63076a4f491baf3d93d7cb509d74",
+   "backend": "claude",
+   "native_id": "e727cee8-f76f-43bc-9ea6-8fcb1531116b",
+   "created": 1790638595.5003912,
+   "updated": 1790638600.261381,
+   "auto": 1,
+   "paused": 1,
+   "cwd": "/srv/vm_mgr",
+   "model": "claude-sonnet-5",
+   "effort": "",
+   "dangerous": false,
+   "label": "",
+   "session_id": "cs-401e63076a4f491baf3d93d7cb509d74",
+   "busy": false,
+   "imported_history": []
+  }
+ ],
+ "cwd": "/srv/vm_mgr",
+ "backends": [
+  "claude",
+  "gpt",
+  "hugpy"
+ ]
+}

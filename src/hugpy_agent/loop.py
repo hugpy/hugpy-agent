@@ -33,7 +33,7 @@ from .gateway import (Gateway, estimate_tokens, is_capacity_error,
                       pick_ladder_brain, resolve_brain_ladder)
 from .journal import Journal, idem_key
 from .memory import Memory
-from .policy import decide
+from .policy import decide, effective_risk
 from .rag import RagIndex, default_vectors_path, fleet_embedder
 from .tools import Registry, ToolContext, ToolInterrupted, UNSAFE_TO_RERUN
 
@@ -85,8 +85,9 @@ class AgentLoop:
                  registry: Registry | None = None, journal: Journal | None = None,
                  adapter: Adapter | None = None, memory: Memory | None = None,
                  on_event=None, comms: Comms | None = None, depth: int = 0,
-                 object_store=None, session_id: str | None = None):
+                 object_store=None, session_id: str | None = None, conversation: bool = False):
         self.cfg = cfg
+        self.conversation = conversation
         # Subagent nesting level (P2.5): 0 for an operator-started run;
         # children get parent.depth + 1. Gates whether this loop's registry
         # may carry a `spawn` tool at all (see subagent.make_spawn_spec).
@@ -112,16 +113,19 @@ class AgentLoop:
         # existing caller (CLI/serve/eval) is byte-for-byte unchanged.
         self.object_store = object_store
         self.session_id = session_id
+        # Set BEFORE build_registry so the toolserver bridge can report its
+        # default-on status (ready / unavailable) through the same event hook.
+        self.on_event = on_event or (lambda *a, **k: None)
         if registry is None:
             from .tools import build_registry
             registry = build_registry(cfg.workspace, self.gateway, self.memory,
                                       comms=self.comms, agent_loop=self,
                                       rag=self.rag, object_store=self.object_store,
-                                      session_id=self.session_id)
+                                      session_id=self.session_id, cfg=cfg,
+                                      on_event=self.on_event)
         self.registry = registry
         self.journal = journal or Journal(default_journal_path(cfg.workspace))
         self.adapter = adapter or Adapter(self._pick_mode())
-        self.on_event = on_event or (lambda *a, **k: None)
         # Audit trail (P2.2). cfg.audit_log None => the workspace default;
         # "" => disabled. The lambda keeps the event hook live even if a
         # caller swaps loop.on_event after construction.
@@ -220,7 +224,13 @@ class AgentLoop:
         memory_block = ("\nWorkspace memory index (fetch entries with fs_read "
                         "if relevant):\n%s\n" % mem) if mem else ""
         tools_block = self.adapter.system_prompt_block(self.registry.specs())
-        return _SYSTEM_TEMPLATE.format(workspace=self.cfg.workspace,
+        template = _SYSTEM_TEMPLATE
+        if self.conversation:
+            template = template.replace("- Make EXACTLY ONE tool call per reply, then stop and wait for its result.",
+                "- Use tools only when the request needs them; make one tool call at a time.")
+            template = template.replace("That is the only way to finish.",
+                "For a conversational answer that needs no tools, plain text also finishes the turn.")
+        return template.format(workspace=self.cfg.workspace,
                                        memory_block=memory_block,
                                        tools_block=tools_block)
 
@@ -381,6 +391,11 @@ class AgentLoop:
             outcome = self.adapter.extract(text, native_calls)
 
             if not outcome.calls:
+                if self.conversation and not outcome.errors and text.strip():
+                    answer = adapter_mod.strip_think(text)
+                    report = self._finish(run_id, "done", answer=answer, est_tokens=est_total)
+                    self.on_event("final", answer)
+                    return report
                 failures += 1
                 if failures >= MAX_CONSECUTIVE_FAILURES:
                     return self._finish(
@@ -410,7 +425,7 @@ class AgentLoop:
                               "was executed. Send one call per reply."
                               % len(outcome.calls))
 
-            if (call.name == "final_answer"
+            if (call.name == "final_answer" and not self.conversation
                     and self.journal.successful_call_count(run_id) == 0):
                 # Terminating without ever looking is fabrication, not an
                 # answer. Requires >= 1 SUCCESSFUL (status='done') tool call:
@@ -558,7 +573,7 @@ class AgentLoop:
                 datetime.now(timezone.utc),
                 run_id=run_id,
                 step=self.journal.assistant_step_count(run_id),
-                tool=spec.name, risk=spec.risk_class, decision=decision,
+                tool=spec.name, risk=effective_risk(spec, args), decision=decision,
                 model=self.active_model,
                 args=args, result=result, args_sha256=args_sha,
                 duration_ms=int((time.monotonic() - started) * 1000),
@@ -595,7 +610,7 @@ class AgentLoop:
                 "policy denied: tool %s (risk %s) is not permitted under "
                 "policy mode %r. Continue without this action or finish "
                 "and report what could not be done."
-            ) % (spec.name, spec.risk_class, self.cfg.policy_mode)})
+            ) % (spec.name, effective_risk(spec, args), self.cfg.policy_mode)})
             self.journal.record_call_start(key, run_id, assistant_seq,
                                            spec.name, args)
             self.journal.record_call_result(key, "error", result)
@@ -606,7 +621,7 @@ class AgentLoop:
             if existing["status"] in ("done", "error"):
                 return existing["result"] or "", True
             # pending = crashed/interrupted mid-execution
-            if (spec.risk_class in UNSAFE_TO_RERUN
+            if (effective_risk(spec, args) in UNSAFE_TO_RERUN
                     and self.journal.get_call_state(run_id, key) is None):
                 result = json.dumps({
                     "error": ("a previous process was interrupted while executing "
@@ -667,7 +682,7 @@ class AgentLoop:
             preview = preview[:300] + "…"
         question = ("hugpy-agent requests approval (run %s)\n"
                     "tool: %s  (risk: %s)\nargs: %s"
-                    % (run_id, spec.name, spec.risk_class, preview))
+                    % (run_id, spec.name, effective_risk(spec, args), preview))
         reply = self.comms.ask(question, [APPROVE, approve_all, DENY_LABEL],
                                stop=lambda: self.stop_requested)
         choice = reply.get("choice") if reply.get("answered") else None
@@ -690,12 +705,12 @@ class AgentLoop:
                 "policy denied: the operator denied %s (risk %s). Continue "
                 "without this action or finish and report what could not "
                 "be done."
-            ) % (spec.name, spec.risk_class)})
+            ) % (spec.name, effective_risk(spec, args))})
         return json.dumps({"error": (
             "policy denied: %s (risk %s) requires operator approval and "
             "the operator channel is unavailable (%s). Continue without "
             "this action or finish and report what could not be done."
-        ) % (spec.name, spec.risk_class,
+        ) % (spec.name, effective_risk(spec, args),
              reply.get("error") or "no usable answer")})
 
     # ── context management ───────────────────────────────────────────────

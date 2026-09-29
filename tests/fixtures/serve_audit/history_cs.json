@@ -1,0 +1,29 @@
+{
+ "messages": [
+  {
+   "role": "user",
+   "text": "You are the WORKER session of this console, pinned to a small fast model. You take bounded tasks only: grep-class searches, bulk board/db reads and writes, file listings, and mechanical edits handed t"
+  },
+  {
+   "role": "assistant",
+   "text": "Standing by as WORKER\u2014bounded tasks only (grep, reads/writes, mechanical edits with exact instructions). Ready."
+  },
+  {
+   "role": "user",
+   "text": "FAILSAFE: the station's local model (B) is offline or failed, so you answer this local-chat message in its place. Be brief and concrete. Do not touch the task ledger or the board unless the message ex"
+  },
+  {
+   "role": "assistant",
+   "text": "worker (failsafe) standing by."
+  },
+  {
+   "role": "user",
+   "text": "FAILSAFE: the station's local model (B) is offline or failed, so you answer this local-chat message in its place. Be brief and concrete. Do not touch the task ledger or the board unless the message ex"
+  },
+  {
+   "role": "assistant",
+   "text": "Checking station-idle-restart-1099.log now."
+  }
+ ],
+ "session_id": "cs-02c944d4527643b69a439d1bd9f41ee0"
+}

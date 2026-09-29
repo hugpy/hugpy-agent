@@ -1,0 +1,41 @@
+{
+  "default_profile": "hugpy-fleet",
+  "discover_clients": true,
+  "profiles": {
+    "hugpy-fleet": {
+      "label": "Hugpy Fleet",
+      "protocol": "hugpy",
+      "base_url": "https://dev.hugpy.ai",
+      "model": "Qwen3-Coder-Next-GGUF",
+      "context_length": 262144,
+      "max_tokens": 2048,
+      "discover_models": true
+    },
+    "coder-next": {
+      "label": "Coder Next \u00b7 recovery service",
+      "protocol": "openai-chat",
+      "base_url": "http://127.0.0.1:7005/v1",
+      "model": "/var/lib/ollama-models/hugpy/models/gguf/Qwen/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf",
+      "context_length": 262144,
+      "max_tokens": 2048
+    },
+    "gpt": {
+      "label": "GPT",
+      "protocol": "openai-responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.4",
+      "api_key_env": "OPENAI_API_KEY",
+      "context_length": 32768,
+      "max_tokens": 4096
+    },
+    "claude": {
+      "label": "Claude",
+      "protocol": "anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "model": "claude-opus-4-8",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "context_length": 32768,
+      "max_tokens": 4096
+    }
+  }
+}

@@ -15,6 +15,30 @@ pip install -e .
 hugpy-agent models        # lists fleet models from the configured base
 ```
 
+## Optional integrations
+
+`hugpy-agent` imports **no** `abstract-*` package and **no** vendor SDK
+(anthropic / openai / google …), in the core or in any extra. `import
+hugpy_agent` and `hugpy-agent --help` run with nothing else installed.
+
+Two ways capabilities are added, both opt-in:
+
+- **`mct` extra** — `pip install hugpy-agent[mct]` adds the Mediated Context
+  Terminal (`hugpy_agent.mct`). Its only dependency is `jsonschema` (control-
+  plane envelope validation); it is not a vendor SDK.
+- **Adapter plugins** (`hugpy_agent.adapters` entry-point group) — third-party
+  capability providers register themselves; hugpy-agent discovers them at first
+  use and never imports them directly (see `hugpy_agent/adapters.py`). Install
+  the provider package separately and it lights up; absent one, hugpy-agent
+  states its fallback rather than failing:
+
+  | adapter name   | provided by (example)          | capability                              | fallback when absent           |
+  | -------------- | ------------------------------ | --------------------------------------- | ------------------------------ |
+  | `local_search` | `abstract-toolserver[files]`   | in-process content search over roots    | central HTTP finder (`/api/finder/search`) |
+
+  Claude Code as the MCT reasoning model ("A") needs only the `claude` CLI on
+  `PATH` (driven as a subprocess); no Python package is imported for it.
+
 ### Install as a service (one-command enrollment)
 
 `bootstrap.sh` takes a bare box to a running systemd **user** service
@@ -187,6 +211,84 @@ Every chat payload carries `"max_chunks": 1` (kills the known
 continuation-prompt leak) and known leak strings are scrubbed defensively.
 `usage` is null at the seam today, so token accounting is a client-side
 estimate (`gateway.estimate_tokens`).
+
+### Toolserver integration
+
+Every harness and client in this package reaches the station toolserver
+(`abstract_toolserver`, :7004, ~200 tools: `fs_*`, `exchange_*`, `ledger_*`,
+`todo_*`, `prompt_*`, `comms_*`, `ui_*`, `vl_*`, `vm_*`, `db_*`, …) through ONE
+stdlib client, `hugpy_agent.toolserver_client.ToolserverClient`:
+
+| method | what |
+|---|---|
+| `list_tools()` | cached `[{name, description, input_schema}]` (`POST /mcp?mode=flat tools/list`; falls back to `/ts/categories` + `/ts/list`) |
+| `call(name, args, timeout)` | `POST /ts/call`; returns the tool's value (tool errors are the `{"error"}` data the server sent); transport/auth raise `ToolserverError` / `ToolserverAuthError` |
+| `call_json(name, args)` | errors-as-data JSON string (what tool handlers feed the model) |
+| `health()` / `status()` | `{url, ok, tool_count, auth: ok\|open\|missing\|rejected, version, latency_ms, error}`; `status()` is cached 30 s so UIs can poll it |
+| `as_openai_tools()` / `as_anthropic_tools()` | `{"type":"function","function":{…}}` / `{name, description, input_schema}` lists (allowlisted tools only by default) |
+| `classify(name)` / `allowed(name)` | `readonly` \| `mutating` \| `privileged`, and the allowlist verdict |
+
+Configuration (env > `~/.hugpy/toolserver.env` > station/operator env files):
+
+| variable | meaning |
+|---|---|
+| `TOOLSERVER_URL` | base URL (default `http://127.0.0.1:7004`; `STATION_CONSOLE_TOOLSERVER` also read) |
+| `TOOLSERVER_OPERATOR_TOKEN` | the operator token — the same variable the toolserver itself reads; sent as `X-Operator-Token` (+ `Authorization: Bearer`). `TOOLSERVER_TOKEN`, `HUGPY_OPERATOR_TOKEN`, `STATION_CONSOLE_TOOLSERVER_TOKEN` are accepted aliases. A 401 with no token set names this variable in the error. |
+| `HUGPY_AGENT_TOOLSERVER=0` | switch the bridge off for the process (CLI: `--no-toolserver`) |
+| `HUGPY_AGENT_TOOLSERVER_ALLOW` / `_DENY` | comma lists of tool names (`*` and `vm_*` globs); deny wins |
+| `HUGPY_AGENT_TOOLSERVER_TOOLS` | `meta` (default) or `flat` — see below |
+| `HUGPY_AGENT_TOOLSERVER_URL` / `_TOKEN` / `HUGPY_AGENT_LOCUS` | per-workspace overrides (`agent.toml` / `.env`; the token never belongs in `agent.toml`) |
+
+Allowlist defaults (`toolserver_client.classify`, decided from the tool name):
+**readonly** tools (`*_list/get/read/state/find/search/…`) are on everywhere;
+**mutating** tools (`todo_add`, `ledger_put`, `comms_ping`, `exchange_record`,
+…) are on but pass the loop's policy gate as `network` risk (`--policy ask`
+escalates, `auto` allows, `readonly` denies); **privileged** tools — `vm_*`,
+`vmpool_*`, `sys_*` (`sys_run_cmd`), `browser_*`, `handoff_*`, `fs_write_file`,
+`db_query` unless it is a `SELECT`, oauth/session control (`claude_oauth_*`,
+`gpt_oauth_*`, `gpt_login_*`, `claude_reset/restore/set_model`,
+`session_spin/release`, `ui_click_verify`) — are OFF until named in
+`HUGPY_AGENT_TOOLSERVER_ALLOW` (or `*`); a refused call comes back to the model
+as `{"error": "... set HUGPY_AGENT_TOOLSERVER_ALLOW=<name> ..."}`, never a crash.
+
+Per harness:
+
+- `chat` / `run` / `resume` / `serve --daemon` (the station seat backend,
+  `hugpy-agent chat --model …`): the agent loop registers three meta-tools by
+  default — `ts_categories`, `ts_list`, `ts_call` — whose handlers go through
+  the shared client (`tools/toolserver.py`); `ts_call` is risk-classed by its
+  TARGET tool, so the existing policy gate sees what it actually does. Startup
+  prints one `[toolserver] ready|unavailable|disabled: …` line. `--no-toolserver`
+  removes them for the run. `HUGPY_AGENT_TOOLSERVER_TOOLS=flat` additionally
+  registers every allowed toolserver tool as its own ToolSpec (native
+  tool-calling models); a local jailed tool of the same name (`fs_glob`) wins.
+- `hugpy-agent serve` (:9126, `service/`): API-profile sessions get the same
+  meta-tools; `GET /api/state` carries `toolserver: {url, ok, tool_count, auth}`
+  and `GET /api/tools` lists the catalog with `class`, `risk` and `allowed` per
+  tool. Native `claude-code` / `codex` profiles keep their own client-side
+  tool configuration.
+- `mct` / `mct-serve`: A (`claude -p --strict-mcp-config`) gets the toolserver
+  as a second MCP server (`type: http`, `<url>/mcp?mode=flat`, token in the
+  header) with `--allowedTools mcp__toolserver__<name>` for the allowlisted
+  tools and `--disallowedTools` for the privileged ones; the grant is recorded
+  in the ledger (`a.toolserver_tools`) and the access log, like
+  `--native-tools all`. `--no-toolserver` (or `HUGPY_AGENT_TOOLSERVER=0`)
+  keeps A confined to B's tools alone.
+- `fleet` TUI (`fleet_tui.py`): the status bar shows `toolserver ok (N tools)`
+  / `auth rejected` / `unreachable`, probed off the UI thread on each refresh.
+- subagents (`spawn`) inherit a filtered view of the parent's registry, so
+  they hold at most the parent's toolserver tools.
+
+CLI:
+
+```
+hugpy-agent tools health                      # OK  url=… auth=ok tools=198 version=0.0.28
+hugpy-agent tools list [--all] [--json-out]   # name  class  description (privileged hidden unless --all)
+hugpy-agent tools call fs_glob --json '{"path":"/srv/vm_mgr/docs","pattern":"*.md"}'
+hugpy-agent tools call vm_stop --json '{…}' --allow-privileged   # one-off bypass
+```
+
+Exit codes: 0 ok · 1 failure / tool error · 2 auth (missing or rejected token).
 
 ## Headless fleet console
 
@@ -531,3 +633,98 @@ evals/         operator surface: tasks.py (suite) + runner.py + results/
 
 Seed lineage: the wire-contract client code is lifted from the field-tested
 `abstract_ide` hugpyTab/servicesTab clients (see module docstrings).
+
+## Terminal client (`hugpy-agent tui`)
+
+`hugpy-agent tui` is a curses harness (stdlib only) over **abstract-claude
+serve** (`/api/console/*`, the keeper console on `:9124` / hugpy locus `:9125`)
+and, unchanged from before, **hugpy-agent serve** (`:9126`). Discovery order:
+`--serve URL` → `$HUGPY_AGENT_SERVE` → `127.0.0.1:9124` → `:9125` → `:9126`,
+each probed with `GET /api/state`; the serve kind is detected from the reply's
+shape (`--kind abstract-claude|hugpy` pins it, `--session <cs-id|uuid|role>`
+opens a row directly, `--token` / `HUGPY_SERVE_TOKEN` adds a bearer). Standing
+roles (Keeper, Chat, Worker, Local) sit in the sidebar; cs-* rows are read via
+`/api/console/events` (raw events: text deltas, thinking, tool cards,
+approvals), native Claude uuid rows via `/api/session/events` + the chat SSE.
+The status bar shows serve, session, provider/model (`→ staged`), busy/held,
+queue depth, tokens (`n/a` for cs-* claude rows), `tools: N ✓` (toolserver) and
+the network state; the splash uses the Hugpy Agent wordmark.
+
+| key | action |
+|---|---|
+| Enter · `\`+Enter / Alt+Enter | send · newline |
+| Ctrl-C | clear composer → interrupt (busy) → quit |
+| Ctrl-X · Ctrl-K · Ctrl-P · Ctrl-G | interrupt · queue modal · model picker · session picker |
+| Tab / Shift-Tab · F2 | next/previous role · focus transcript ↔ composer |
+| PgUp/PgDn, Ctrl-U/Ctrl-D · End · Ctrl-T | scroll · follow tail · expand latest tool card |
+| Up/Down (transcript) · Enter/Space | select block · expand/collapse card |
+| `y a n c` / digits | answer an approval / question modal (Esc hides, Ctrl-A reopens) |
+| `r` (transcript) · Ctrl-L · Ctrl-Q | retry / un-hold · redraw · quit |
+
+Slash commands: `/model /session <id> /queue /retry /expand [n] /status /tools /help /quit`.
+Tests: `PYTHONPATH=tests:src python -m pytest tests/test_serve_client_*.py tests/test_tui_*.py`
+(`HUGPY_TUI_LIVE=1` adds a GET-only smoke against `127.0.0.1:9124`).
+
+## Headless sessions for Station
+
+`hugpy-agent serve` still polls task queues. To run the provider-neutral HTTP
+session service instead, use `hugpy-agent serve --http --profiles profiles.json`
+or `hugpy-agent-serve --profiles profiles.json --workspace /your/workspace`.
+The default listener is `127.0.0.1:9126`; state and journals persist under
+`~/.local/state/hugpy-agent-serve`. Run queue polling and HTTP as separate processes.
+
+Copy `examples/serve-profiles.json` and adjust the model ID, endpoint and context
+budget to your locus. Each profile selects `openai-chat`, `openai-responses`,
+`anthropic`, or the existing `hugpy` gateway. API bases include their version
+prefix (for example `https://api.openai.com/v1` or `https://api.anthropic.com/v1`).
+Set `api_key_env` to the name of an environment variable containing the credential;
+do not put secrets in the JSON. `parameters` supplies provider-specific request
+options. Chat APIs may select `token_parameter: "max_completion_tokens"`.
+
+API profiles use Hugpy Agent's tool loop, journal, policy and Toolserver bridge.
+The default `--policy ask` presents write/tool approvals in the session UI.
+The existing loop requires a successful tool call before final answers. Stop takes
+effect after the current API/tool operation; interrupted API runs can resume.
+Anthropic and Responses output currently arrives after each model step completes;
+Chat Completions can stream deltas. Toolserver credentials use the runtime's
+existing environment/file discovery.
+
+Claude Code and Codex are discovered only when installed on the service machine.
+Discovery never launches or installs them. They start only when their profile is
+selected and use their own login, tools, MCP and permission configuration. Their
+headless runs cannot present native interactive approvals in this UI. Codex runs
+with workspace-write sandboxing and no interactive approval prompts, following
+its [non-interactive interface](https://learn.chatgpt.com/docs/non-interactive-mode).
+Set `discover_clients: false` to disable discovery. Explicit native profiles may
+set a `model` and `timeout` in seconds.
+
+Use `examples/hugpy-agent-serve.service` as a user-unit template. Create the
+workspace and profile file before enabling the unit. For a remote listener,
+`HUGPY_SERVE_TOKEN` is required; use TLS or an SSH tunnel for transport.
+
+Station reads `serve-loci.json` from its state directory, keyed by locus:
+
+```json
+{"a-brain": {"url": "http://127.0.0.1:19126", "label": "Hugpy Agent · a-brain"}}
+```
+
+In this example an SSH tunnel on the Station host forwards port 19126 to a-brain's
+loopback port 9126. The Serve pane opens `/serve/@a-brain/`. Use `host` as the key
+for the Station machine itself. A `token_file` entry can name a private file on
+the Station host containing an upstream service token. Station keeps it out of
+browser state. Legacy `ac-loci.json` continues to work; generic entries override
+matching loci. Neither SSH locus setup nor VM setup installs Claude Code or Codex.
+
+The HTTP contract is `GET /api/state`, `GET /api/profiles`,
+`POST /api/sessions {"profile":"…"}`, `GET /api/sessions/<id>?after=<event-id>`,
+and POST actions `messages {"text":"…"}`, `answer {"id":"…","choice":"…"}`,
+`stop {}`, and `resume {}` below `/api/sessions/<id>/`.
+
+The session model dropdown can change providers between turns without creating a
+new window or losing the conversation. Switching clears provider-specific resume
+IDs and carries the shared transcript into the next turn. Hugpy Fleet is the
+example default; `discover_models: true` adds its current chat models to the same
+dropdown (catalog cached for 60 seconds). GPT and Claude API profiles appear there
+too; absent credentials mark them unavailable. Installed native clients remain
+optional entries. `POST /api/sessions/<id>/profile {"profile":"…"}` changes a model
+while idle. Fleet URL and all provider model IDs are operator configuration.
