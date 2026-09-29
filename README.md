@@ -558,17 +558,15 @@ Seed lineage: the wire-contract client code is lifted from the field-tested
 
 ## Headless sessions for Station
 
-For the normal interactive entry point, run:
+For the normal terminal entry point, run:
 
 ```sh
 hugpy-agent harness
 ```
 
-This opens Station Serve when `abstract-claude` is installed, exposing the
-combined GPT/Claude/Hugpy provider picker. If only `abstract-gpt` is installed,
-it opens that package's GPT Serve surface; otherwise it falls back to the
-native Hugpy Serve session service. Use `hugpy-agent serve` directly when you
-need its service or task-daemon options.
+This generates the live model map and execs OpenCode as the terminal harness.
+Use `hugpy-agent console` for the fleet cockpit, or `hugpy-agent serve` for the
+browser/session service and task-daemon options.
 
 `hugpy-agent serve` still polls task queues. To run the provider-neutral HTTP
 session service instead, use `hugpy-agent serve --http --profiles profiles.json`

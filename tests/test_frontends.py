@@ -104,35 +104,14 @@ class FrontendTests(unittest.TestCase):
         configure.assert_called_once()
         execute.assert_called_once_with(prepared[0][0], *prepared)
 
-    def test_harness_prefers_station_serve(self):
-        args = Mock(no_browser=True)
-        with patch.object(cli.shutil, "which", return_value="/bin/abstract-claude"), \
-             patch.object(cli.os, "execvpe") as execute:
-            self.assertEqual(cli.cmd_harness(args), 0)
-        execute.assert_called_once_with(
-            "/bin/abstract-claude",
-            ["/bin/abstract-claude", "serve", "--no-browser"],
-            cli.os.environ.copy())
-
-    def test_harness_falls_back_to_native_serve(self):
-        args = Mock(no_browser=False, base=None, model=None, workspace=None)
-        with patch.object(cli.shutil, "which", return_value=None), \
-             patch.object(cli, "cmd_serve", return_value=7) as serve:
+    def test_harness_selects_opencode_console(self):
+        args = Mock(base="https://fleet", model="m", workspace="/tmp/c")
+        with patch.object(cli, "cmd_console", return_value=7) as console_cmd:
             self.assertEqual(cli.cmd_harness(args), 7)
-        native = serve.call_args.args[0]
-        self.assertFalse(native.daemon)
-        self.assertEqual(native.port, 9126)
-        self.assertIsNone(native.profiles)
-
-    def test_harness_uses_gpt_serve_when_station_is_absent(self):
-        args = Mock(no_browser=True)
-        with patch.object(cli.shutil, "which", side_effect=[None, "/bin/abstract-gpt"]), \
-             patch.object(cli.os, "execvpe") as execute:
-            self.assertEqual(cli.cmd_harness(args), 0)
-        execute.assert_called_once_with(
-            "/bin/abstract-gpt",
-            ["/bin/abstract-gpt", "serve", "--no-browser"],
-            cli.os.environ.copy())
+        launched = console_cmd.call_args.args[0]
+        self.assertEqual(launched.frontend, "opencode")
+        self.assertTrue(launched.opencode)
+        self.assertEqual(launched.console_workspace, "/tmp/c")
 
     def test_frontend_first_selects_fleet_model_then_returns(self):
         ui = tui.Console(Mock(), self.client)

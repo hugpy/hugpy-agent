@@ -11,7 +11,6 @@ import argparse
 import json
 import os
 import signal
-import shutil
 import sys
 import threading
 import time
@@ -343,42 +342,15 @@ def cmd_serve(args) -> int:
 
 
 def cmd_harness(args) -> int:
-    """Open the provider-neutral terminal harness.
-
-    Station Serve owns the multi-provider picker when ``abstract-claude`` is
-    installed. A plain Hugpy Serve session service is the useful local
-    fallback, so a client install never needs provider-specific flags.
-    """
-    # abstract-claude's Station build is the combined provider picker. The
-    # GPT service is still a useful second choice on a GPT-only install, but
-    # its serve surface accepts no browser flag and is intentionally GPT-only.
-    station = shutil.which("abstract-claude")
-    if station:
-        command = [station, "serve"]
-        if getattr(args, "no_browser", False):
-            command.append("--no-browser")
-        os.execvpe(command[0], command, os.environ.copy())
-        return 0  # pragma: no cover - execvpe replaces the process
-
-    gpt = shutil.which("abstract-gpt")
-    if gpt:
-        command = [gpt, "serve"]
-        if getattr(args, "no_browser", False):
-            command.append("--no-browser")
-        os.execvpe(gpt, command, os.environ.copy())
-        return 0  # pragma: no cover - execvpe replaces the process
-
-    native = argparse.Namespace(
-        daemon=False, host="127.0.0.1", port=9126, no_browser=False,
-        profiles=None, state="~/.local/state/hugpy-agent-serve",
-        task_source=None, task_queue=None, poll_interval=None,
-        agent_node=None, agent_central=None, max_cycles=None,
+    """Open the zero-configuration OpenCode terminal harness."""
+    console_args = argparse.Namespace(
         base=getattr(args, "base", None), model=getattr(args, "model", None),
-        workspace=getattr(args, "workspace", None), max_steps=None,
-        tools_mode=None, no_think=None, policy_mode=None,
-        audit_verbose=None, quiet=False,
+        frontend="opencode", claude_code=False, qwen_code=False,
+        opencode=True, console_workspace=getattr(args, "workspace", None),
+        sync=True, offline=False, print_config=False,
+        all_models=getattr(args, "all_models", False), fleet_args=[],
     )
-    return cmd_serve(native)
+    return cmd_console(console_args)
 
 
 def cmd_eval(args) -> int:
@@ -799,12 +771,12 @@ def main(argv=None) -> int:
     p.add_argument("fleet_args", nargs=argparse.REMAINDER,
                    help="status | workers | models | inspect MODEL | queue | metrics | plan | call | request | exec | repl")
 
-    p = sub.add_parser("harness", help="open the provider-neutral terminal harness")
-    p.add_argument("--no-browser", action="store_true",
-                   help="do not open the harness URL automatically")
-    p.add_argument("--base", help="fleet base URL for the native fallback")
-    p.add_argument("--model", help="model id for the native fallback")
-    p.add_argument("--workspace", help="workspace for the native fallback")
+    p = sub.add_parser("harness", help="open the provider-neutral OpenCode terminal")
+    p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
+    p.add_argument("--model", help="model id to open with")
+    p.add_argument("--workspace", help="console dir holding opencode.json")
+    p.add_argument("--all-models", action="store_true",
+                   help="include every non-blocked fleet model in OpenCode")
     p.set_defaults(fn=cmd_harness)
 
     p = sub.add_parser("mct", help="Mediated Context Terminal — pointer-mediated "
