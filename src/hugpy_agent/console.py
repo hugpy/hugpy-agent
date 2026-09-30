@@ -553,12 +553,12 @@ def resolve_small_model(models: dict) -> tuple[str | None, dict]:
 # environment, enabled, timeout — there is NO "args" key: 0.1.79 wrote
 # "command": [python] + "args": [...], OpenCode ran a bare `python` that sat
 # reading stdin, and every launch showed "Operation timed out after 30000ms".
-TOOLSERVER_MCP_MODULE = "abstract_serve.mcp"
+TOOLSERVER_MCP_MODULE = "abstract_toolserver.mcp"   # the shared bridge (abstract-toolserver dep)
 TOOLSERVER_MCP_TIMEOUT_MS = 20000   # per MCP request; cold tools/list ~1.5 s
 TOOLSERVER_PROBE_TIMEOUT = 4.0
-TOOLSERVER_ENABLE_HINT = ("set TOOLSERVER_TOKEN (or HUGPY_AGENT_TOOLSERVER_TOKEN; "
-                          "optional TOOLSERVER_URL) and pip install "
-                          "'hugpy-agent[serve]' to enable")
+TOOLSERVER_ENABLE_HINT = ("set HUGPY_TOOLSERVER_TOKEN (or TOOLSERVER_TOKEN / "
+                          "HUGPY_AGENT_TOOLSERVER_TOKEN; optional HUGPY_TOOLSERVER_URL — "
+                          "default: the toolserver advertised on this host) to enable")
 
 
 def _bridge_importable() -> bool:
@@ -571,8 +571,8 @@ def _bridge_importable() -> bool:
 
 def _probe_toolserver(base: str, token: str) -> None:
     """Raise unless `base` answers an authenticated POST /ts/categories fast."""
-    from .tools import toolserver as ts
-    ts._http(base, token, "/ts/categories", {}, TOOLSERVER_PROBE_TIMEOUT)
+    from .toolserver_client import ToolserverClient
+    ToolserverClient(base, token).post("/ts/categories", {}, TOOLSERVER_PROBE_TIMEOUT)
 
 
 def toolserver_mcp(cfg, environ=None, bridge_ok=None, probe=None):
@@ -580,13 +580,14 @@ def toolserver_mcp(cfg, environ=None, bridge_ok=None, probe=None):
 
     The entry is emitted only when it will actually work: toolserver not opted
     out (HUGPY_AGENT_TOOLSERVER=0), the bridge module importable by THIS
-    interpreter (it ships in the ``serve`` extra), a token resolved through
+    interpreter (abstract_toolserver.mcp — a base dependency), a token resolved through
     hugpy-agent's own chain (config/.env HUGPY_AGENT_TOOLSERVER_TOKEN, env
     TOOLSERVER_TOKEN & co, operator env files), and the endpoint answering an
     authenticated probe. ``child_env`` carries the resolved URL/token for the
     OpenCode process env only — opencode.json holds ``{env:...}`` references,
     never the literal token. ``reason`` is the one-line launch notice."""
     from .tools import toolserver as ts
+    from .toolserver_client import ToolserverAuthError
     environ = os.environ if environ is None else environ
     if not getattr(cfg, "toolserver", True):
         return None, {}, "disabled (HUGPY_AGENT_TOOLSERVER=0)"
@@ -601,6 +602,8 @@ def toolserver_mcp(cfg, environ=None, bridge_ok=None, probe=None):
         (probe or _probe_toolserver)(base, token)
     except urllib.error.HTTPError as e:
         return None, {}, "%s rejected the token (HTTP %s)" % (base, e.code)
+    except ToolserverAuthError as e:
+        return None, {}, "%s rejected the token (HTTP %s)" % (base, e.status)
     except Exception as e:  # unreachable / TLS / timeout
         return None, {}, "%s unreachable (%s)" % (base, e)
     entry = {

@@ -62,8 +62,9 @@ def _env_file_values() -> list:
 
 
 def resolve_base(cfg, environ=None, file_values=None) -> str:
-    """The toolserver base url: cfg.toolserver_url, else TOOLSERVER_URL /
-    STATION_CONSOLE_TOOLSERVER (env, then env files), else 127.0.0.1:7004."""
+    """The toolserver base url: cfg.toolserver_url, else HUGPY_TOOLSERVER_URL /
+    TOOLSERVER_URL / STATION_CONSOLE_TOOLSERVER (env, then env files), else the
+    toolserver advertised on this host (abstract_toolserver.discovery)."""
     return tsc.resolve_url((getattr(cfg, "toolserver_url", "") or ""), environ, file_values)
 
 

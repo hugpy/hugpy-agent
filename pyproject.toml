@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hugpy-agent"
-version = "0.1.80"
+version = "0.1.81"
 description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,11 +21,14 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only"
 ]
-# Deliberately dependency-free: a remote machine with only Python can run it.
-dependencies = ["hugpy-tools"]
+# Near dependency-free: a remote machine with only Python can run it.
+# abstract-toolserver is the CENTRAL toolserver client (stdlib-only core, no
+# server stack): the one shared client/discovery every consumer pins
+# (abstract-toolserver CENTRALIZATION.md, 2026-09-30).
+dependencies = ["hugpy-tools", "abstract-toolserver~=0.0.31"]
 
-# Optional extras. The base stays dependency-free and NO extra pins an
-# ``abstract-*`` package or a vendor SDK (anthropic / openai / google …).
+# Optional extras. No extra pins a vendor SDK (anthropic / openai / google …);
+# the only abstract-* base dependency is the stdlib-only toolserver client above.
 # Third-party CAPABILITIES plug in over the ``hugpy_agent.adapters`` entry-point
 # group (see ``hugpy_agent/adapters.py``): install the provider package
 # separately and it registers itself; hugpy-agent never imports it. For example

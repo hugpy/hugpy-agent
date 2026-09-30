@@ -82,7 +82,7 @@ class ToolserverMcpGate(unittest.TestCase):
                 _cfg(toolserver_url="https://ts.example/"),
                 environ={"TOOLSERVER_TOKEN": TOKEN}, bridge_ok=True, probe=_ok)
         self.assertEqual(entry["command"],
-                         [sys.executable, "-m", "abstract_serve.mcp"])
+                         [sys.executable, "-m", "abstract_toolserver.mcp"])
         self.assertNotIn("args", entry)          # OpenCode ignores it
         self.assertTrue(entry["enabled"])
         self.assertIsInstance(entry["timeout"], int)

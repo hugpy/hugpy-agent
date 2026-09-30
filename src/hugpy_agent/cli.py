@@ -268,6 +268,23 @@ def cmd_chat(args) -> int:
     return 0
 
 
+def _ensure_toolserver_async():
+    """Serve-startup hook: discover (or, with the server extra, start) the host's
+    ONE toolserver in the background — bounded, never blocks or fails startup."""
+    import threading
+
+    def _run():
+        try:
+            from .toolserver_client import ensure_toolserver
+            res = ensure_toolserver()
+            if res.get("url"):
+                print("hugpy-agent: toolserver %s (%s)" % (res["url"], res.get("source")),
+                      file=sys.stderr)
+        except Exception:
+            pass
+    threading.Thread(target=_run, name="ensure-toolserver", daemon=True).start()
+
+
 def cmd_serve(args) -> int:
     """Run Hugpy's session serve by default, or its task daemon explicitly.
 
@@ -292,6 +309,7 @@ def cmd_serve(args) -> int:
         if args.no_browser:
             argv.append("--no-browser")
         return serve_main(argv)
+    _ensure_toolserver_async()
     session_service = not getattr(args, "daemon", False)
     if session_service:
         url = f"http://{args.host}:{args.port}"
@@ -1014,14 +1032,14 @@ def main(argv=None) -> int:
                    help="serve kind; auto detects from GET /api/state (default auto)")
     p.set_defaults(fn=cmd_tui)
 
-    p = sub.add_parser("tools", help="toolserver client: list | call NAME | health "
-                                     "(TOOLSERVER_URL + TOOLSERVER_OPERATOR_TOKEN)")
-    p.add_argument("action", choices=["list", "call", "health", "status"])
+    p = sub.add_parser("tools", help="toolserver client: list | call NAME | health | ensure "
+                                     "(endpoint via abstract_toolserver discovery)")
+    p.add_argument("action", choices=["list", "call", "health", "status", "ensure"])
     p.add_argument("name", nargs="?", help="tool name for `call`")
     p.add_argument("--json", dest="json_args", default=None,
                    help="JSON object of arguments for `call` (default {})")
-    p.add_argument("--url", help="toolserver base URL (default env TOOLSERVER_URL "
-                                 "or http://127.0.0.1:7004)")
+    p.add_argument("--url", help="toolserver base URL (default: HUGPY_TOOLSERVER_URL / "
+                                 "TOOLSERVER_URL, else the toolserver advertised on this host)")
     p.add_argument("--token", help="operator token (default env TOOLSERVER_OPERATOR_TOKEN)")
     p.add_argument("--timeout", type=float, default=None, help="call timeout in seconds")
     p.add_argument("--all", action="store_true",
@@ -1040,7 +1058,13 @@ def main(argv=None) -> int:
 def cmd_tools(args) -> int:
     """`hugpy-agent tools list|call NAME [--json ARGS]|health` — the shared
     toolserver client for humans and tests. Exit: 0 ok, 1 failure, 2 auth."""
-    from .toolserver_client import ToolserverClient, ToolserverAuthError, ToolserverError
+    from .toolserver_client import (ToolserverClient, ToolserverAuthError, ToolserverError,
+                                    ensure_toolserver)
+    if args.action == "ensure":        # first-run hook: find (or start) the host's toolserver
+        res = ensure_toolserver()
+        print(json.dumps(res, indent=2, default=str) if args.json_out else
+              (res.get("url") or res.get("reason") or res.get("source")))
+        return 0 if res.get("url") else 1
     client = ToolserverClient(args.url, args.token,
                               timeout=args.timeout or 120.0)
     try:
