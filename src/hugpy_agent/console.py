@@ -487,9 +487,82 @@ def resolve_small_model(models: dict) -> tuple[str | None, dict]:
     return raw, out
 
 
+# ── toolserver MCP entry ─────────────────────────────────────────────────────
+# OpenCode 1.18 `mcp.<name>` (type local) accepts command (ONE argv array),
+# environment, enabled, timeout — there is NO "args" key: 0.1.79 wrote
+# "command": [python] + "args": [...], OpenCode ran a bare `python` that sat
+# reading stdin, and every launch showed "Operation timed out after 30000ms".
+TOOLSERVER_MCP_MODULE = "abstract_serve.mcp"
+TOOLSERVER_MCP_TIMEOUT_MS = 20000   # per MCP request; cold tools/list ~1.5 s
+TOOLSERVER_PROBE_TIMEOUT = 4.0
+TOOLSERVER_ENABLE_HINT = ("set TOOLSERVER_TOKEN (or HUGPY_AGENT_TOOLSERVER_TOKEN; "
+                          "optional TOOLSERVER_URL) and pip install "
+                          "'hugpy-agent[serve]' to enable")
+
+
+def _bridge_importable() -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(TOOLSERVER_MCP_MODULE) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _probe_toolserver(base: str, token: str) -> None:
+    """Raise unless `base` answers an authenticated POST /ts/categories fast."""
+    from .tools import toolserver as ts
+    ts._http(base, token, "/ts/categories", {}, TOOLSERVER_PROBE_TIMEOUT)
+
+
+def toolserver_mcp(cfg, environ=None, bridge_ok=None, probe=None):
+    """(entry | None, child_env, reason) for the toolserver MCP bridge.
+
+    The entry is emitted only when it will actually work: toolserver not opted
+    out (HUGPY_AGENT_TOOLSERVER=0), the bridge module importable by THIS
+    interpreter (it ships in the ``serve`` extra), a token resolved through
+    hugpy-agent's own chain (config/.env HUGPY_AGENT_TOOLSERVER_TOKEN, env
+    TOOLSERVER_TOKEN & co, operator env files), and the endpoint answering an
+    authenticated probe. ``child_env`` carries the resolved URL/token for the
+    OpenCode process env only — opencode.json holds ``{env:...}`` references,
+    never the literal token. ``reason`` is the one-line launch notice."""
+    from .tools import toolserver as ts
+    environ = os.environ if environ is None else environ
+    if not getattr(cfg, "toolserver", True):
+        return None, {}, "disabled (HUGPY_AGENT_TOOLSERVER=0)"
+    if not (_bridge_importable() if bridge_ok is None else bridge_ok):
+        return None, {}, ("bridge %s not installed in %s"
+                          % (TOOLSERVER_MCP_MODULE, sys.executable))
+    base = ts.resolve_base(cfg, environ=environ)
+    token, src = ts.resolve_token(cfg, base, environ=environ)
+    if not token:
+        return None, {}, "no toolserver token for %s (%s)" % (base, src)
+    try:
+        (probe or _probe_toolserver)(base, token)
+    except urllib.error.HTTPError as e:
+        return None, {}, "%s rejected the token (HTTP %s)" % (base, e.code)
+    except Exception as e:  # unreachable / TLS / timeout
+        return None, {}, "%s unreachable (%s)" % (base, e)
+    entry = {
+        "type": "local",
+        "enabled": True,
+        "command": [sys.executable, "-m", TOOLSERVER_MCP_MODULE],
+        "environment": {
+            "TOOLSERVER_URL": "{env:TOOLSERVER_URL}",
+            "TOOLSERVER_TOKEN": "{env:TOOLSERVER_TOKEN}",
+        },
+        "timeout": TOOLSERVER_MCP_TIMEOUT_MS,
+    }
+    return entry, {"TOOLSERVER_URL": base, "TOOLSERVER_TOKEN": token}, \
+        "on (%s, token from %s)" % (base, src)
+
+
 def build_config(central: str, key_env_name: str, models: dict,
-                 default_model: str) -> dict:
+                 default_model: str, toolserver: dict | None = None) -> dict:
     """The opencode.json structure for the hugpy provider.
+
+    ``toolserver`` is the MCP entry from :func:`toolserver_mcp` (or None: no
+    ``mcp`` block at all — an unusable entry only costs OpenCode a 30 s
+    "Operation timed out" at every start).
 
     The apiKey is ALWAYS the `{env:NAME}` reference — OpenCode resolves it
     from its own process environment at runtime; the literal key never
@@ -530,23 +603,11 @@ def build_config(central: str, key_env_name: str, models: dict,
             "bash": perm,
             "webfetch": perm,
         },
-        # One provider-neutral MCP bridge for OpenCode, Claude, GPT, and the
-        # Hugpy harness. Credentials remain environment references; they never
-        # enter opencode.json literally.
-        "mcp": {
-            "toolserver": {
-                "type": "local",
-                "enabled": True,
-                "command": [sys.executable],
-                "args": ["-m", "abstract_serve.mcp"],
-                "environment": {
-                    "TOOLSERVER_URL": "{env:TOOLSERVER_URL}",
-                    "TOOLSERVER_TOKEN": "{env:TOOLSERVER_TOKEN}",
-                    "HUGPY_OPERATOR_TOKEN": "{env:HUGPY_OPERATOR_TOKEN}",
-                },
-            },
-        },
     }
+    if toolserver:
+        # The shared toolserver MCP bridge — only when toolserver_mcp() found it
+        # usable (bridge importable, token resolved, endpoint answered).
+        config["mcp"] = {"toolserver": toolserver}
     if small:
         # Session titles / lightweight tasks -> a tiny fleet model, not the
         # session's agent brain (harness_settings table).
@@ -738,7 +799,15 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
                   "%s list right now"
                   % (chosen, "model" if tasks is None else "chat-drivable"),
                   file=sys.stderr)
-        config = build_config(cfg.base, KEY_ENV_NAME, models, chosen)
+        ts_entry, ts_env, ts_reason = toolserver_mcp(cfg)
+        if ts_entry:
+            print("[console] toolserver tools: %s" % ts_reason, file=sys.stderr)
+            os.environ.update(ts_env)   # OpenCode's own env; never the file
+        else:
+            print("[console] toolserver tools: not configured — %s; %s"
+                  % (ts_reason, TOOLSERVER_ENABLE_HINT), file=sys.stderr)
+        config = build_config(cfg.base, KEY_ENV_NAME, models, chosen,
+                              toolserver=ts_entry)
         if print_config:
             print(json.dumps(config, indent=2))
             return 0
