@@ -467,7 +467,11 @@ def cmd_frontend(args) -> int:
                     os.environ.get("HUGPY_OPERATOR_TOKEN", ""), cfg.timeout)
     try:
         argv, env = frontends.prepare(spec, client, cfg.model)
+        # exec keeps this pid: the lease keeper watches it for the harness.
+        from . import session_signals
+        env[session_signals.ENV_PID] = str(os.getpid())
         frontends.configure(spec, env, cfg.model)
+        session_signals.start_lease_sidecar(cfg.base, cfg.api_key, spec["id"], env)
         os.execvpe(argv[0], argv, env)
     except FleetError as exc:
         print(str(exc), file=sys.stderr)
