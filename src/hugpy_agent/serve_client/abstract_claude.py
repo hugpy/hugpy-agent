@@ -50,6 +50,32 @@ def _base(raw, seq=None):
                 session_id=str(raw.get("session_id", "") or ""))
 
 
+def _call_ids(raw, *keys):
+    """tool_use / parent ids when the serve forwards them (Claude stream-json
+    carries `id` on tool_use, `tool_use_id` on tool_result and
+    `parent_tool_use_id` on a subagent's events)."""
+    meta = {}
+    for k in keys:
+        if raw.get(k):
+            meta["tool_id"] = str(raw[k])
+            break
+    parent = raw.get("parent_tool_use_id") or raw.get("parent")
+    if parent:
+        meta["parent"] = str(parent)
+    return meta
+
+
+def _iso_ts(value):
+    """ISO-8601 transcript timestamp -> epoch seconds (0.0 when absent)."""
+    if not value or not isinstance(value, str):
+        return 0.0
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def normalize_event(raw, seq=None):
     """Console event (`GET /api/console/events`) -> Event, per the h26 §2.1
     table. Unknown types return None so a newer serve never crashes the TUI."""
@@ -75,15 +101,16 @@ def normalize_event(raw, seq=None):
             return Event(kind="tool", name=raw.get("name", ""), text=raw.get("summary", ""),
                          detail=_json(raw.get("item")), meta={"status": raw.get("status", "")}, **b)
         return Event(kind="tool", name=raw.get("name", ""), text=raw.get("summary", ""),
-                     detail=_json(raw.get("input")), **b)
+                     detail=_json(raw.get("input")), meta=_call_ids(raw, "id", "tool_id", "tool_use_id"), **b)
     if kind == "tool_use":
         return Event(kind="tool", name=raw.get("name", ""), text=raw.get("text") or raw.get("summary", ""),
-                     detail=_json(raw.get("input")), **b)
+                     detail=_json(raw.get("input")), meta=_call_ids(raw, "id", "tool_id", "tool_use_id"), **b)
     if kind == "tool_result":
         if "is_error" not in raw:                          # gpt output delta
             return Event(kind="tool_result", text=raw.get("text", ""), meta={"delta": True}, **b)
         return Event(kind="tool_result", name=raw.get("name", ""), text=raw.get("text", ""),
-                     detail=raw.get("full") or raw.get("text", ""), ok=not raw.get("is_error"), **b)
+                     detail=_json(raw.get("full")) or raw.get("text", ""), ok=not raw.get("is_error"),
+                     meta=_call_ids(raw, "tool_use_id", "tool_id"), **b)
     if kind == "approval":
         return Event(kind="approval", request_id=str(raw.get("request_id", "")), name=raw.get("method", ""),
                      text=approval_title(raw.get("method")), options=list(APPROVAL_DECISIONS),
@@ -135,7 +162,8 @@ def normalize_native_event(raw, seq=0):
     if not isinstance(raw, dict):
         return None
     kind = raw.get("kind") or raw.get("role")
-    b = dict(seq=int(raw.get("seq", seq) or seq), ts=0.0, session_id=str(raw.get("session_id", "") or ""))
+    b = dict(seq=int(raw.get("seq", seq) or seq), ts=_iso_ts(raw.get("ts")),
+             session_id=str(raw.get("session_id", "") or ""))
     meta = {"key": raw.get("msg_id") or raw.get("cursor") or str(seq), "ts": raw.get("ts", "")}
     for k in ("usage", "cost", "model"):
         if raw.get(k):
@@ -149,10 +177,11 @@ def normalize_native_event(raw, seq=0):
         return Event(kind="thinking", text=text, meta=meta, **b)
     if kind == "tool_use":
         return Event(kind="tool", name=raw.get("tool", ""), text=raw.get("excerpt", "")[:120],
-                     detail=text, meta=meta, **b)
+                     detail=text, meta=dict(meta, **_call_ids(raw, "tool_id")), **b)
     if kind == "tool_result":
-        return Event(kind="tool_result", name=raw.get("tool", ""), text=text, detail=text,
-                     ok=not raw.get("is_error"), meta=meta, **b)
+        # `tool` on a transcript tool_result row is the tool_use_id, not a name.
+        return Event(kind="tool_result", text=text, detail=text,
+                     ok=not raw.get("is_error"), meta=dict(meta, **_call_ids(raw, "tool")), **b)
     if kind == "harness":
         return Event(kind="note", text=text, meta=dict(meta, harness=raw.get("harness_kind", "")), **b)
     return None
