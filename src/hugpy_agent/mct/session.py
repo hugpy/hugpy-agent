@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+# Local content search is the built-in hugpy_tools.search (see _local_search).
 from . import ids
 from .a_adapter import AAdapterClient
 from .cache_epochs import EpochManager, seal_receipt_bytes
@@ -91,6 +92,23 @@ def _parse_when(value):
         except (ValueError, TypeError):
             continue
     return None
+
+
+def _local_search():
+    """The steward's built-in local content search — ``hugpy_tools.search``.
+
+    hugpy-tools is a stdlib-only core dependency of hugpy-agent; this replaces
+    the old ``hugpy_agent.adapters`` ``local_search`` entry-point seam (which
+    returned ``None`` and degraded to the central HTTP finder when no provider
+    was installed). If hugpy-tools is somehow unavailable the search rungs still
+    degrade explicitly (return ``[]``) rather than crash a turn. Its
+    ``find_content`` is case-INSENSITIVE, so the both-case retries below are now
+    belt-and-suspenders, not a correctness requirement."""
+    try:
+        from hugpy_tools import search as _s
+    except Exception:
+        return None
+    return _s.provider()
 
 
 class BrokerServer:
@@ -306,10 +324,10 @@ class MctSession:
         tried in its given case and lowercased, because ``getPaths`` prefilters
         case-sensitively: a file containing ``/yt/foryou`` is invisible to a
         search for ``forYou`` unless both are tried."""
-        try:
-            from abstract_search.find_content import findContent
-        except ImportError:
-            return []  # extra not installed: degrade to the HTTP finder (§17)
+        prov = _local_search()
+        if prov is None:
+            return []  # hugpy_tools.search unavailable: degrade to HTTP finder (§17)
+        findContent = prov.find_content
         terms = [t for t in (query or "").replace("/", " ").split() if len(t) > 1]
         if not terms:
             return []
@@ -326,7 +344,8 @@ class MctSession:
                 for variant in dict.fromkeys((term, term.lower())):
                     try:
                         hits = findContent(directory=root.root_path, strings=[variant],
-                                           parse_lines=True, get_lines=True, **kw)
+                                           parse_lines=True, get_lines=True,
+                                           preset="noise", **kw)
                     except Exception:
                         continue  # one bad term never costs the whole search
                     for h in hits or []:
@@ -449,7 +468,10 @@ class MctSession:
         containing an excluded term is dropped even if it matched everything
         else. "Filter out X" has to mean gone, or A cannot trust the result to
         reason over."""
-        from abstract_search.find_content import findContent
+        prov = _local_search()
+        if prov is None:
+            return []  # hugpy_tools.search unavailable: degrade to other rungs
+        findContent = prov.find_content
 
         turn, _ = getattr(self, "_active_turn", ("", ""))
         alls = [str(t) for t in (spec.get("all") or []) if str(t).strip()]
@@ -508,7 +530,8 @@ class MctSession:
             for variant in dict.fromkeys((term, term.lower())):
                 try:
                     res = findContent(directory=root.root_path, strings=[variant],
-                                      parse_lines=True, get_lines=True, **kw)
+                                      parse_lines=True, get_lines=True,
+                                      preset="noise", **kw)
                 except Exception:
                     continue
                 for h in res or []:
@@ -524,12 +547,13 @@ class MctSession:
             itself, but enumerates candidate files through abstract-search's OWN
             filter machinery (get_file_filters/get_files_and_dirs with the same
             kw) so literal and regex rungs see the identical corpus."""
-            from abstract_search.filters import get_file_filters, get_files_and_dirs
-            from abstract_search.reader import read_any_file
+            get_file_filters = prov.get_file_filters
+            get_files_and_dirs = prov.get_files_and_dirs
+            read_any_file = prov.read_any_file
             found = {}
             try:
                 dirs_, cfg, _allowed, _inc, recursive = get_file_filters(
-                    root.root_path, **kw)
+                    root.root_path, preset="noise", **kw)
                 _, files = get_files_and_dirs(directory=dirs_, cfg=cfg,
                                               recursive=recursive)
             except Exception:
@@ -632,6 +656,16 @@ class MctSession:
         terms = [t for t in (query or "").lower().split() if t]
         if not terms:
             return []
+        # Record the brokered search itself even when an earlier rung (the
+        # central finder or abstract-search) supplies the hit.  The later
+        # legacy walk records peeks, but without this boundary event a search
+        # that finds a file before the walk is invisible in the access feed.
+        for root_name, root in self._roots.items():
+            self.server.access.record(
+                "B", "scan", f"{root_name}:{root.root_path}",
+                detail=f"query={query[:160]}", session=self.session_id,
+                turn=self._active_turn[0] if self._active_turn else "",
+                path=root.root_path)
         out = self._abstract_search_candidates(query, limit)
         if len(out) >= limit:
             return out[:limit]

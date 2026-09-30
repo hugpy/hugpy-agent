@@ -108,15 +108,28 @@ _ENV_KEYS = {
     "HUGPY_AGENT_NAME": "agent_name",
     "HUGPY_AGENT_CAPABILITIES": "agent_capabilities",
     "HUGPY_AGENT_STATE": "agent_state",
+    # Toolserver bridge (2026-09-25): the running abstract_toolserver's whole
+    # tool surface behind three category meta-tools, default ON.
+    "HUGPY_AGENT_TOOLSERVER": "toolserver",
+    "HUGPY_AGENT_TOOLSERVER_URL": "toolserver_url",
+    "HUGPY_AGENT_TOOLSERVER_TOKEN": "toolserver_token",
+    "HUGPY_AGENT_LOCUS": "toolserver_locus",
+    # Allowlist + registration mode for the shared toolserver client
+    # (hugpy_agent.toolserver_client): comma lists of tool names ('*' and
+    # 'vm_*' globs accepted); tools = meta (three ts_* tools) | flat.
+    "HUGPY_AGENT_TOOLSERVER_ALLOW": "toolserver_allow",
+    "HUGPY_AGENT_TOOLSERVER_DENY": "toolserver_deny",
+    "HUGPY_AGENT_TOOLSERVER_TOOLS": "toolserver_tools",
 }
 _INT_FIELDS = {"max_steps", "timeout", "max_tokens", "max_generations",
                "ask_timeout", "loop_guard_n", "observation_cap_chars",
                "sub_max_steps", "max_depth",
                "rag_k", "poll_interval"}
 _BOOL_FIELDS = {"no_think", "audit_verbose", "discord_mint", "rag_enabled",
-                "agent_node"}
+                "agent_node", "toolserver"}
 _LIST_FIELDS = {"tool_allow", "tool_deny",   # comma-separated in env/.env
-                "agent_capabilities", "brains"}
+                "agent_capabilities", "brains",
+                "toolserver_allow", "toolserver_deny"}
 # Attributes where an EXPLICIT empty value is meaningful (it disables the
 # feature) rather than "unset". Everywhere else an empty value is skipped.
 _EMPTY_DISABLES = {"audit_log"}
@@ -133,7 +146,10 @@ _SETTABLE = ("base", "api_key", "model", "model_2", "brains",
              "rag_enabled", "rag_k",
              "task_source", "task_queue", "poll_interval",
              "agent_central", "agent_node", "agent_name",
-             "agent_capabilities", "agent_state")
+             "agent_capabilities", "agent_state",
+             "toolserver", "toolserver_url", "toolserver_token",
+             "toolserver_locus", "toolserver_allow", "toolserver_deny",
+             "toolserver_tools")
 
 
 def _as_bool(value) -> bool | None:
@@ -272,6 +288,32 @@ class Config:
     agent_name: str = ""
     agent_capabilities: list = field(default_factory=list)
     agent_state: str = ""
+    # Toolserver bridge (2026-09-25). Default ON: when this runs and a base url
+    # resolves (the default always does) and a bounded probe of POST
+    # /ts/categories succeeds, the agent gains three category meta-tools
+    # (ts_categories/ts_list/ts_call) that reach the running abstract_toolserver
+    # — the messaging lane (comms_*, channel_*) plus everything else. An
+    # unreachable/unauthorized toolserver is stated once and the agent runs
+    # normally without them (errors-as-data). `toolserver` (HUGPY_AGENT_TOOLSERVER
+    # =0) opts out. `toolserver_url`/`toolserver_token` override the resolution
+    # chain (env TOOLSERVER_URL/…_TOKEN then the operator env files, with the
+    # disk-token safety rule); empty means "resolve". `toolserver_locus`
+    # (HUGPY_AGENT_LOCUS) is the agent's stable comms identity — empty derives it
+    # from agent_name, else the short hostname — so comms messages to/from the
+    # agent route. The token is a SECRET: env/.env only, never agent.toml.
+    toolserver: bool = True
+    toolserver_url: str = ""
+    toolserver_token: str = ""
+    toolserver_locus: str = ""
+    # Allowlist (toolserver_client.classify): readonly + mutating tools are on
+    # by default; PRIVILEGED ones (vm_*, vmpool_*, sys_*, browser_*,
+    # fs_write_file, db_query writes, oauth/session control) need an explicit
+    # entry here ('*' opens all). deny wins over allow. `toolserver_tools`:
+    # meta (default; ts_categories/ts_list/ts_call) | flat (every allowed tool
+    # registered as its own ToolSpec — native tool-calling models).
+    toolserver_allow: list = field(default_factory=list)
+    toolserver_deny: list = field(default_factory=list)
+    toolserver_tools: str = "meta"
     ctx_fallback: int = DEFAULT_CTX_FALLBACK
     sources: dict = field(default_factory=dict)  # attr -> where it came from (audit aid)
 

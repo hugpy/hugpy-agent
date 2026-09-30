@@ -12,6 +12,11 @@ import json
 import os
 import signal
 import sys
+import threading
+import time
+import urllib.request
+import webbrowser
+from pathlib import Path
 
 from ._paths import mct_repl_workspace, console_workspace
 
@@ -48,6 +53,13 @@ def _add_common(p: argparse.ArgumentParser, model: bool = True) -> None:
                    help="let the model think (disables /no_think suffix)")
     p.add_argument("-q", "--quiet", action="store_true",
                    help="only print the final report JSON")
+    # Toolserver bridge is default-ON (TOOLSERVER_URL + TOOLSERVER_OPERATOR_TOKEN
+    # resolve it); this run-scoped switch is the CLI spelling of
+    # HUGPY_AGENT_TOOLSERVER=0.
+    p.add_argument("--no-toolserver", dest="toolserver", action="store_false",
+                   default=None,
+                   help="do not attach the toolserver's tools "
+                        "(ts_categories/ts_list/ts_call) to this run")
 
 
 def _cfg(args) -> "Config":
@@ -70,6 +82,7 @@ def _cfg(args) -> "Config":
         "poll_interval": getattr(args, "poll_interval", None),
         "agent_node": getattr(args, "agent_node", None),
         "agent_central": getattr(args, "agent_central", None),
+        "toolserver": getattr(args, "toolserver", None),
     })
 
 
@@ -110,6 +123,11 @@ def _printer(quiet: bool):
                   % (a[0], a[1]), file=sys.stderr)
         elif kind == "policy":
             print("[policy] %s -> %s" % (a[0], a[1]), file=sys.stderr)
+        # toolserver bridge (default-on): ready / unavailable / disabled, with
+        # the real reason — stated once at startup so an absent surface is
+        # explicit rather than silent.
+        elif kind == "toolserver":
+            print("[toolserver] %s: %s" % (a[0], a[1]), file=sys.stderr)
         elif kind == "ask":
             print("[ask] %s -> operator: %s" % (a[0], a[1]), file=sys.stderr)
         elif kind == "audit_error":
@@ -250,13 +268,95 @@ def cmd_chat(args) -> int:
     return 0
 
 
+def _ensure_toolserver_async():
+    """Serve-startup hook: discover (or, with the server extra, start) the host's
+    ONE toolserver in the background — bounded, never blocks or fails startup."""
+    import threading
+
+    def _run():
+        try:
+            from .toolserver_client import ensure_toolserver
+            res = ensure_toolserver()
+            if res.get("url"):
+                print("hugpy-agent: toolserver %s (%s)" % (res["url"], res.get("source")),
+                      file=sys.stderr)
+        except Exception:
+            pass
+    threading.Thread(target=_run, name="ensure-toolserver", daemon=True).start()
+
+
 def cmd_serve(args) -> int:
-    """The daemon mode the systemd unit runs (P2.7). Graceful stop: the
+    """Run Hugpy's session serve by default, or its task daemon explicitly.
+
+    hugpy-agent serve is the peer of abstract-claude serve and abstract-gpt
+    serve: it owns durable Hugpy sessions over the local HTTP surface used by
+    the Station's Claude / GPT / Hugpy selector. The older task-polling daemon
+    remains available as serve --daemon.
+
+    Daemon mode's first SIGTERM/SIGINT lets the current task finish (the
     FIRST SIGTERM/SIGINT lets the current task finish (the journal stays
     consistent, the outcome still gets reported), then run() returns and we
     exit 0 — under Restart=on-failure the unit stays stopped. A second
     signal falls through to the default handler for a hard exit (every
     journal write is committed, so this is still safe)."""
+    if getattr(args, "console", False):
+        try:
+            from abstract_serve.serve_cli import main as serve_main
+        except ImportError as exc:
+            print("hugpy-agent serve --console requires `pip install hugpy-agent[serve]` (" + str(exc) + ")", file=sys.stderr)
+            return 2
+        argv = ["--host", args.host, "--port", str(args.console_port)]
+        if args.no_browser:
+            argv.append("--no-browser")
+        return serve_main(argv)
+    _ensure_toolserver_async()
+    session_service = not getattr(args, "daemon", False)
+    if session_service:
+        url = f"http://{args.host}:{args.port}"
+        def session_server_is_live():
+            try:
+                with urllib.request.urlopen(url + "/", timeout=0.8) as reply:
+                    return 200 <= reply.status < 300
+            except Exception:
+                return False
+
+        def surface_console():
+            print(f"Hugpy Serve console: {url}", flush=True)
+            try:
+                webbrowser.open(url, new=2)
+            except Exception:
+                pass
+
+        # A second `serve` means "take me to the service", not "fail trying
+        # to bind the same port".  Probe before requiring local profiles so a
+        # lightweight client install can join the already-running service.
+        if session_server_is_live():
+            if not getattr(args, "no_browser", False):
+                surface_console()
+            else:
+                print(f"Hugpy Serve console: {url}", flush=True)
+            return 0
+        from .service.http import main as serve_http
+        profiles = Path(args.profiles).expanduser() if args.profiles else (
+            Path("~/.config/hugpy-agent/profiles.json").expanduser())
+        if not profiles.is_file():
+            raise SystemExit("hugpy-agent serve needs --profiles PATH (or "
+                             "~/.config/hugpy-agent/profiles.json)")
+        if args.task_source or args.agent_node or args.max_cycles is not None:
+            raise SystemExit("Hugpy sessions and task polling must run as separate processes; "
+                             "use hugpy-agent serve --daemon for polling")
+        cfg = _cfg(args)
+        if not getattr(args, "no_browser", False):
+            def open_when_ready():
+                for _ in range(50):
+                    if session_server_is_live():
+                        surface_console()
+                        return
+                    time.sleep(0.1)
+            threading.Thread(target=open_when_ready, daemon=True).start()
+        return serve_http(["--profiles", str(profiles), "--state", args.state,
+                           "--host", args.host, "--port", str(args.port),
+                           "--workspace", cfg.workspace, "--policy", cfg.policy_mode]) or 0
     from .serve import Daemon
     cfg = _cfg(args)
     daemon = Daemon(cfg, on_event=_printer(args.quiet))
@@ -275,6 +375,24 @@ def cmd_serve(args) -> int:
     summary = daemon.run(max_cycles=args.max_cycles)
     print(json.dumps(summary))
     return 0
+
+
+def cmd_harness(args) -> int:
+    """Open the zero-configuration OpenCode terminal harness."""
+    console_args = argparse.Namespace(
+        base=getattr(args, "base", None), model=getattr(args, "model", None),
+        frontend="opencode", claude_code=False, qwen_code=False,
+        opencode=True, console_workspace=getattr(args, "workspace", None),
+        sync=True, offline=False, print_config=False,
+        all_models=getattr(args, "all_models", False), fleet_args=[],
+        allow_all=getattr(args, "allow_all", None),
+    )
+    return cmd_console(console_args)
+
+
+def cmd_tui(args) -> int:
+    from .tui import run
+    return run(args.serve, args.token, session=args.session, kind=args.kind)
 
 
 def cmd_eval(args) -> int:
@@ -345,7 +463,8 @@ def cmd_console(args) -> int:
             model=getattr(args, "model", None),
             print_config=args.print_config,
             frontend=frontend,
-            all_models=getattr(args, "all_models", False))
+            all_models=getattr(args, "all_models", False),
+            allow_all=getattr(args, "allow_all", None))
     except consolemod.ConsoleError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -366,12 +485,55 @@ def cmd_frontend(args) -> int:
                     os.environ.get("HUGPY_OPERATOR_TOKEN", ""), cfg.timeout)
     try:
         argv, env = frontends.prepare(spec, client, cfg.model)
+        # exec keeps this pid: the lease keeper watches it for the harness.
+        from . import session_signals
+        env[session_signals.ENV_PID] = str(os.getpid())
         frontends.configure(spec, env, cfg.model)
+        session_signals.start_lease_sidecar(cfg.base, cfg.api_key, spec["id"], env)
         os.execvpe(argv[0], argv, env)
     except FleetError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     return 0  # execvpe does not return on success
+
+
+ALLOW_ALL_HELP = ("start the harness with EVERY permission/approval bypassed, "
+                  "for this launch only, via its native mechanism (opencode "
+                  "--auto + OPENCODE_PERMISSION; claude "
+                  "--dangerously-skip-permissions; qwen/hermes --yolo; aider "
+                  "--yes-always). Shared generated configs are not changed. "
+                  "Default: HUGPY_<HARNESS>_ALLOW_ALL / HUGPY_HARNESS_ALLOW_ALL (0)")
+SMALL_MODEL_HELP = ("small/title model for the harness (default "
+                    "hugpy/Qwen2.5-Coder-1.5B-Instruct-GGUF; 'off' = harness "
+                    "default). Env: HUGPY_<HARNESS>_SMALL_MODEL / "
+                    "HUGPY_HARNESS_SMALL_MODEL")
+
+
+def _add_allow_all(p) -> None:
+    """The shared harness-settings options (harness_settings table)."""
+    p.add_argument("--allow-all", "--yolo", dest="allow_all",
+                   action="store_true", default=None, help=ALLOW_ALL_HELP)
+    p.add_argument("--small-model", dest="small_model", default=None,
+                   help=SMALL_MODEL_HELP)
+
+
+def _export_harness_settings(args) -> None:
+    """Flags -> the generic HUGPY_HARNESS_* env, so they survive the `console`
+    re-exec the OpenCode/Claude Code/Qwen Code adapters go through."""
+    from . import harness_settings as hs
+    if getattr(args, "allow_all", None):
+        os.environ[hs.ALLOW_ALL_ENV] = "1"
+    small = getattr(args, "small_model", None)
+    if isinstance(small, str):
+        os.environ[hs.SMALL_MODEL_ENV] = small
+
+
+def cmd_launch(args) -> int:
+    """`hugpy-agent launch` — start a terminal harness; OpenCode by default.
+    Same path as `hugpy-agent --opencode` (cmd_frontend), harness selectable
+    with --harness NAME or a --NAME shorthand."""
+    args.frontend = args.harness or "opencode"
+    return cmd_frontend(args)
 
 
 _DIRECT_HARNESSES = {
@@ -396,11 +558,20 @@ def _direct_harness_argv(argv):
     return argv
 
 
+def _apply_mct_toolserver_flag(args) -> None:
+    """MCT's A is a `claude -p` child; its toolserver grant is decided in
+    mct.claude_adapter from the process env, so --no-toolserver is spelled as
+    HUGPY_AGENT_TOOLSERVER=0 for the whole MCT process tree."""
+    if getattr(args, "toolserver", None) is False:
+        os.environ["HUGPY_AGENT_TOOLSERVER"] = "0"
+
+
 def cmd_mct(args) -> int:
     """`hugpy-agent mct` — launch the Mediated Context Terminal (the mct
     subpackage's pointer-mediated REPL): a confined Claude (A) answers only
     through B's curated context. Equivalent to `python -m hugpy_agent.mct`."""
     from .mct.repl import run
+    _apply_mct_toolserver_flag(args)
     return run(args.workspace, model=args.model, use_model=not args.no_model,
                allow_fs_requests=args.allow_fs_requests,
                quiet=getattr(args, "quiet", False),
@@ -420,6 +591,7 @@ def cmd_mct_serve(args) -> int:
 
     from .mct.openai_shim import serve
 
+    _apply_mct_toolserver_flag(args)
     httpd, service = serve(args.workspace, host=args.host, port=args.port,
                            model=args.model, use_model=not args.no_model,
                            native_tools=args.native_tools)
@@ -571,8 +743,16 @@ def main(argv=None) -> int:
     argv = _direct_harness_argv(argv)
     ap = argparse.ArgumentParser(
         prog="hugpy-agent",
-        description="Portable agent runtime on the hugpy fleet. Direct harnesses: "
-                    "--opencode, --claude-code, --qwen-code, --hermes, --aider")
+        description="Portable agent runtime on the hugpy fleet. `hugpy-agent "
+                    "launch` starts OpenCode (default) or --harness "
+                    "claude-code|qwen-code|hermes|aider; direct aliases: "
+                    "--opencode, --claude-code, --qwen-code, --hermes, --aider. "
+                    "Harness settings on every launcher: --allow-all/--yolo "
+                    "(bypass permissions for that launch), --small-model "
+                    "(title model, default hugpy/Qwen2.5-Coder-1.5B-Instruct-GGUF)")
+    from . import __version__ as _ha_version
+    ap.add_argument("--version", action="version",
+                    version=f"hugpy-agent {_ha_version}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     # Internal target for the leading --{harness} aliases above. Keeping one
@@ -583,7 +763,24 @@ def main(argv=None) -> int:
     p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
     p.add_argument("--model", help="fleet model (default env HUGPY_MODEL)")
     p.add_argument("--workspace", help="workspace used for config resolution")
+    _add_allow_all(p)
     p.set_defaults(fn=cmd_frontend)
+
+    p = sub.add_parser("launch", help="start a terminal harness (OpenCode by "
+                                      "default) against the fleet")
+    hsel = p.add_mutually_exclusive_group()
+    hsel.add_argument("--harness", choices=sorted(set(_DIRECT_HARNESSES.values())),
+                      default=None, help="harness to start (default opencode)")
+    for flag, target in _DIRECT_HARNESSES.items():
+        hsel.add_argument(flag, dest="harness", action="store_const",
+                          const=target, help=argparse.SUPPRESS
+                          if flag != "--opencode" else
+                          "OpenCode (the default; accepted as an alias)")
+    p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
+    p.add_argument("--model", help="fleet model (default env HUGPY_MODEL)")
+    p.add_argument("--workspace", help="workspace used for config resolution")
+    _add_allow_all(p)
+    p.set_defaults(fn=cmd_launch)
 
     p = sub.add_parser("run", help="run one task to completion")
     p.add_argument("task")
@@ -691,9 +888,19 @@ def main(argv=None) -> int:
                    help="list EVERY non-blocked fleet model in the picker, not "
                         "just chat-drivable ones (also HUGPY_CONSOLE_ALL_MODELS=1). "
                         "opencode only; a non-chat model selected here will fail")
+    _add_allow_all(p)
     p.set_defaults(fn=cmd_console)
     p.add_argument("fleet_args", nargs=argparse.REMAINDER,
                    help="status | workers | models | inspect MODEL | queue | metrics | plan | call | request | exec | repl")
+
+    p = sub.add_parser("harness", help="open the provider-neutral OpenCode terminal")
+    p.add_argument("--base", help="fleet base URL (default env HUGPY_BASE or dev)")
+    p.add_argument("--model", help="model id to open with")
+    p.add_argument("--workspace", help="console dir holding opencode.json")
+    p.add_argument("--all-models", action="store_true",
+                   help="include every non-blocked fleet model in OpenCode")
+    _add_allow_all(p)
+    p.set_defaults(fn=cmd_harness)
 
     p = sub.add_parser("mct", help="Mediated Context Terminal — pointer-mediated "
                                    "chat where a confined Claude answers only "
@@ -718,6 +925,10 @@ def main(argv=None) -> int:
                    help="Allow Frontier filesystem requests (Steward trigger): "
                         "a missed pull may be brokered by B against granted "
                         "roots — through B, never direct filesystem access")
+    p.add_argument("--no-toolserver", dest="toolserver", action="store_false",
+                   default=None,
+                   help="do not grant A the toolserver's MCP tools "
+                        "(default: granted when TOOLSERVER_URL + token resolve)")
     p.set_defaults(fn=cmd_mct)
 
     p = sub.add_parser("mct-serve", help="serve MCT as an OpenAI-compatible "
@@ -736,6 +947,9 @@ def main(argv=None) -> int:
     p.add_argument("--native-tools", dest="native_tools", default="off_host",
                    choices=["none", "off_host", "all"],
                    help="A's native Claude Code tools (see `hugpy-agent mct -h`)")
+    p.add_argument("--no-toolserver", dest="toolserver", action="store_false",
+                   default=None,
+                   help="do not grant A the toolserver's MCP tools")
     p.add_argument("--launch", action="store_true",
                    help="also write opencode.json and exec OpenCode against it")
     p.add_argument("--console-workspace", dest="console_workspace",
@@ -768,9 +982,24 @@ def main(argv=None) -> int:
                    help="revoke a granted directory by name (repeatable)")
     p.set_defaults(fn=cmd_mct_fs)
 
-    p = sub.add_parser("serve", help="daemon: poll the task source and run "
-                                     "each task (what the systemd unit runs)")
+    p = sub.add_parser("serve", help="serve durable Hugpy sessions for the Station "
+                                     "(peer of abstract-claude/gpt serve)")
     _add_common(p)
+    p.add_argument("--daemon", action="store_true",
+                   help="run the legacy task-polling daemon instead of the session service")
+    p.add_argument("--http", action="store_true",
+                   help=argparse.SUPPRESS)  # accepted for compatibility; sessions are now default
+    p.add_argument("--profiles", help="JSON model profile configuration "
+                   "(default: ~/.config/hugpy-agent/profiles.json)")
+    p.add_argument("--state", default="~/.local/state/hugpy-agent-serve")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=9126)
+    p.add_argument("--no-browser", action="store_true",
+                   help="do not open the session-service URL when joining or starting it")
+    p.add_argument("--console", action="store_true",
+                   help="run the shared provider-neutral Serve console")
+    p.add_argument("--console-port", type=int, default=9124,
+                   help="port for the shared Serve console (with --console)")
     p.add_argument("--task-source", dest="task_source",
                    choices=["discord-inbox", "queue"],
                    help="task source (default env HUGPY_TASK_SOURCE; none "
@@ -795,8 +1024,100 @@ def main(argv=None) -> int:
                         "run until stopped)")
     p.set_defaults(fn=cmd_serve)
 
+    p = sub.add_parser("tui", help="terminal client for abstract-claude serve / hugpy-agent serve")
+    p.add_argument("--serve", help="serve URL (default: $HUGPY_AGENT_SERVE, then 127.0.0.1:9124/9125/9126)")
+    p.add_argument("--token", help="serve bearer token (default HUGPY_SERVE_TOKEN)")
+    p.add_argument("--session", help="session to open: cs-id, native uuid, or role (keeper/chat/worker/local)")
+    p.add_argument("--kind", choices=("auto", "abstract-claude", "hugpy"), default="auto",
+                   help="serve kind; auto detects from GET /api/state (default auto)")
+    p.set_defaults(fn=cmd_tui)
+
+    p = sub.add_parser("tools", help="toolserver client: list | call NAME | health | ensure "
+                                     "(endpoint via abstract_toolserver discovery)")
+    p.add_argument("action", choices=["list", "call", "health", "status", "ensure"])
+    p.add_argument("name", nargs="?", help="tool name for `call`")
+    p.add_argument("--json", dest="json_args", default=None,
+                   help="JSON object of arguments for `call` (default {})")
+    p.add_argument("--url", help="toolserver base URL (default: HUGPY_TOOLSERVER_URL / "
+                                 "TOOLSERVER_URL, else the toolserver advertised on this host)")
+    p.add_argument("--token", help="operator token (default env TOOLSERVER_OPERATOR_TOKEN)")
+    p.add_argument("--timeout", type=float, default=None, help="call timeout in seconds")
+    p.add_argument("--all", action="store_true",
+                   help="list: include privileged (allowlist-off) tools")
+    p.add_argument("--allow-privileged", dest="allow_privileged", action="store_true",
+                   help="call: bypass the allowlist for this one invocation")
+    p.add_argument("--json-out", dest="json_out", action="store_true",
+                   help="machine-readable output (list/health)")
+    p.set_defaults(fn=cmd_tools)
+
     args = ap.parse_args(argv)
+    _export_harness_settings(args)
     return args.fn(args)
+
+
+def cmd_tools(args) -> int:
+    """`hugpy-agent tools list|call NAME [--json ARGS]|health` — the shared
+    toolserver client for humans and tests. Exit: 0 ok, 1 failure, 2 auth."""
+    from .toolserver_client import (ToolserverClient, ToolserverAuthError, ToolserverError,
+                                    ensure_toolserver)
+    if args.action == "ensure":        # first-run hook: find (or start) the host's toolserver
+        res = ensure_toolserver()
+        print(json.dumps(res, indent=2, default=str) if args.json_out else
+              (res.get("url") or res.get("reason") or res.get("source")))
+        return 0 if res.get("url") else 1
+    client = ToolserverClient(args.url, args.token,
+                              timeout=args.timeout or 120.0)
+    try:
+        if args.action in ("health", "status"):
+            st = client.health() if args.action == "health" else client.status()
+            print(json.dumps(st, indent=2) if args.json_out else
+                  "%s  url=%s  auth=%s  tools=%s  version=%s  latency=%sms%s"
+                  % ("OK" if st["ok"] else "FAIL", st["url"], st["auth"],
+                     st["tool_count"], st.get("version"), st.get("latency_ms"),
+                     ("\n  " + st["error"]) if st.get("error") else ""))
+            return 0 if st["ok"] else (2 if st["auth"] in ("missing", "rejected") else 1)
+        if args.action == "list":
+            tools = client.list_tools()
+            if args.json_out:
+                print(json.dumps([dict(t, **{"class": client.classify(t["name"]),
+                                             "allowed": client.allowed(t["name"])})
+                                  for t in tools if args.all or client.allowed(t["name"])],
+                                 indent=2))
+                return 0
+            shown = 0
+            for t in tools:
+                ok = client.allowed(t["name"])
+                if not ok and not args.all:
+                    continue
+                shown += 1
+                print("%-28s %-10s %s" % (t["name"], client.classify(t["name"]),
+                                          (t["description"] or "").split("\n")[0][:90]))
+            hidden = len(tools) - shown
+            print("# %d tools%s @ %s" % (shown, (" (+%d privileged, --all to show)" % hidden) if hidden else "",
+                                        client.url), file=sys.stderr)
+            return 0
+        # call
+        if not args.name:
+            print("tools call: a tool NAME is required", file=sys.stderr)
+            return 1
+        try:
+            call_args = json.loads(args.json_args) if args.json_args else {}
+        except ValueError as exc:
+            print("tools call: --json must be a JSON object: %s" % exc, file=sys.stderr)
+            return 1
+        if not isinstance(call_args, dict):
+            print("tools call: --json must be a JSON object", file=sys.stderr)
+            return 1
+        out = client.call(args.name, call_args, timeout=args.timeout,
+                          enforce_allowlist=not args.allow_privileged)
+        print(json.dumps(out, indent=2, default=str))
+        return 1 if isinstance(out, dict) and out.get("error") else 0
+    except ToolserverAuthError as exc:
+        print("tools: %s" % exc, file=sys.stderr)
+        return 2
+    except ToolserverError as exc:
+        print("tools: %s" % exc, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -20,8 +20,8 @@ made model-invokable so ANY keeper working through hugpy-agent gets it natively:
 Doctrine (inherited from the session's measurements, not aspiration):
   * Mechanical first, model second. Timestamp-masked duplicate collapse turns
     an 873KB journal into ~15 unique lines; a model pass only runs on residue
-    still too big to hand over, and its think-spill is stripped by the
-    abstract_hugpy_dev no-think seam when present (regex fallback otherwise).
+    still too big to hand over, and its think-spill is stripped by a local,
+    dependency-free no-think seam (regex).
   * Zero information loss. Every original byte is spooled under the workspace
     before compression; every digest names its spool path.
   * Errors as data. Every failure returns as a string the model can act on.
@@ -63,13 +63,11 @@ INPUT ({nchars} chars{trunc}):
 
 
 def _strip_think(s: str) -> str:
-    try:
-        from abstract_hugpy_dev.utils.no_think import strip_think
-        return strip_think(s)[0].strip()          # (text, reasoning) tuple
-    except Exception:
-        s = re.sub(r"<think>.*?</think>", "", s, flags=re.S | re.I)
-        s = re.sub(r"<think>.*", "", s, flags=re.S | re.I)
-        return s.strip()
+    # Local, dependency-free no-think seam: drop <think>…</think> blocks and any
+    # dangling unterminated <think> tail (was the abstract_hugpy_dev fallback).
+    s = re.sub(r"<think>.*?</think>", "", s, flags=re.S | re.I)
+    s = re.sub(r"<think>.*", "", s, flags=re.S | re.I)
+    return s.strip()
 
 
 def _collapse(text: str) -> str:
@@ -127,11 +125,7 @@ class LeanTools:
         trunc = (f", last {MAX_MODEL_CHARS} of {len(text)}"
                  if len(text) > MAX_MODEL_CHARS else "")
         prompt = DIGEST_PROMPT.format(nchars=len(text), trunc=trunc, body=body)
-        try:
-            from abstract_hugpy_dev.utils.no_think import with_no_think
-            prompt = with_no_think(prompt)
-        except Exception:
-            prompt += " /no_think"
+        prompt += " /no_think"   # local no-think seam (was abstract_hugpy_dev)
         try:
             out = self.gw.api_json("/api/prompt", method="POST", payload={
                 "task": "text-generation", "model_key": DIGEST_MODEL,

@@ -1,0 +1,16 @@
+[Unit]
+Description=Hugpy Agent provider-neutral sessions
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/hugpy-agent/serve.env
+ExecStart=%h/.local/bin/hugpy-agent-serve --profiles %h/.config/hugpy-agent/profiles.json --workspace %h/hugpy-workspace
+Restart=on-failure
+RestartSec=3
+UMask=0077
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

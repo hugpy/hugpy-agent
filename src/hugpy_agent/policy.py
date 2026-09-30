@@ -33,6 +33,23 @@ DENY = "deny"
 MODES = ("readonly", "ask", "auto")
 
 
+def effective_risk(spec: ToolSpec, args: dict) -> str:
+    """The risk class for THIS call. Most tools have a static `risk_class`; a
+    DISPATCHING tool (ts_call) carries a `dynamic_risk(args)` resolver that
+    classifies by the target tool it was asked to invoke, so the gate sees what
+    the call actually does rather than a fail-closed placeholder. A resolver
+    that raises or returns falsy falls back to the static class."""
+    fn = getattr(spec, "dynamic_risk", None)
+    if fn is not None:
+        try:
+            risk = fn(args or {})
+        except Exception:
+            risk = None
+        if risk:
+            return risk
+    return spec.risk_class
+
+
 def decide(mode: str, spec: ToolSpec, args: dict,
            allow: list | None = None, deny: list | None = None) -> str:
     """Decide `allow` | `ask` | `deny` for one tool call.
@@ -51,8 +68,10 @@ def decide(mode: str, spec: ToolSpec, args: dict,
         mode = "ask"                       # unknown mode: fail closed
     # Not provably readonly => unsafe. Keyed off BOTH the risk-class constant
     # and UNSAFE_TO_RERUN so a future class added to one set but not the
-    # other still fails closed.
-    unsafe = spec.risk_class in UNSAFE_TO_RERUN or spec.risk_class != RISK_READONLY
+    # other still fails closed. `effective_risk` lets a dispatching tool
+    # (ts_call) be classed by its target rather than a placeholder.
+    risk = effective_risk(spec, args)
+    unsafe = risk in UNSAFE_TO_RERUN or risk != RISK_READONLY
 
     if mode == "auto":
         return ALLOW

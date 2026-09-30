@@ -31,7 +31,7 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(env["OPENAI_BASE_URL"], "http://localhost:7002/v1")
 
     def test_aider_all_model_roles_stay_on_fleet(self):
-        argv, env = self.prepare("aider")
+        argv, env = self.prepare("aider", {"HUGPY_AIDER_SMALL_MODEL": "off"})
         for flag in ("--model", "--weak-model", "--editor-model"):
             self.assertEqual(argv[argv.index(flag) + 1], "openai/Org~Model")
         self.assertEqual(env["OPENAI_API_BASE"], "http://localhost:7002/v1")
@@ -103,6 +103,62 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(prepare.call_args.args[0]["id"], "aider")
         configure.assert_called_once()
         execute.assert_called_once_with(prepared[0][0], *prepared)
+
+    def test_harness_flags_parse_on_every_launcher(self):
+        seen = []
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(cli, "cmd_console", side_effect=lambda a: seen.append(a) or 0), \
+             patch.object(cli, "cmd_harness", side_effect=lambda a: seen.append(a) or 0), \
+             patch.object(cli, "cmd_frontend", side_effect=lambda a: seen.append(a) or 0):
+            cli.main(["console", "--opencode", "--allow-all"])
+            cli.main(["console", "--opencode", "--yolo"])
+            cli.main(["harness", "--allow-all", "--small-model", "off"])
+            cli.main(["--opencode", "--allow-all"])
+            cli.main(["launch", "--yolo"])
+            os.environ.pop("HUGPY_HARNESS_ALLOW_ALL", None)
+            cli.main(["console", "--opencode"])
+            self.assertIsNone(os.environ.get("HUGPY_HARNESS_ALLOW_ALL"))
+            self.assertEqual(os.environ.get("HUGPY_HARNESS_SMALL_MODEL"), "off")
+        self.assertEqual([a.allow_all for a in seen],
+                         [True, True, True, True, True, None])
+
+    def test_allow_all_flag_exports_env_for_the_console_reexec(self):
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(cli, "cmd_frontend", return_value=0):
+            os.environ.pop("HUGPY_HARNESS_ALLOW_ALL", None)
+            cli.main(["--opencode", "--allow-all"])
+            self.assertEqual(os.environ.get("HUGPY_HARNESS_ALLOW_ALL"), "1")
+
+    def test_launch_defaults_to_opencode_and_selects_others(self):
+        seen = []
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(cli, "cmd_frontend", side_effect=lambda a: seen.append(a.frontend) or 0):
+            cli.main(["launch"])
+            cli.main(["launch", "--opencode"])
+            cli.main(["launch", "--harness", "claude-code"])
+            cli.main(["launch", "--hermes"])
+            cli.main(["launch", "--qwen-code", "--model", "m"])
+            cli.main(["launch", "--aider"])
+        self.assertEqual(seen, ["opencode", "opencode", "claude-code",
+                                "hermes", "qwen-code", "aider"])
+
+    def test_allow_all_in_help(self):
+        import io, contextlib
+        for cmd in (["console", "--help"], ["launch", "--help"]):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+                cli.main(cmd)
+            self.assertIn("--allow-all", buf.getvalue())
+            self.assertIn("--small-model", buf.getvalue())
+
+    def test_harness_selects_opencode_console(self):
+        args = Mock(base="https://fleet", model="m", workspace="/tmp/c")
+        with patch.object(cli, "cmd_console", return_value=7) as console_cmd:
+            self.assertEqual(cli.cmd_harness(args), 7)
+        launched = console_cmd.call_args.args[0]
+        self.assertEqual(launched.frontend, "opencode")
+        self.assertTrue(launched.opencode)
+        self.assertEqual(launched.console_workspace, "/tmp/c")
 
     def test_frontend_first_selects_fleet_model_then_returns(self):
         ui = tui.Console(Mock(), self.client)
