@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 from . import console
+from . import harness_settings as hs
 from .fleet_console import FleetError
 
 
@@ -87,10 +88,15 @@ def prepare(spec, client, model, environ=None):
         # provider explicitly selects Chat Completions instead.
         env["HUGPY_HERMES_API_KEY"] = client.key or "hugpy-open-fleet"
         argv = [binary, "chat", "--provider", "custom:hugpy", "--model", model]
+        argv += _final_allow_all("hermes", env)
     elif spec["id"] == "aider":
         chosen = "openai/" + model
-        # Keep auxiliary/architect requests on the same fleet model too.
-        argv = [binary, "--model", chosen, "--weak-model", chosen, "--editor-model", chosen]
+        # Architect/editor stay on the chosen fleet model; the WEAK model
+        # (commit messages, history summaries) is the harness small model.
+        small = hs.small_model("aider", env)
+        weak = "openai/" + small if small else chosen
+        argv = [binary, "--model", chosen, "--weak-model", weak, "--editor-model", chosen]
+        argv += _final_allow_all("aider", env)
     elif spec["id"] in ("claude-code", "qwen-code", "opencode"):
         # Reuse the existing protocol/config adapters. Explicit /v1 avoids
         # their public-site bare-origin normalization on direct central URLs.
@@ -104,7 +110,19 @@ def prepare(spec, client, model, environ=None):
                 "--frontend", spec["id"], "--model", model]
     else:
         raise FleetError("No fleet adapter for " + spec["id"])
+    hs.harness_env(spec["id"], env)
     return argv, env
+
+
+def _final_allow_all(harness, env):
+    """allow_all argv for a harness exec'd DIRECTLY from here (no console
+    re-exec): resolve, announce, then scrub the control vars from the child."""
+    argv_add, env_add = hs.allow_all_spec(harness, env)
+    hs.scrub(env)
+    if argv_add:
+        print(hs.banner(harness), file=sys.stderr)
+        env.update(env_add)
+    return argv_add
 
 
 def configure(spec, env, model, root=None):
@@ -124,6 +142,11 @@ def configure(spec, env, model, root=None):
         "model": {"provider": "custom:hugpy", "default": model, "api_mode": "chat_completions"},
         "auxiliary": {task: {"provider": "main"} for task in ("compression", "vision", "session_naming")},
     }
+    small = hs.small_model("hermes", env)
+    if small:
+        # Hermes 0.21.5 names titles `auxiliary.title_generation`.
+        config["auxiliary"]["title_generation"] = {"provider": "custom:hugpy",
+                                                   "model": small}
     with open(os.path.join(profile, "config.yaml"), "x", encoding="utf-8") as output:
         json.dump(config, output, indent=2)
     env["HERMES_HOME"] = profile
