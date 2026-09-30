@@ -732,6 +732,9 @@ def main(argv=None) -> int:
                     "Harness settings on every launcher: --allow-all/--yolo "
                     "(bypass permissions for that launch), --small-model "
                     "(title model, default hugpy/Qwen2.5-Coder-1.5B-Instruct-GGUF)")
+    from . import __version__ as _ha_version
+    ap.add_argument("--version", action="version",
+                    version=f"hugpy-agent {_ha_version}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     # Internal target for the leading --{harness} aliases above. Keeping one
