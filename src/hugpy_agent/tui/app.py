@@ -25,13 +25,15 @@ HELP = [
     "Enter send · \\+Enter / Alt+Enter newline · Up/Down history (single line)",
     "Ctrl-C clear composer / interrupt / quit · Ctrl-X interrupt · Ctrl-Q quit",
     "Tab / Shift-Tab next / previous role · Ctrl-G session picker · Ctrl-P model picker",
-    "F2 focus transcript <-> composer · Up/Down select block · Enter/Space expand card",
+    "F2 focus transcript <-> composer · Up/Down select block · Enter/Space/click expand card",
+    "Tool calls: ▸ ⚒ collapsed call (✓ ok ✗ error … running) · ▸ ⚙ N calls = consecutive calls",
+    "  Enter/Space/click opens a chip or call · Ctrl-O (or a, transcript focus) toggle all",
     "PgUp/PgDn, Ctrl-U/Ctrl-D scroll · End follow tail · Ctrl-T expand latest tool card",
     "Ctrl-K queue · r (transcript focus) retry / un-hold · Ctrl-A reopen approval · Ctrl-L redraw",
     "Slash: /model /session <id> /queue /retry /expand [n] /status /tools /help /quit",
 ]
 CTRL = {name: ord(ch) - 64 for name, ch in {"A": "A", "C": "C", "D": "D", "G": "G", "K": "K", "L": "L",
-                                              "P": "P", "Q": "Q", "T": "T", "U": "U", "X": "X"}.items()}
+                                              "O": "O", "P": "P", "Q": "Q", "T": "T", "U": "U", "X": "X"}.items()}
 
 
 def toolserver_probe(explicit=None):
@@ -78,6 +80,7 @@ class App:
         self.tools_status, self.tools_list = toolserver_probe(toolserver_status)
         self.poll_error = ""
         self.last_lines = (0, 0)
+        self.hits = {}                  # screen row -> transcript target (mouse clicks)
         self.now = time.monotonic
 
     # -- thread -> main loop ---------------------------------------------------
@@ -422,6 +425,8 @@ class App:
                 self.composer.insert(key)
             elif key == " ":
                 self.dispatch({"type": "expand"})
+            elif key == "a":
+                self.dispatch({"type": "expand_all"})
             elif key == "r":
                 self.retry()
             return None
@@ -464,6 +469,10 @@ class App:
             self.pick_session()
         elif key == CTRL["A"]:
             self.dispatch({"type": "approval_shown", "open": True})
+        elif key == CTRL["O"]:
+            self.dispatch({"type": "expand_all"})
+        elif key == getattr(curses, "KEY_MOUSE", None):
+            self.click()
         elif key == CTRL["T"]:
             self.dispatch({"type": "expand", "index": None if m.focus == "composer" else m.selected})
         elif key == CTRL["L"]:
@@ -512,9 +521,22 @@ class App:
                 pass
         elif m.focus == "transcript" and key == ord(" "):
             self.dispatch({"type": "expand"})
+        elif m.focus == "transcript" and key == ord("a"):
+            self.dispatch({"type": "expand_all"})
         elif m.focus == "transcript" and key == ord("r"):
             self.retry()
         return None
+
+    def click(self):
+        """Left click on a transcript row toggles that call / chip (serve parity)."""
+        try:
+            _, _x, y, _, bstate = curses.getmouse()
+        except curses.error:
+            return
+        target = self.hits.get(y)
+        if target is None or not bstate & curses.BUTTON1_CLICKED:
+            return
+        self.dispatch({"type": "expand", "index": target, "select": True})
 
     def page_rows(self):
         h, w = self.screen.getmaxyx()
@@ -541,7 +563,9 @@ class App:
         rects = layout.compute(h, w, len(rows))
         panels.draw_header(scr, m, rects.header, self.theme, folded=rects.narrow)
         panels.draw_sidebar(scr, m, rects.sidebar, self.theme)
-        self.last_lines = transcript.draw_transcript(scr, m, rects.transcript, self.theme, wide=rects.wide)
+        self.hits = {}
+        self.last_lines = transcript.draw_transcript(scr, m, rects.transcript, self.theme, wide=rects.wide,
+                                                     hits=self.hits)
         cy, cx = cv.draw_composer(scr, self.composer, rects.composer, self.theme)
         panels.draw_status(scr, m, rects.status, self.theme, self.now())
         try:
@@ -561,6 +585,11 @@ class App:
             curses.raw()          # Ctrl-C / Ctrl-Q are keys (§3.1), not SIGINT / XOFF
         except curses.error:
             pass
+        if os.environ.get("HUGPY_TUI_MOUSE", "1") != "0":
+            try:                  # click toggles tool calls; Shift+drag still selects text
+                curses.mousemask(curses.BUTTON1_CLICKED)
+            except (curses.error, AttributeError):
+                pass
         h, w = self.screen.getmaxyx()
         self.dispatch({"type": "resize", "h": h, "w": w})
         self.start_poller()

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from ..serve_client.base import Approval, Usage
+from . import toolcalls as tc
 
 STALE_RECEIPT_S = 30
 APPROVAL_TTL_S = 300          # hugpy-agent times an unanswered approval out after 300 s
@@ -45,6 +46,7 @@ class Lane:
     turn_text: bool = False       # assistant text streamed since the last user event
     scroll: int = -1              # -1 follows the tail; else first visible line
     expanded: set = field(default_factory=set)
+    groups_open: set = field(default_factory=set)   # start index of opened ⚙ call chips
     rebaseline: bool = False      # App must reload from cursor "0"
 
 
@@ -109,7 +111,8 @@ def _with_lane(m, sid, lane):
 
 def _copy_lane(m, sid):
     lane = m.lanes.get(sid) or Lane()
-    return replace(lane, blocks=list(lane.blocks), seen=set(lane.seen), expanded=set(lane.expanded))
+    return replace(lane, blocks=list(lane.blocks), seen=set(lane.seen), expanded=set(lane.expanded),
+                   groups_open=set(lane.groups_open))
 
 
 def _close_streaming(blocks):
@@ -203,16 +206,23 @@ def _apply_event(m, lane, ev, now, stale=False):
                             meta=dict(ev.meta)))
         return m
     if k == "tool_result":
-        i = _last_open_card(blocks)
         if ev.meta.get("delta"):
+            i = _last_open_card(blocks)
             if i is not None:
                 blocks[i] = replace(blocks[i], output=blocks[i].output + ev.text)
             return m
+        # Attach to ITS call (tool_use id, else oldest open call) — never a
+        # separate message; the card line gains status + duration in place.
+        i = tc.match_result(blocks, ev.meta.get("tool_id", ""), ev.meta.get("parent", ""))
         if i is None:
             blocks.append(Block("tool", ev.name or "result", name=ev.name, output=ev.detail or ev.text,
-                                ok=ev.ok, ts=ev.ts, seq=ev.seq))
+                                ok=ev.ok, ts=ev.ts, seq=ev.seq, meta=dict(ev.meta)))
         else:
-            blocks[i] = replace(blocks[i], output=ev.detail or ev.text, ok=ev.ok)
+            card = blocks[i]
+            meta = dict(card.meta)
+            if card.ts and ev.ts and ev.ts >= card.ts:
+                meta["dur"] = ev.ts - card.ts
+            blocks[i] = replace(card, output=ev.detail or ev.text, ok=ev.ok, meta=meta)
         return m
     if k in ("approval", "question"):
         if any(a.request_id == ev.request_id for a in m.approvals):
@@ -244,6 +254,9 @@ def _apply_event(m, lane, ev, now, stale=False):
         return m
     if k == "done":
         _close_streaming(blocks)
+        for i, b in enumerate(blocks):                  # calls the turn never answered
+            if b.kind == "tool" and b.ok is None and not b.meta.get("orphan"):
+                blocks[i] = replace(b, meta=dict(b.meta, orphan=True))
         meta = ev.meta
         if ev.text and not lane.turn_text:
             blocks.append(Block("assistant", ev.text, ts=ev.ts, seq=ev.seq, ok=ev.ok))
@@ -408,24 +421,64 @@ def _scroll(m, a):
     return _with_lane(m, m.active_sid, lane)
 
 
+def visible_targets(m):
+    """Selectable rows in draw order: block indices and ⚙ chip targets (< -1)."""
+    lane = m.lane()
+    return tc.targets(tc.layout(lane.blocks, lane.groups_open, lane.expanded, m.busy))
+
+
 def _move(m, a):
-    n = len(m.blocks)
-    if not n:
+    order = visible_targets(m)
+    if not order:
         return m
-    cur = m.selected if m.selected >= 0 else n - 1
-    return replace(m, selected=max(0, min(n - 1, cur + a["delta"])))
+    pos = order.index(m.selected) if m.selected in order else len(order) - 1
+    return replace(m, selected=order[max(0, min(len(order) - 1, pos + a["delta"]))])
+
+
+def _hidden_in_group(lane, index):
+    """Start of the collapsed chip that hides block `index`, else None."""
+    for start, members in tc.runs(lane.blocks):
+        if index in members and len(members) > 1 and start not in lane.groups_open:
+            return start
+    return None
 
 
 def _expand(m, a):
     lane = _copy_lane(m, m.active_sid)
     index = a.get("index")
     if index is None:
-        index = m.selected if (m.focus == "transcript" and m.selected >= 0) else _latest_card(lane.blocks)
-    if index is None or not (0 <= index < len(lane.blocks)):
+        index = m.selected if (m.focus == "transcript" and m.selected != -1) else _latest_card(lane.blocks)
+    if index is None:
         return m
-    if lane.blocks[index].kind not in CARD_KINDS:
+    if a.get("select"):
+        m = replace(m, focus="transcript", selected=index)
+    start = tc.group_start(index)
+    if start is not None:                               # a ⚙ N calls chip
+        (lane.groups_open.discard if start in lane.groups_open else lane.groups_open.add)(start)
+        return _with_lane(m, m.active_sid, lane)
+    if not (0 <= index < len(lane.blocks)) or lane.blocks[index].kind not in CARD_KINDS:
         return m
-    (lane.expanded.discard if index in lane.expanded else lane.expanded.add)(index)
+    if index in lane.expanded:
+        lane.expanded.discard(index)
+    else:
+        lane.expanded.add(index)
+        hidden = _hidden_in_group(lane, index)
+        if hidden is not None:
+            lane.groups_open.add(hidden)                # expanding a call behind a chip opens the chip
+    return _with_lane(m, m.active_sid, lane)
+
+
+def _expand_all(m, a):
+    """Toggle every ⚙ chip and tool card of the lane at once."""
+    lane = _copy_lane(m, m.active_sid)
+    starts = {s for s, members in tc.runs(lane.blocks) if len(members) > 1}
+    cards = {i for i, b in enumerate(lane.blocks) if b.kind == "tool"}
+    if starts <= lane.groups_open and cards <= lane.expanded:
+        lane.groups_open -= starts
+        lane.expanded -= cards
+    else:
+        lane.groups_open |= starts
+        lane.expanded |= cards
     return _with_lane(m, m.active_sid, lane)
 
 
@@ -456,7 +509,8 @@ def _notice(m, a):
 
 def _focus(m, a):
     which = a.get("which") or ("transcript" if m.focus == "composer" else "composer")
-    selected = m.selected if which == "transcript" and m.selected >= 0 else (len(m.blocks) - 1 if which == "transcript" else -1)
+    order = visible_targets(m) if which == "transcript" else []
+    selected = m.selected if m.selected in order else (order[-1] if order else -1)
     return replace(m, focus=which, selected=selected)
 
 
@@ -475,7 +529,7 @@ def _quit_confirm(m, a):
 _HANDLERS = {
     "events": _events, "sse_event": _sse_event, "sse_done": _sse_done, "roster": _roster,
     "sent": _sent, "queue": _queue, "net": _net, "tick": _tick, "receipt_lost": _receipt_lost,
-    "resize": _resize, "select": _select, "scroll": _scroll, "move": _move, "expand": _expand,
+    "resize": _resize, "select": _select, "scroll": _scroll, "move": _move, "expand": _expand, "expand_all": _expand_all,
     "approval_shown": _approval_shown, "approval_answered": _approval_answered, "notice": _notice,
     "focus": _focus, "usage": _usage, "tools": _tools, "quit_confirm": _quit_confirm,
 }

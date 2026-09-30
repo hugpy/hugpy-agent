@@ -155,6 +155,34 @@ class AppTests(unittest.TestCase):
         self.assertIn(1, ui.m.lane().expanded)                    # Up selected the tool card, Enter expanded it
         self.assertEqual(client.actions[-1][1], "retry")           # r in transcript focus
 
+    def _two_calls(self, ui):
+        calls = [Event(2, 0.0, KEEPER, "tool", "", name="Bash", detail='{"command": "ls"}'),
+                 Event(3, 0.0, KEEPER, "tool", "", name="Read", detail='{"file_path": "/x"}'),
+                 Event(4, 0.0, KEEPER, "tool_result", "ok", detail="ok", ok=True),
+                 Event(5, 0.0, KEEPER, "tool_result", "ok", detail="ok", ok=True),
+                 Event(6, 0.0, KEEPER, "done", "fine", ok=True)]
+        ui.send("action", {"type": "events", "sid": KEEPER,
+                           "page": EventPage(calls, False, None, "6", "console"), "now": 0.0})
+
+    def test_ctrl_o_toggles_all_tool_calls(self):
+        ui, client = make([15, CTRL_Q])
+        self._two_calls(ui)
+        self.run_app(ui)
+        self.assertEqual(ui.m.lane().groups_open, {1})
+        self.assertEqual(ui.m.lane().expanded, {1, 2})
+
+    def test_click_on_chip_opens_it(self):
+        ui, client = make([curses.KEY_MOUSE, CTRL_Q])
+        self._two_calls(ui)
+
+        def getmouse():
+            y = next(row for row, target in ui.hits.items() if target == -3)      # chip of the run at block 1
+            return (0, 3, y, 0, curses.BUTTON1_CLICKED)
+        with patch.object(app_mod.curses, "getmouse", getmouse, create=True):
+            self.run_app(ui)
+        self.assertEqual(ui.m.lane().groups_open, {1})
+        self.assertEqual((ui.m.focus, ui.m.selected), ("transcript", -3))
+
     def test_resize_and_draw_never_raise_on_small_screens(self):
         ui, client = make([curses.KEY_RESIZE, CTRL_Q])
         ui.screen.size = (15, 40)
