@@ -124,7 +124,7 @@ class RunConsoleNotice(unittest.TestCase):
         self.assertIn("TOOLSERVER_TOKEN", lines[0])
 
 
-@unittest.skipUnless(console._bridge_importable(), "abstract_serve not installed")
+@unittest.skipUnless(console._bridge_importable(), "abstract_serve_core not installed")
 class EmittedCommandSpeaksMcp(unittest.TestCase):
     def test_command_verbatim_answers_initialize(self):
         with NO_FILES:

@@ -302,7 +302,7 @@ def cmd_serve(args) -> int:
     journal write is committed, so this is still safe)."""
     if getattr(args, "console", False):
         try:
-            from abstract_serve.serve_cli import main as serve_main
+            from abstract_serve_core.serve_cli import main as serve_main
         except ImportError as exc:
             print("hugpy-agent serve --console requires `pip install hugpy-agent[serve]` (" + str(exc) + ")", file=sys.stderr)
             return 2
@@ -327,14 +327,14 @@ def cmd_serve(args) -> int:
             # Open the SAME shared console as `serve --console` (serve_cli reuses a
             # live one); this session service stays up as the console's hugpy backend.
             try:
-                import abstract_serve.serve_cli  # noqa: F401  (hugpy-agent[serve])
+                import abstract_serve_core.serve_cli  # noqa: F401  (hugpy-agent[serve])
             except ImportError:
                 try:
                     webbrowser.open(url, new=2)
                 except Exception:
                     pass
                 return
-            subprocess.Popen([sys.executable, "-m", "abstract_serve.serve_cli",
+            subprocess.Popen([sys.executable, "-m", "abstract_serve_core.serve_cli",
                               "--host", args.host, "--port", str(args.console_port)],
                              env=dict(os.environ, AC_SERVE_BACKEND="hugpy"),
                              start_new_session=True)

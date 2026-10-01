@@ -14,16 +14,16 @@ from hugpy_agent import cli
 class HugpyIsAServeProvider(unittest.TestCase):
     def test_registered_in_the_serve_provider_group(self):
         meta = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())["project"]
-        self.assertEqual(meta["entry-points"]["abstract_serve.providers"],
-                         {"hugpy": "abstract_serve.providers:hugpy"})
-        self.assertEqual(meta["optional-dependencies"]["serve"], ["abstract-serve-core>=0.1.10"])
+        self.assertEqual(meta["entry-points"]["abstract_serve_core.providers"],
+                         {"hugpy": "abstract_serve_core.providers:hugpy"})
+        self.assertEqual(meta["optional-dependencies"]["serve"], ["abstract-serve-core>=0.1.12"])
 
     def test_serve_console_runs_the_shared_console_with_hugpy_first(self):
         try:
-            import abstract_serve.serve_cli  # noqa: F401  (hugpy-agent[serve])
+            import abstract_serve_core.serve_cli  # noqa: F401  (hugpy-agent[serve])
         except ImportError:
             self.skipTest("abstract-serve-core not installed")
-        with patch("abstract_serve.serve_cli.main", return_value=0) as serve_main, \
+        with patch("abstract_serve_core.serve_cli.main", return_value=0) as serve_main, \
                 patch.dict(os.environ, {}, clear=False):
             self.assertEqual(cli.main(["serve", "--console", "--no-browser"]), 0)
             self.assertEqual(os.environ["AC_SERVE_BACKEND"], "hugpy")
