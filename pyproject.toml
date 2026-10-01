@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hugpy-agent"
-version = "0.1.83"
+version = "0.1.84"
 description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,7 +41,7 @@ dependencies = ["hugpy-tools", "abstract-toolserver~=0.0.31"]
 # validate the control-plane envelopes. mct code ships in the wheel but this dep
 # installs only on request, so `import hugpy_agent.mct` requires the extra.
 [project.optional-dependencies]
-serve = ["abstract-serve-core>=0.1.8"]
+serve = ["abstract-serve-core>=0.1.10"]
 mct = ["jsonschema>=4.0"]
 
 [project.urls]
@@ -52,6 +52,14 @@ Issues = "https://github.com/hugpy/hugpy-agent/issues"
 [project.scripts]
 hugpy-agent = "hugpy_agent.cli:main"
 hugpy-agent-serve = "hugpy_agent.service.http:main"
+
+# The console `hugpy-agent serve` opens (and `serve --console`) IS
+# abstract-serve-core's one Serve console. This registers Hugpy among its
+# providers: serve discovers it from this metadata and loads it only when the
+# picker or a session needs it; Hugpy's sessions are this package's session
+# service (`hugpy-agent serve`, 127.0.0.1:9126).
+[project.entry-points."abstract_serve.providers"]
+hugpy = "abstract_serve.providers:hugpy"
 
 [tool.setuptools.packages.find]
 where = ["src"]
