@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hugpy-agent"
-version = "0.1.82"
+version = "0.1.83"
 description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,7 +41,7 @@ dependencies = ["hugpy-tools", "abstract-toolserver~=0.0.31"]
 # validate the control-plane envelopes. mct code ships in the wheel but this dep
 # installs only on request, so `import hugpy_agent.mct` requires the extra.
 [project.optional-dependencies]
-serve = ["abstract-serve-core>=0.1.1"]
+serve = ["abstract-serve-core>=0.1.8"]
 mct = ["jsonschema>=4.0"]
 
 [project.urls]

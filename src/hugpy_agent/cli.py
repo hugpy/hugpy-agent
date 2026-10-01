@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -308,6 +309,7 @@ def cmd_serve(args) -> int:
         argv = ["--host", args.host, "--port", str(args.console_port)]
         if args.no_browser:
             argv.append("--no-browser")
+        os.environ["AC_SERVE_BACKEND"] = "hugpy"
         return serve_main(argv)
     _ensure_toolserver_async()
     session_service = not getattr(args, "daemon", False)
@@ -322,10 +324,20 @@ def cmd_serve(args) -> int:
 
         def surface_console():
             print(f"Hugpy Serve console: {url}", flush=True)
+            # Open the SAME shared console as `serve --console` (serve_cli reuses a
+            # live one); this session service stays up as the console's hugpy backend.
             try:
-                webbrowser.open(url, new=2)
-            except Exception:
-                pass
+                import abstract_serve.serve_cli  # noqa: F401  (hugpy-agent[serve])
+            except ImportError:
+                try:
+                    webbrowser.open(url, new=2)
+                except Exception:
+                    pass
+                return
+            subprocess.Popen([sys.executable, "-m", "abstract_serve.serve_cli",
+                              "--host", args.host, "--port", str(args.console_port)],
+                             env=dict(os.environ, AC_SERVE_BACKEND="hugpy"),
+                             start_new_session=True)
 
         # A second `serve` means "take me to the service", not "fail trying
         # to bind the same port".  Probe before requiring local profiles so a
