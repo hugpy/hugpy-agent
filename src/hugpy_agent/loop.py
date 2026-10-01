@@ -320,6 +320,18 @@ class AgentLoop:
 
     # ── the loop ─────────────────────────────────────────────────────────
     def _drive(self, run_id: str) -> dict:
+        """One turn to central (session_signals): every model call of this
+        drive shares a turn id, the lease is held until the drive returns,
+        and turn_done is sent then — so a tool step between calls never reads
+        as a stale session."""
+        from . import session_signals
+        sig = session_signals.signals()
+        if sig is None:
+            return self._drive_steps(run_id)
+        with sig.turn(task="run:%s" % run_id):
+            return self._drive_steps(run_id)
+
+    def _drive_steps(self, run_id: str) -> dict:
         failures = 0
         est_total = 0
         # Loop-guard (P2.4): rolling signature of the current streak of

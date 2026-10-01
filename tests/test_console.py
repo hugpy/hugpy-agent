@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 from hugpy_agent import console
+from hugpy_agent import harness_settings as hs
 from hugpy_agent.config import Config
 
 SECRET = "hp_super_secret_key_value_0000"
@@ -150,6 +151,58 @@ class BuildConfigTests(unittest.TestCase):
                              want, base)
 
 
+class SmallModelTests(unittest.TestCase):
+    """small_model (OpenCode's title/lightweight-task model) is emitted from
+    config, defaults to the tiny coder model, and honours the env override."""
+    CLEAR = ("HUGPY_OPENCODE_SMALL_MODEL", hs.SMALL_MODEL_ENV)
+
+    def _build(self, models, env=None):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for k in self.CLEAR:
+                os.environ.pop(k, None)
+            os.environ.update(env or {})
+            return console.build_config("https://dev.hugpy.ai/api", "K",
+                                        models, "m")
+
+    def test_default_emitted_and_listed(self):
+        models = {"m": {"name": "m"}, hs.DEFAULT_SMALL_MODEL: {"name": "tiny"}}
+        cfg = self._build(models)
+        self.assertEqual(cfg["small_model"],
+                         "hugpy/Qwen2.5-Coder-1.5B-Instruct-GGUF")
+        self.assertEqual(cfg["model"], "hugpy/m")          # main model untouched
+        self.assertIn(hs.DEFAULT_SMALL_MODEL, cfg["provider"]["hugpy"]["models"])
+
+    def test_default_added_to_models_map_when_fleet_lacks_it(self):
+        models = {"m": {"name": "m"}}
+        cfg = self._build(models)
+        self.assertIn(hs.DEFAULT_SMALL_MODEL, cfg["provider"]["hugpy"]["models"])
+        self.assertEqual(models, {"m": {"name": "m"}})     # input not mutated
+
+    def test_resolves_to_fleet_spelling_by_bare_tail(self):
+        models = {"m": {"name": "m"},
+                  "bartowski~Qwen2.5-Coder-1.5B-Instruct-GGUF": {"name": "x"}}
+        cfg = self._build(models)
+        self.assertEqual(cfg["small_model"],
+                         "hugpy/bartowski~Qwen2.5-Coder-1.5B-Instruct-GGUF")
+        self.assertEqual(len(cfg["provider"]["hugpy"]["models"]), 2)
+
+    def test_env_override_honoured(self):
+        models = {"m": {"name": "m"}, "Qwen3-0.6B-GGUF": {"name": "q"}}
+        for name in self.CLEAR:
+            for val in ("Qwen3-0.6B-GGUF", "hugpy/Qwen3-0.6B-GGUF"):
+                cfg = self._build(models, {name: val})
+                self.assertEqual(cfg["small_model"], "hugpy/Qwen3-0.6B-GGUF")
+                self.assertNotIn(hs.DEFAULT_SMALL_MODEL,
+                                 cfg["provider"]["hugpy"]["models"])
+
+    def test_env_off_omits_key(self):
+        for val in ("off", "none", ""):
+            cfg = self._build({"m": {"name": "m"}},
+                              {"HUGPY_OPENCODE_SMALL_MODEL": val})
+            self.assertNotIn("small_model", cfg)
+            self.assertEqual(list(cfg["provider"]["hugpy"]["models"]), ["m"])
+
+
 class MaterializeTests(unittest.TestCase):
     def test_atomic_write_and_bak_on_refresh(self):
         with tempfile.TemporaryDirectory() as ws:
@@ -202,6 +255,77 @@ class LaunchTests(unittest.TestCase):
             with mock.patch("shutil.which", return_value=None), \
                  mock.patch.dict(os.environ, {"HOME": os.path.join(home, "x")}):
                 self.assertIsNone(console.resolve_opencode())
+
+
+class AllowAllTests(unittest.TestCase):
+    """--allow-all: per-launch all-allow via OPENCODE_PERMISSION + --auto;
+    off by default; the shared opencode.json is never touched."""
+    CLEAR = (hs.ALLOW_ALL_ENV, "HUGPY_OPENCODE_ALLOW_ALL", "OPENCODE_PERMISSION")
+
+    def test_off_means_no_override(self):
+        argv, env = console.opencode_launch_spec("/b/opencode", None, {})
+        self.assertEqual(argv, ["/b/opencode"])
+        self.assertEqual(env, {})
+
+    def test_on_allows_every_known_key_and_passes_auto(self):
+        argv, env = console.opencode_launch_spec("/b/opencode", True)
+        self.assertEqual(argv, ["/b/opencode", "--auto"])
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        self.assertEqual(set(perm), set(hs.OPENCODE_PERMISSION_KEYS))
+        for key in ("edit", "bash", "webfetch", "doom_loop",
+                    "external_directory", "read"):
+            self.assertEqual(perm[key], "allow", key)
+        self.assertEqual(set(perm.values()), {"allow"})
+
+    def test_flag_wins_env_is_default(self):
+        spec = console.opencode_launch_spec
+        self.assertEqual(spec("b", None, {hs.ALLOW_ALL_ENV: "1"})[0], ["b", "--auto"])
+        self.assertEqual(spec("b", None, {"HUGPY_OPENCODE_ALLOW_ALL": "1"})[0],
+                         ["b", "--auto"])
+        self.assertEqual(spec("b", False, {hs.ALLOW_ALL_ENV: "1"})[0], ["b"])
+
+    def _launch(self, allow_all, env):
+        with tempfile.TemporaryDirectory() as ws, \
+             mock.patch("os.execvp") as execvp, mock.patch("os.chdir"), \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err, \
+             mock.patch.dict(os.environ, {}, clear=False):
+            for k in self.CLEAR:
+                os.environ.pop(k, None)
+            os.environ.update(env)
+            console.launch(ws, "", binary="/fake/opencode", allow_all=allow_all)
+            perm = os.environ.get("OPENCODE_PERMISSION")
+            leaked = os.environ.get(hs.ALLOW_ALL_ENV)
+        return execvp, err.getvalue(), perm, leaked
+
+    def test_launch_default_prompts(self):
+        execvp, err, perm, _ = self._launch(None, {})
+        execvp.assert_called_once_with("/fake/opencode", ["/fake/opencode"])
+        self.assertIsNone(perm)
+        self.assertNotIn("ALLOWED", err)
+
+    def test_launch_allow_all_banner_env_and_auto(self):
+        for allow_all, env in ((True, {}), (None, {hs.ALLOW_ALL_ENV: "1"})):
+            execvp, err, perm, leaked = self._launch(allow_all, env)
+            execvp.assert_called_once_with("/fake/opencode",
+                                           ["/fake/opencode", "--auto"])
+            self.assertIn("opencode: all permissions ALLOWED (--allow-all)", err)
+            self.assertEqual(set(json.loads(perm).values()), {"allow"})
+            self.assertIsNone(leaked)   # control var scrubbed from the child
+
+    def test_run_console_leaves_shared_config_prompting(self):
+        with tempfile.TemporaryDirectory() as ws, \
+             mock.patch("urllib.request.urlopen", fake_urlopen({"data": FLEET})), \
+             mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(console, "launch") as launch:
+            os.environ.pop("HUGPY_CONSOLE_PERMISSION", None)
+            console.run_console(Config(base="https://dev.hugpy.ai/api",
+                                       api_key=SECRET),
+                                workspace=ws, allow_all=True)
+            with open(console.config_path(ws)) as fh:
+                written = json.load(fh)
+        self.assertEqual(written["permission"],
+                         {"edit": "ask", "bash": "ask", "webfetch": "ask"})
+        self.assertIs(launch.call_args.kwargs["allow_all"], True)
 
 
 class RunConsoleTests(unittest.TestCase):

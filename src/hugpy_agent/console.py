@@ -47,6 +47,8 @@ import tempfile
 import urllib.error
 import urllib.request
 
+from . import harness_settings as hs
+from . import session_signals
 from .gateway import brain_matches_key, normalize_base, origin
 
 # The env var name OpenCode resolves at ITS runtime via the `{env:NAME}`
@@ -65,6 +67,30 @@ TEXT_TASKS = frozenset({"text-generation", "image-text-to-text"})
 PREFERRED_DEFAULT = "Qwen~Qwen3-Coder-Next-GGUF"
 
 DEFAULT_WORKSPACE = os.path.join("~", ".hugpy_agent", "console")
+
+# Harness settings (allow_all, small/title model) live in ONE table in
+# harness_settings.py. For OpenCode (verified 1.18.33):
+#   * small_model — top-level opencode.json `small_model` ("provider/id");
+#     the title path is `agent.title.model ?? getSmallModel() ?? main model`,
+#     and we leave the title agent alone so small_model is the single knob.
+#     HUGPY_OPENCODE_SMALL_MODEL / HUGPY_HARNESS_SMALL_MODEL override; "off"
+#     omits the key.
+#   * allow_all — per launch only: OPENCODE_PERMISSION (env JSON, deep-merged
+#     over the config's `permission`) with every known key "allow", plus the
+#     TUI's `--auto` (alias --yolo / --dangerously-skip-permissions). The
+#     shared, generated opencode.json keeps its HUGPY_CONSOLE_PERMISSION posture.
+
+
+def opencode_launch_spec(binary: str, allow_all: bool | None = None,
+                         environ=None) -> tuple[list, dict]:
+    """(argv, env additions) for one OpenCode launch. Pure — no exec, no
+    global env mutation. allow_all None -> resolved from the environment."""
+    if allow_all is None:
+        allow_all = hs.allow_all("opencode", environ)
+    if not allow_all:
+        return [binary], {}
+    argv_add, env_add = hs.allow_all_spec("opencode", {hs.ALLOW_ALL_ENV: "1"})
+    return [binary] + argv_add, env_add
 
 INSTALL_HINT = """\
 opencode not found. OpenCode is an optional peer — install it once with npm:
@@ -120,6 +146,19 @@ def resolve_claude() -> str | None:
     return None
 
 
+def arm_session(harness: str, central: str | None, key: str = "") -> dict:
+    """Give the harness this process is about to exec() its central identity
+    (HUGPY_CLIENT_* env, which every harness's header mechanism reads) and,
+    when the fleet base is known, a detached lease keeper that watches this
+    pid (exec keeps it) and sends session_closed when the harness exits.
+    Best effort — never blocks a launch."""
+    add = session_signals.harness_env(harness, os.environ, pid=os.getpid())
+    os.environ.update(add)
+    if central and session_signals.enabled():
+        session_signals.start_lease_sidecar(central, key, harness)
+    return add
+
+
 def launch_claude_code(central: str, key: str,
                        model: str | None = None,
                        binary: str | None = None,
@@ -172,10 +211,28 @@ def launch_claude_code(central: str, key: str,
         _hdr = "X-Hugpy-Model: " + str(model)
         _cur = os.environ.get("ANTHROPIC_CUSTOM_HEADERS", "").strip()
         os.environ["ANTHROPIC_CUSTOM_HEADERS"] = (_cur + "\n" + _hdr) if _cur else _hdr
+    arm_session("claude-code", central, key)
+    if session_signals.enabled():
+        os.environ["ANTHROPIC_CUSTOM_HEADERS"] = session_signals.merge_header_lines(
+            os.environ.get("ANTHROPIC_CUSTOM_HEADERS", ""),
+            session_signals.harness_header_values())
     _rebind_stdin_to_tty()
     init = (init_prompt if init_prompt is not None
             else os.environ.get("HUGPY_INIT_PROMPT", "")).strip()
     argv = [binary] + (["--append-system-prompt", init] if init else [])
+    # Harness settings (harness_settings table). This launcher ALWAYS points
+    # Claude Code at the hugpy shim, so the small/title model may be set here;
+    # it is never applied to a Claude Code talking to Anthropic directly.
+    small = hs.small_model("claude-code")
+    if small:
+        for name in hs.HARNESSES["claude-code"]["small_model_env"]:
+            os.environ[name] = small
+    argv_add, env_add = hs.allow_all_spec("claude-code")
+    hs.scrub(os.environ)
+    if argv_add:
+        print(hs.banner("claude-code"), file=sys.stderr)
+        argv += argv_add
+        os.environ.update(env_add)
     os.execvp(binary, argv)
 
 
@@ -247,6 +304,45 @@ def ensure_qwen_openai_auth(settings_path: str | None = None) -> None:
         json.dump(settings, fh, indent=2)
 
 
+def write_qwen_identity_settings(path: str | None = None, environ=None) -> str:
+    """Derived qwen-code SYSTEM settings carrying central-identity headers
+    (`model.generationConfig.customHeaders`, Qwen Code 0.22.2) as `$VAR` env
+    references — qwen's settings loader resolves `$VAR`/`${VAR}`, so the one
+    shared file serves concurrent launches, each with its own env. Same file
+    and merge discipline as write_qwen_fast_model_settings: whatever system
+    settings are already in effect (incl. that fastModel file) are merged in
+    first; ~/.qwen/settings.json is never touched. Returns the path, which the
+    caller exports as QWEN_CODE_SYSTEM_SETTINGS_PATH for this launch."""
+    env = os.environ if environ is None else environ
+    path = path or os.path.expanduser(os.path.join(
+        DEFAULT_WORKSPACE, "qwen-system-settings.json"))
+    base_path = env.get(QWEN_SYSTEM_SETTINGS_ENV) or "/etc/qwen-code/settings.json"
+    settings: dict = {}
+    src = path if os.path.realpath(base_path) == os.path.realpath(path) else base_path
+    if os.path.isfile(src):
+        try:
+            with open(src, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                settings = loaded
+        except (OSError, ValueError):
+            pass
+    model = settings.get("model")
+    if not isinstance(model, dict):
+        model = settings["model"] = {}
+    gen = model.get("generationConfig")
+    if not isinstance(gen, dict):
+        gen = model["generationConfig"] = {}
+    hdrs = gen.get("customHeaders")
+    if not isinstance(hdrs, dict):
+        hdrs = gen["customHeaders"] = {}
+    hdrs.update(session_signals.harness_header_refs("qwen"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+    return path
+
+
 def launch_qwen_code(central: str, key: str, model: str | None = None,
                      binary: str | None = None) -> "None":
     """exec Qwen Code pointed at the fleet's OpenAI-compatible /v1.
@@ -270,8 +366,52 @@ def launch_qwen_code(central: str, key: str, model: str | None = None,
     os.environ[QWEN_AUTH_ENV] = key or "hugpy-open-fleet"
     os.environ.setdefault(QWEN_MODEL_ENV, model or "default")
     ensure_qwen_openai_auth()
+    argv = [binary]
+    small = hs.small_model("qwen-code")
+    if small:
+        os.environ[QWEN_SYSTEM_SETTINGS_ENV] = write_qwen_fast_model_settings(small)
+    argv_add, env_add = hs.allow_all_spec("qwen-code")
+    hs.scrub(os.environ)
+    if argv_add:
+        print(hs.banner("qwen-code"), file=sys.stderr)
+        argv += argv_add
+        os.environ.update(env_add)
+    if session_signals.enabled():
+        arm_session("qwen-code", central, key)
+        os.environ[QWEN_SYSTEM_SETTINGS_ENV] = write_qwen_identity_settings()
     _rebind_stdin_to_tty()
-    os.execvp(binary, [binary])
+    os.execvp(binary, argv)
+
+
+QWEN_SYSTEM_SETTINGS_ENV = "QWEN_CODE_SYSTEM_SETTINGS_PATH"
+
+
+def write_qwen_fast_model_settings(small: str, path: str | None = None,
+                                   environ=None) -> str:
+    """Derived qwen-code system-settings file carrying `fastModel` (Qwen Code
+    0.22.2 generates session titles with fastModel; it has no CLI flag/env for
+    it). Pointed at via QWEN_CODE_SYSTEM_SETTINGS_PATH for this launch only, so
+    ~/.qwen/settings.json is never touched. Any system settings file already in
+    effect is merged in first, so pointing the env elsewhere loses nothing."""
+    env = os.environ if environ is None else environ
+    path = path or os.path.expanduser(os.path.join(
+        DEFAULT_WORKSPACE, "qwen-system-settings.json"))
+    base_path = env.get(QWEN_SYSTEM_SETTINGS_ENV) or "/etc/qwen-code/settings.json"
+    settings: dict = {}
+    if os.path.realpath(base_path) != os.path.realpath(path) and \
+            os.path.isfile(base_path):
+        try:
+            with open(base_path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                settings = loaded
+        except (OSError, ValueError):
+            pass
+    settings["fastModel"] = small
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+    return path
 
 
 def qwen_base(central: str) -> str:
@@ -384,9 +524,109 @@ def fetch_model_map(central: str, key: str,
     return models, default
 
 
+def resolve_small_model(models: dict) -> tuple[str | None, dict]:
+    """(small-model id or None, models map guaranteed to list it).
+
+    The id comes from harness_settings.small_model("opencode")
+    (HUGPY_OPENCODE_SMALL_MODEL > HUGPY_HARNESS_SMALL_MODEL > default); "off"
+    disables it. It resolves against the fleet map the
+    same way the default brain does (exact, or equal bare tail after '~') so we
+    name the id the fleet actually lists. If the fleet map lacks it, a minimal
+    entry is added: OpenCode silently drops a small_model its provider does not
+    list (ProviderModelNotFoundError -> main model), which would make the knob
+    a no-op. The input map is never mutated."""
+    raw = hs.small_model("opencode")
+    if raw is None:
+        return None, models
+    if raw in models:
+        return raw, models
+    hit = next((mid for mid in models if brain_matches_key(raw, mid)), None)
+    if hit:
+        return hit, models
+    out = dict(models)
+    out[raw] = {"name": raw + " (title model)"}
+    return raw, out
+
+
+# ── toolserver MCP entry ─────────────────────────────────────────────────────
+# OpenCode 1.18 `mcp.<name>` (type local) accepts command (ONE argv array),
+# environment, enabled, timeout — there is NO "args" key: 0.1.79 wrote
+# "command": [python] + "args": [...], OpenCode ran a bare `python` that sat
+# reading stdin, and every launch showed "Operation timed out after 30000ms".
+TOOLSERVER_MCP_MODULE = "abstract_toolserver.mcp"   # the shared bridge (abstract-toolserver dep)
+TOOLSERVER_MCP_TIMEOUT_MS = 20000   # per MCP request; cold tools/list ~1.5 s
+TOOLSERVER_PROBE_TIMEOUT = 4.0
+TOOLSERVER_ENABLE_HINT = ("set HUGPY_TOOLSERVER_TOKEN (or TOOLSERVER_TOKEN / "
+                          "HUGPY_AGENT_TOOLSERVER_TOKEN; optional HUGPY_TOOLSERVER_URL — "
+                          "default: the toolserver advertised on this host) to enable")
+
+
+def _bridge_importable() -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(TOOLSERVER_MCP_MODULE) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _probe_toolserver(base: str, token: str) -> None:
+    """Raise unless `base` answers an authenticated POST /ts/categories fast."""
+    from .toolserver_client import ToolserverClient
+    ToolserverClient(base, token).post("/ts/categories", {}, TOOLSERVER_PROBE_TIMEOUT)
+
+
+def toolserver_mcp(cfg, environ=None, bridge_ok=None, probe=None):
+    """(entry | None, child_env, reason) for the toolserver MCP bridge.
+
+    The entry is emitted only when it will actually work: toolserver not opted
+    out (HUGPY_AGENT_TOOLSERVER=0), the bridge module importable by THIS
+    interpreter (abstract_toolserver.mcp — a base dependency), a token resolved through
+    hugpy-agent's own chain (config/.env HUGPY_AGENT_TOOLSERVER_TOKEN, env
+    TOOLSERVER_TOKEN & co, operator env files), and the endpoint answering an
+    authenticated probe. ``child_env`` carries the resolved URL/token for the
+    OpenCode process env only — opencode.json holds ``{env:...}`` references,
+    never the literal token. ``reason`` is the one-line launch notice."""
+    from .tools import toolserver as ts
+    from .toolserver_client import ToolserverAuthError
+    environ = os.environ if environ is None else environ
+    if not getattr(cfg, "toolserver", True):
+        return None, {}, "disabled (HUGPY_AGENT_TOOLSERVER=0)"
+    if not (_bridge_importable() if bridge_ok is None else bridge_ok):
+        return None, {}, ("bridge %s not installed in %s"
+                          % (TOOLSERVER_MCP_MODULE, sys.executable))
+    base = ts.resolve_base(cfg, environ=environ)
+    token, src = ts.resolve_token(cfg, base, environ=environ)
+    if not token:
+        return None, {}, "no toolserver token for %s (%s)" % (base, src)
+    try:
+        (probe or _probe_toolserver)(base, token)
+    except urllib.error.HTTPError as e:
+        return None, {}, "%s rejected the token (HTTP %s)" % (base, e.code)
+    except ToolserverAuthError as e:
+        return None, {}, "%s rejected the token (HTTP %s)" % (base, e.status)
+    except Exception as e:  # unreachable / TLS / timeout
+        return None, {}, "%s unreachable (%s)" % (base, e)
+    entry = {
+        "type": "local",
+        "enabled": True,
+        "command": [sys.executable, "-m", TOOLSERVER_MCP_MODULE],
+        "environment": {
+            "TOOLSERVER_URL": "{env:TOOLSERVER_URL}",
+            "TOOLSERVER_TOKEN": "{env:TOOLSERVER_TOKEN}",
+        },
+        "timeout": TOOLSERVER_MCP_TIMEOUT_MS,
+    }
+    return entry, {"TOOLSERVER_URL": base, "TOOLSERVER_TOKEN": token}, \
+        "on (%s, token from %s)" % (base, src)
+
+
 def build_config(central: str, key_env_name: str, models: dict,
-                 default_model: str) -> dict:
+                 default_model: str, toolserver: dict | None = None) -> dict:
     """The opencode.json structure for the hugpy provider.
+
+    ``toolserver`` is the MCP entry from :func:`toolserver_mcp` (or None: no
+    ``mcp`` block at all — an unusable entry only costs OpenCode a 30 s
+    "Operation timed out" at every start).
 
     The apiKey is ALWAYS the `{env:NAME}` reference — OpenCode resolves it
     from its own process environment at runtime; the literal key never
@@ -407,7 +647,8 @@ def build_config(central: str, key_env_name: str, models: dict,
     base = normalize_base(central)
     if not base.endswith("/v1"):
         base = models_url(central)[: -len("/models")]
-    return {
+    small, models = resolve_small_model(models)
+    config = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
             "hugpy": {
@@ -416,6 +657,9 @@ def build_config(central: str, key_env_name: str, models: dict,
                 "options": {
                     "baseURL": base,
                     "apiKey": "{env:%s}" % key_env_name,
+                    # Session identity for central (session_signals): env
+                    # REFERENCES, filled per launch by arm_session().
+                    "headers": session_signals.harness_header_refs("opencode"),
                 },
                 "models": models,
             },
@@ -427,6 +671,15 @@ def build_config(central: str, key_env_name: str, models: dict,
             "webfetch": perm,
         },
     }
+    if toolserver:
+        # The shared toolserver MCP bridge — only when toolserver_mcp() found it
+        # usable (bridge importable, token resolved, endpoint answered).
+        config["mcp"] = {"toolserver": toolserver}
+    if small:
+        # Session titles / lightweight tasks -> a tiny fleet model, not the
+        # session's agent brain (harness_settings table).
+        config["small_model"] = "hugpy/" + small
+    return config
 
 
 def build_mct_config(base: str, model_label: str = "mct") -> dict:
@@ -498,7 +751,9 @@ def materialize(workspace_dir: str, config: dict) -> str:
 
 
 def launch(workspace_dir: str, key: str,
-           binary: str | None = None) -> "None":
+           binary: str | None = None,
+           allow_all: bool | None = None,
+           central: str | None = None) -> "None":
     """chdir into the workspace and exec OpenCode in place (os.execvp — the
     Python process becomes the TUI; no wrapper process lingers to garble
     terminal ownership). The literal API key is exported into the child's
@@ -517,15 +772,21 @@ def launch(workspace_dir: str, key: str,
         # (branding.py; same-length glyph patch, .orig-logo kept). Cosmetic
         # only — any failure means the stock splash, never a failed launch.
         from . import branding
-        branding.ensure_hugpy_logo(binary)
+        binary = branding.ensure_hugpy_binary(binary)
     except Exception:
         pass
     ws = os.path.realpath(os.path.expanduser(workspace_dir))
     if key:
         os.environ[KEY_ENV_NAME] = key
+    argv, extra_env = opencode_launch_spec(binary, allow_all)
+    hs.scrub(os.environ)
+    if extra_env:
+        print(hs.banner("opencode"), file=sys.stderr)
+        os.environ.update(extra_env)
+    arm_session("opencode", central, key)
     os.chdir(ws)
     _rebind_stdin_to_tty()
-    os.execvp(binary, [binary])
+    os.execvp(binary, argv)
 
 
 def _rebind_stdin_to_tty() -> None:
@@ -559,7 +820,8 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
                 offline: bool = False, model: str | None = None,
                 print_config: bool = False,
                 frontend: str = "opencode",
-                all_models: bool = False) -> int:
+                all_models: bool = False,
+                allow_all: bool | None = None) -> int:
     """The `hugpy-agent console` flow, factored out of cli.py for testing.
 
     `frontend` selects the terminal face. Default "opencode" keeps the existing
@@ -606,7 +868,15 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
                   "%s list right now"
                   % (chosen, "model" if tasks is None else "chat-drivable"),
                   file=sys.stderr)
-        config = build_config(cfg.base, KEY_ENV_NAME, models, chosen)
+        ts_entry, ts_env, ts_reason = toolserver_mcp(cfg)
+        if ts_entry:
+            print("[console] toolserver tools: %s" % ts_reason, file=sys.stderr)
+            os.environ.update(ts_env)   # OpenCode's own env; never the file
+        else:
+            print("[console] toolserver tools: not configured — %s; %s"
+                  % (ts_reason, TOOLSERVER_ENABLE_HINT), file=sys.stderr)
+        config = build_config(cfg.base, KEY_ENV_NAME, models, chosen,
+                              toolserver=ts_entry)
         if print_config:
             print(json.dumps(config, indent=2))
             return 0
@@ -635,5 +905,5 @@ def run_console(cfg, workspace: str | None = None, sync: bool = True,
             materialize(ws, config)
         print("[console] reusing %s (no sync)" % path, file=sys.stderr)
 
-    launch(ws, cfg.api_key)
+    launch(ws, cfg.api_key, allow_all=allow_all, central=cfg.base)
     return 0  # unreachable on success (exec); keeps the signature honest

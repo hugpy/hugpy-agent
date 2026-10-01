@@ -185,3 +185,34 @@ def ensure_hugpy_logo(binary: str) -> bool:
             pass
         return False
     return True
+
+
+def ensure_hugpy_binary(binary: str) -> str:
+    """Return a runnable binary with the Hugpy Agent splash when possible.
+
+    System-wide npm OpenCode installs are commonly owned by a different
+    account. In that case patch a per-user cache copy instead of silently
+    showing the upstream wordmark. Unknown or unwritable binaries remain safe:
+    the original path is returned unchanged.
+    """
+    if ensure_hugpy_logo(binary):
+        return binary
+    try:
+        src = os.path.realpath(binary)
+        st = os.stat(src)
+        root = os.path.expanduser("~/.cache/hugpy-agent")
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        cached = os.path.join(root, "opencode-hugpy-agent")
+        stamp = cached + ".source"
+        old = open(stamp, encoding="ascii").read().strip() if os.path.isfile(stamp) else ""
+        marker = "%s:%s" % (st.st_size, st.st_mtime_ns)
+        if old != marker or not os.path.isfile(cached):
+            tmp = cached + ".tmp"
+            shutil.copy2(src, tmp)
+            shutil.copymode(src, tmp)
+            os.replace(tmp, cached)
+            with open(stamp, "w", encoding="ascii") as fh:
+                fh.write(marker + "\n")
+        return cached if ensure_hugpy_logo(cached) else binary
+    except (OSError, ValueError):
+        return binary

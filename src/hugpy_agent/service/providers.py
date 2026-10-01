@@ -8,6 +8,8 @@ from ..gateway import Gateway, ChatResult, estimate_tokens
 
 
 class ProviderGateway(Gateway):
+    session_signals = False   # third-party API: no X-Hugpy-* identity, no lease
+
     def __init__(self, profile, timeout=300):
         self.profile = profile
         super().__init__(profile["base_url"], os.environ.get(profile.get("api_key_env", ""), ""),

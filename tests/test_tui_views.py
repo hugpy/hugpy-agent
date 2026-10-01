@@ -168,9 +168,10 @@ class TranscriptTests(unittest.TestCase):
         m = model(blocks())
         lines = transcript.render_lines(m, 59)
         texts = [ln.text for ln in lines]
-        self.assertIn("⚒ Read · Read /tmp/x  [✓]", texts)
-        self.assertIn("⚒ Bash · ls  [✗]", texts)
-        self.assertIn("💭 first thought…", texts)
+        # Read + thinking are consecutive calls: one serve-style chip line.
+        self.assertIn("▸ ⚙ 2 calls · 💭 first thought second thought", texts)
+        self.assertIn("▸ ⚒ Bash · ls  ✗", texts)
+        self.assertEqual([ln.attr for ln in lines if ln.text.startswith("▸ ⚒ Bash")], ["TOOL_ERR"])
         self.assertIn("· claude-opus-4-8 · 3 tools", texts)
         self.assertIn("? Run command → pending", texts)
         self.assertEqual(lines[0].text, "▶ hello there")
@@ -184,16 +185,18 @@ class TranscriptTests(unittest.TestCase):
         m = st.reduce(m, {"type": "expand", "index": 2})
         m = st.reduce(m, {"type": "expand", "index": 3})
         texts = [ln.text for ln in transcript.render_lines(m, 59)]
+        self.assertIn("▾ ⚙ 2 calls", texts)                   # expanding a hidden call opened its chip
+        self.assertIn("▾ ⚒ Read · /tmp/x  ✓", texts)
         self.assertIn("  ┌ input", texts)
-        self.assertIn('  │ {"file_path": "/tmp/x"}', texts)
-        self.assertIn("  ┌ output", texts)
+        self.assertIn('  │   "file_path": "/tmp/x"', texts)     # pretty JSON input
+        self.assertIn("  ┌ result", texts)
         self.assertIn("  │ line 39", texts)
         self.assertNotIn("  │ line 40", texts)                  # capped at 40
         self.assertIn("  │ … 20 more lines", texts)
         self.assertTrue(any("second thought" in t for t in texts))
         self.assertTrue(any("Edit" in t for t in texts))
         wide = [ln.text for ln in transcript.render_lines(model(blocks()), 100, wide=True)]
-        self.assertIn("  line 0", wide)                        # first output line when wide
+        self.assertIn("    ↳ boom", wide)                      # first result line when wide
 
     def test_wrap_wide_glyphs(self):
         rows = text.wrap("日本語のテキスト " * 3, 10)
@@ -218,7 +221,7 @@ class TranscriptTests(unittest.TestCase):
         self.assertTrue(scr.has("▶ hello there"))
         self.assertTrue(any(t.startswith("↓ ") for t in scr.text))
         m = st.reduce(m, {"type": "focus", "which": "transcript"})
-        m = st.reduce(m, {"type": "move", "delta": -6})          # select block 0
+        m = st.reduce(m, {"type": "move", "delta": -20})         # select block 0
         scr = Screen()
         transcript.draw_transcript(scr, m, rect, T)
         sel = [c for c in scr.cells if c[2] == "▶ hello there"]

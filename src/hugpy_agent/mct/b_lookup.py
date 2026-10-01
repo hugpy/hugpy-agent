@@ -10,6 +10,10 @@ the state block can answer by lookup is answered by lookup:
   help      "help", "what can you do"             -> the command list
   meta      "does this use inference / what model" -> how B answers, which model
   state     "what is in the catalog", "status"    -> the state fields, verbatim
+  findings  "what's broken", "any errors / 429s / crash loops?"
+                                                  -> the station's deterministic log
+                                                     findings (findings.json next to
+                                                     mct.log), listed verbatim
   search    "where is X", "find X", "which entries mention X"
                                                   -> substring search over policy,
                                                      catalog bytes, derived memory,
@@ -50,6 +54,8 @@ MAX_HITS = 20                    # search results per reply
 EXCERPT = 120                    # chars of context per hit
 OBJECT_READ_CAP = 256 * 1024     # bytes of one object we will scan
 LOG_TAIL_LINES = 2000            # rolling-log lines we will scan
+FINDINGS_FILE = "findings.json"  # written by the station's log scan + loop detector
+FINDINGS_SHOWN = 12              # findings listed per reply
 QUEUE_PROBE_TIMEOUT = 3.0        # seconds; a dead probe never blocks the reply
 
 B_SYSMSG = (
@@ -63,7 +69,8 @@ B_SYSMSG = (
 HELP_TEXT = (
     "I answer from my own state without inference: ask what is in the catalog / "
     "policy / memory / ledger / tokens / log, or 'status'; search it with "
-    "'where is X', 'find X', 'which entries mention X'. Only a request that "
+    "'where is X', 'find X', 'which entries mention X'; 'what's broken' lists "
+    "the station's deterministic log findings. Only a request that "
     "needs synthesis over non-empty state (summarize, judge, rewrite) goes to "
     "the fleet model. In the terminal: /bstate shows the state, /policy sets "
     "the governing instruction, /root + /file or /source populate the catalog, "
@@ -73,7 +80,7 @@ HELP_TEXT = (
 # ── classifier ───────────────────────────────────────────────────────────────
 @dataclass
 class Intent:
-    kind: str                       # ack | help | meta | state | search | synth
+    kind: str                       # ack | help | meta | findings | state | search | synth
     fields: list[str] = field(default_factory=list)   # state: which fields
     query: str = ""                 # search: the needle
 
@@ -102,6 +109,13 @@ _SEARCH_RE = re.compile(
     r"|(?:what|anything) (?:mentions|contains|references|about)|do you have anything (?:about|on)"
     r"|is there anything (?:about|on)|show me (?:everything|anything) (?:about|on|mentioning))"
     r"\s*[:\-]?\s*(?P<q>.+?)[?.!\s]*$", re.I)
+
+# "what's broken" — answered from the station's findings, never the model
+_FINDINGS_RE = re.compile(
+    r"what'?s (?:broken|failing|wrong|down)|what is (?:broken|failing|wrong|down)"
+    r"|anything (?:broken|failing|wrong|down)|\b(?:errors?|problems?|issues?|findings?|bugs?|bugscan"
+    r"|crash(?:es|ing|-?loops?)?|429s?|rate.?limit\w*|tracebacks?|failures?|failing|oom|5xx|health)\b",
+    re.I)
 
 _STATE_FIELD_WORDS = {
     "policy": ("policy", "policies", "governing instruction", "instruction"),
@@ -141,6 +155,8 @@ def classify(text: str) -> Intent:
         return Intent("search", query=q)
     if _META_RE.search(t):
         return Intent("meta")
+    if _FINDINGS_RE.search(t):
+        return Intent("findings")
     if _STATE_BARE_RE.match(t):
         return Intent("state", fields=["all"])
     fields = [f for f, ws in _STATE_FIELD_WORDS.items()
@@ -164,6 +180,9 @@ class BState:
     log_lines: list[str] = field(default_factory=list)
     session_id: str = ""
     state_dir: Path | None = None
+    findings: list[dict] = field(default_factory=list)       # station log findings
+    findings_path: str = ""
+    findings_updated: int = 0
 
     @property
     def empty(self) -> bool:
@@ -183,6 +202,8 @@ class BState:
             lines.append(self.last_turn)
         if self.log_path:
             lines.append(f"rolling log: {self.log_path}")
+        if self.findings:
+            lines.append(f"log findings ({len(self.findings)}): {self.findings_path}")
         return "\n".join(lines)
 
 
@@ -255,7 +276,57 @@ def collect_state(sess, server, state: dict | None = None) -> BState:
             st.log_lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-LOG_TAIL_LINES:]
     except Exception:
         pass
+    load_findings(st)
     return st
+
+
+def load_findings(st: BState) -> None:
+    """The station's deterministic log findings (station.findings.v1): the bug
+    scan's grep+parse over the locus journal / warnings / seat panes plus the
+    loop detector's active loops. Absent or unreadable = no findings."""
+    if st.state_dir is None:
+        return
+    p = Path(st.state_dir) / FINDINGS_FILE
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    rows = doc.get("findings") if isinstance(doc, dict) else None
+    st.findings = [r for r in (rows or []) if isinstance(r, dict) and r.get("kind")]
+    st.findings_path = str(p)
+    st.findings_updated = int(doc.get("updated") or 0)
+
+
+def _fmt_finding(r: dict) -> str:
+    def hhmm(t):
+        try:
+            return datetime.fromtimestamp(float(t)).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OSError):
+            return "?"
+    out = [f"[{r.get('severity') or 'low'}] {r['kind']} · {r.get('locus') or 'this station'} · "
+           f"{r.get('source') or '?'} ×{int(r.get('count') or 0)} (first {hhmm(r.get('first_seen'))}, "
+           f"last {hhmm(r.get('last_seen'))})",
+           f"  signature: {r.get('signature') or ''}"]
+    for s in (r.get("sample_lines") or [])[:1]:
+        out.append(f"  > {str(s)[:240]}")
+    if r.get("suggested_action"):
+        out.append(f"  action: {r['suggested_action']}")
+    return "\n".join(out)
+
+
+def findings_reply(st: BState) -> str:
+    if not st.findings_path:
+        return ("I have no log findings: the station's deterministic log scan has not "
+                f"published {FINDINGS_FILE} to my state dir"
+                + (f" ({st.state_dir})" if st.state_dir else "") + " yet.")
+    if not st.findings:
+        return ("No running problems in my findings — the station's deterministic log "
+                f"scan and loop detector have nothing active ({st.findings_path}).")
+    shown = st.findings[:FINDINGS_SHOWN]
+    more = len(st.findings) - len(shown)
+    return (f"{len(st.findings)} finding(s) from the station's deterministic log scan"
+            + (f" (showing {len(shown)})" if more > 0 else "") + ":\n"
+            + "\n".join(_fmt_finding(r) for r in shown))
 
 
 # ── deterministic answers ────────────────────────────────────────────────────
@@ -336,6 +407,12 @@ def search(st: BState, query: str) -> list[str]:
         for i, line in enumerate(st.log_lines, 1):
             if any(n in line.lower() for n in needles):
                 hits.append(f"log:{st.log_path}:{i}: {line.strip()[:EXCERPT]}")
+        for r in st.findings:
+            hay = " ".join(str(r.get(k) or "") for k in ("kind", "source", "locus", "signature")) \
+                + " " + " ".join(str(x) for x in r.get("sample_lines") or [])
+            if any(n in hay.lower() for n in needles):
+                hits.append(f"finding:{r.get('key') or '?'} {r['kind']} {r.get('source') or ''}"
+                            f" ×{int(r.get('count') or 0)}: {str(r.get('signature') or '')[:EXCERPT]}")
         if hits:
             return hits
     return []
@@ -472,7 +549,9 @@ def respond(text: str, sess, server, state: dict | None = None, *,
     if intent.kind == "meta":
         name = model_name or model or state.get("bmodel") or _configured_model_name(workspace)
         return done(meta_reply(name, base or _configured_base(workspace)), "meta")
-    if st.empty:
+    if intent.kind == "findings":
+        return done(findings_reply(st), "findings")
+    if st.empty and not (intent.kind == "search" and st.findings):
         return done(empty_state_reply(st, intent), "empty")
     if intent.kind == "state":
         return done(state_reply(st, intent.fields), "state")

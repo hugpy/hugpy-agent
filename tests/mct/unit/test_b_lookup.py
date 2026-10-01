@@ -282,3 +282,68 @@ def test_repl_b_prompt_uses_lookup(session, broker):
         body = _b_prompt("which entries mention klein", session, broker, {"last": None})
     assert "catalog:notes.md" in body and body.rstrip().endswith("· lookup)")
     assert "policy: keep answers terse" in _b_state_text(session, broker, {"last": None})
+
+
+# ── station log findings (findings.json next to mct.log) ─────────────────────
+FINDINGS_DOC = {
+    "schema": "station.findings.v1", "updated": 1790730000, "detector": "log_findings",
+    "findings": [
+        {"key": "a1b2c3d4e5f6", "kind": "crash_loop", "severity": "high",
+         "source": "hugpy-station-web.service", "locus": "ae-hugpy", "count": 120,
+         "first_seen": 1790720000, "last_seen": 1790729900,
+         "signature": "unit failed repeatedly",
+         "sample_lines": ["2026-09-29T18:42:23-05:00 ae systemd[1]: hugpy-station-web.service: "
+                          "Scheduled restart job, restart counter is at 120."],
+         "suggested_action": ""},
+        {"key": "0f9e8d7c6b5a", "kind": "rate_limit_429", "severity": "high", "source": "hugpy",
+         "locus": "ae-hugpy", "count": 7, "first_seen": 1790729000, "last_seen": 1790729800,
+         "signature": "ERROR upstream N Too Many Requests", "sample_lines": ["... 429 ..."],
+         "suggested_action": "wait for the window or switch the seat's model"},
+    ],
+    "emitted": [],
+}
+
+
+def _write_findings(broker, doc=FINDINGS_DOC):
+    from pathlib import Path
+    p = Path(broker.ledger.event_log_path).parent / bl.FINDINGS_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(doc))
+    return p
+
+
+@pytest.mark.parametrize("text", [
+    "what's broken?", "what is failing", "any errors?", "are there crash loops",
+    "any 429s", "show me the findings", "anything wrong on ae?",
+])
+def test_classify_findings(text):
+    assert classify(text).kind == "findings"
+
+
+def test_findings_answered_by_lookup_even_when_state_empty(session, broker):
+    path = _write_findings(broker)
+    NeverChat.calls = 0
+    out = respond("what's broken?", session, broker, chat=NeverChat(), busy=lambda: False)
+    assert NeverChat.calls == 0
+    assert out["mode"] == "findings" and out["model"] == "lookup" and out["tokens"] == 0
+    assert "2 finding(s)" in out["reply"]
+    assert "crash_loop · ae-hugpy · hugpy-station-web.service ×120" in out["reply"]
+    assert "action: wait for the window" in out["reply"]
+    assert _meta(out["reply"]) == (0, "lookup")
+    assert str(path) == bl.collect_state(session, broker).findings_path
+
+
+def test_findings_absent_or_empty_say_so(session, broker):
+    out = respond("any errors?", session, broker, chat=NeverChat(), busy=lambda: False)
+    assert out["mode"] == "findings" and "no log findings" in out["reply"]
+    _write_findings(broker, dict(FINDINGS_DOC, findings=[]))
+    out = respond("any errors?", session, broker, chat=NeverChat(), busy=lambda: False)
+    assert "No running problems" in out["reply"]
+
+
+def test_search_covers_findings(session, broker):
+    _write_findings(broker)
+    out = respond("find hugpy-station-web", session, broker, chat=NeverChat(), busy=lambda: False)
+    assert out["mode"] == "search"
+    assert "finding:a1b2c3d4e5f6 crash_loop hugpy-station-web.service ×120" in out["reply"]
+    assert _meta(out["reply"]) == (0, "lookup")
