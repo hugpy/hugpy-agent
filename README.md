@@ -697,6 +697,8 @@ Seed lineage: the wire-contract client code is lifted from the field-tested
 
 ## Terminal client (`hugpy-agent tui`)
 
+![hugpy-agent tui on a fresh hugpy-ubuntu box: roles sidebar, keeper transcript, composer, status bar with toolserver tools](https://raw.githubusercontent.com/hugpy/hugpy-agent/main/docs/img/hugpy-agent-tui.png)
+
 `hugpy-agent tui` is a curses harness (stdlib only) over **abstract-claude
 serve** (`/api/console/*`, the keeper console on `:9124` / hugpy locus `:9125`)
 and, unchanged from before, **hugpy-agent serve** (`:9126`). Discovery order:
