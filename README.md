@@ -690,9 +690,69 @@ the network state; the splash uses the Hugpy Agent wordmark.
 | `y a n c` / digits | answer an approval / question modal (Esc hides, Ctrl-A reopens) |
 | `r` (transcript) · Ctrl-L · Ctrl-Q | retry / un-hold · redraw · quit |
 
-Slash commands: `/model /session <id> /queue /retry /expand [n] /status /tools /help /quit`.
+Slash commands: `/model /session <id> /queue /retry /expand [n] /status /tools /handoff /locus /help /quit`.
+`/handoff` stores the session's state on its toolserver ledger row; `/locus` opens the locus picker.
 Tests: `PYTHONPATH=tests:src python -m pytest tests/test_serve_client_*.py tests/test_tui_*.py`
 (`HUGPY_TUI_LIVE=1` adds a GET-only smoke against `127.0.0.1:9124`).
+
+### Layout
+
+Header: `HUGPY AGENT · abstract-claude <host:port> LOCUS [tabs]`, clock and
+token counters top-right. Left sidebar: **ROLES** (keeper / chat / worker /
+local, each with backend + model) above **SESSIONS**. Centre: transcript.
+Bottom: the composer line, prefixed `>`, and the status bar. Token counters are
+blank on hugpy serves — the hugpy serve engine emits no per-turn usage.
+TodoWrite calls render as `N todos`; `mcp__toolserver__x` renders as
+`toolserver:x`.
+
+### Loci (multiple serves, local or over SSH)
+
+`tui/loci.py` reads `~/.hugpy/tui-loci.json` (override: `$HUGPY_TUI_LOCI`), a
+list of `{locus, serve}` or `{locus, ssh, port}` entries. A remote locus gets an
+on-demand `ssh -N -L` tunnel, opened on first switch and closed on quit. Switch
+with `/locus` or by clicking a header tab (tabs need ≈90 columns; narrower
+terminals fold to `@locus`). Each locus's client and model are parked when you
+leave, so switching back is instant. Pollers pause during a locus swap.
+
+### Mouse and typing
+
+- `HUGPY_TUI_MOUSE=1` (default) enables x-aware clicks: sidebar rows switch
+  sessions, header tabs switch loci, transcript rows expand tool calls. The
+  wheel scrolls the transcript (BUTTON4/5). Shift+drag selects text in the
+  terminal as usual.
+- **Typing always types**: any printable key pressed while the transcript has
+  focus (other than `a`, `r`, Space) refocuses the composer and is inserted.
+  The hint `transcript selected — just type (or F2)` marks that state.
+- Bracketed paste is supported; a multi-line paste never auto-submits.
+- The terminal runs in `curses.raw`, so Ctrl-C and Ctrl-Q arrive as keys
+  rather than signals.
+
+### Polling
+
+Roster every 10 s, state 5 s, rollover 30 s, toolserver 15 s; each backs off on
+error. The toolserver line in the status bar comes from `toolserver_probe`
+(`toolserver_client`).
+
+### Attention-worthy
+
+- **tmux alternate screen.** Station runs seats in tmux with
+  `alternate-screen off` socket-wide. A window hosting the TUI must run
+  `tmux setw alternate-screen on` (Station ≥ 1.0.153 does this for the
+  `serve-tui` seat), otherwise every redraw piles into scrollback.
+- Mouse clicks reach the TUI through tmux even when tmux's own mouse mode is
+  off; wheel events are only passed through when the seat lets them (Station
+  routes wheel to tmux copy-mode for every seat except `serve-tui`).
+- Blank token counters on a hugpy serve are expected, not a bug.
+
+### Niche mechanics
+
+- Serve discovery probes each candidate with `GET /api/state` and infers the
+  serve kind from the reply's shape; `--kind` overrides.
+- Remote tunnels are owned by the TUI process — killing it without quitting
+  can leave an `ssh -N` behind.
+- Station's prompt composer can target this TUI: with the `serve-tui` frontier
+  backend it types the text into the composer and presses Enter, so it lands
+  in whichever session currently has focus.
 
 ## Headless sessions for Station
 
