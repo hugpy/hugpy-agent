@@ -145,7 +145,7 @@ def draw_transcript(scr, m, rect, theme, wide=False, hits=None):
     if height <= 0:
         return 0, len(lines)
     max_first = max(0, len(lines) - height)
-    if m.focus == "transcript" and m.selected != -1:
+    if m.focus == "transcript" and m.selected != -1 and scroll >= 0:
         # Keep the selected block in view, scrolling the MINIMUM needed (never
         # snapping the row to the pane top on a one-row move).
         rows = [i for i, ln in enumerate(lines) if ln.block_index == m.selected]

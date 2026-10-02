@@ -214,6 +214,7 @@ class App:
     def submit(self, text):
         if text.startswith("/"):
             return self.slash(text)
+        self.dispatch({"type": "scroll", "to": "end"})
         sid = self.m.active_sid
         if not sid:
             # no session yet: the serve mints one for sid "new"; the receipt
@@ -685,6 +686,8 @@ class App:
             self.dispatch({"type": "focus"})
         elif key == curses.KEY_UP:
             if m.focus == "transcript":
+                if m.lane().scroll < 0:
+                    self.dispatch({"type": "scroll", "to": 0, "current": self.last_lines[0]})
                 self.dispatch({"type": "move", "delta": -1})
             elif self.composer.multiline:
                 self.composer.up()               # caret up one line within the composer
@@ -692,6 +695,8 @@ class App:
                 self.composer.recall(-1)
         elif key == curses.KEY_DOWN:
             if m.focus == "transcript":
+                if m.lane().scroll < 0:
+                    self.dispatch({"type": "scroll", "to": 0, "current": self.last_lines[0]})
                 self.dispatch({"type": "move", "delta": 1})
             elif self.composer.multiline:
                 self.composer.down()
@@ -769,7 +774,8 @@ class App:
     def draw(self):
         scr, m = self.screen, self.m
         scr.erase()
-        if m.roster is None or (m.active_sid and not m.lane().loaded and m.net != "down"):
+        ever_loaded = any(l.loaded for l in m.lanes.values())
+        if (m.roster is None or (m.active_sid and not m.lane().loaded)) and not ever_loaded and m.net != "down":
             panels.draw_splash(scr, self.client.base, self.theme)
             if m.net in ("degraded", "down") and self.poll_error:
                 h, w = scr.getmaxyx()
@@ -784,6 +790,9 @@ class App:
         self.hits = {}
         self.last_lines = transcript.draw_transcript(scr, m, rects.transcript, self.theme, wide=rects.wide,
                                                      hits=self.hits)
+        if m.active_sid and not m.lane().loaded:
+            panels.put(scr, rects.transcript.y, rects.transcript.x,
+                       "loading session %s …" % m.active_sid[:13], self.theme.MUTED)
         if rects.rule.h:
             title = " prompt — / for commands · Enter send · \\+Enter newline "
             bar = "─" * max(0, rects.rule.w)
