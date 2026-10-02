@@ -221,6 +221,10 @@ class App:
             self.send("action", {"type": "sent", "receipt": receipt, "now": self.now()})
         except ServeError as exc:
             self.send("notice", "send failed: %s" % exc)
+        except (TimeoutError, OSError) as exc:
+            # a dropped stream must surface as a notice, never a thread
+            # traceback sprayed over the curses screen
+            self.send("notice", "stream lost (%s) — /retry or resend" % type(exc).__name__)
         finally:
             if native:
                 self.sse_active.discard(sid)

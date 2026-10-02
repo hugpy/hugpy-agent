@@ -40,11 +40,16 @@ class Http:
         return urllib.request.Request(self.url(path, query), data=data,
                                       headers=headers, method=method)
 
-    def open(self, path, method="GET", body=None, query=None, timeout=None):
-        """Return the raw response (caller closes) — used for SSE streams."""
+    _NO_OVERRIDE = object()
+
+    def open(self, path, method="GET", body=None, query=None, timeout=_NO_OVERRIDE):
+        """Return the raw response (caller closes) — used for SSE streams.
+        timeout=None means NO socket timeout (an SSE stream may sit silent for
+        minutes while the engine thinks); omitting it uses the client default."""
         req = self._request(path, method, body, query)
         try:
-            return urllib.request.urlopen(req, timeout=timeout or self.timeout)
+            t = self.timeout if timeout is self._NO_OVERRIDE else timeout
+            return urllib.request.urlopen(req, timeout=t)
         except urllib.error.HTTPError as exc:
             raise ServeError(_detail(exc), exc.code) from exc
         except (OSError, ValueError) as exc:
