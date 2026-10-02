@@ -53,6 +53,31 @@ class Composer:
         nxt = self.buffer.find("\n", self.cursor)
         self.cursor = len(self.buffer) if nxt < 0 else nxt
 
+    def up(self):
+        """Move the caret up one LOGICAL line, keeping the column. No-op on the
+        first line (the App falls back to history there)."""
+        start = self.buffer.rfind("\n", 0, self.cursor) + 1
+        if start == 0:
+            return False
+        col = self.cursor - start
+        prev_start = self.buffer.rfind("\n", 0, start - 1) + 1
+        prev_len = start - 1 - prev_start
+        self.cursor = prev_start + min(col, prev_len)
+        return True
+
+    def down(self):
+        """Move the caret down one logical line, keeping the column."""
+        line_end = self.buffer.find("\n", self.cursor)
+        if line_end < 0:
+            return False
+        start = self.buffer.rfind("\n", 0, self.cursor) + 1
+        col = self.cursor - start
+        nxt_start = line_end + 1
+        nxt_end = self.buffer.find("\n", nxt_start)
+        nxt_end = len(self.buffer) if nxt_end < 0 else nxt_end
+        self.cursor = nxt_start + min(col, nxt_end - nxt_start)
+        return True
+
     def clear(self):
         self.buffer, self.cursor, self.hist_index = "", 0, None
 

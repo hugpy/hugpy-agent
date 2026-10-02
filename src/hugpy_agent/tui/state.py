@@ -139,8 +139,10 @@ def _clear_receipts(m, message_ids):
 def _pick_active(roster, prefer):
     rows = list(roster.roles) + list(roster.sessions)
     if prefer:
+        pl = prefer.lower()
         for row in rows:
-            if prefer in (row.id, row.role, row.label.lower()) and row.id:
+            if row.id and (prefer == row.id or pl == (row.role or "").lower()
+                           or pl == (row.label or "").lower()):
                 return row.id
         for row in rows:
             if row.id.startswith(prefer):

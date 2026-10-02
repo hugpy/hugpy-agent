@@ -30,7 +30,8 @@ HELP = [
     "  Enter/Space/click opens a chip or call · Ctrl-O (or a, transcript focus) toggle all",
     "PgUp/PgDn, Ctrl-U/Ctrl-D scroll · End follow tail · Ctrl-T expand latest tool card",
     "Ctrl-K queue · r (transcript focus) retry / un-hold · Ctrl-A reopen approval · Ctrl-L redraw",
-    "Slash: /model /session <id> /queue /retry /expand [n] /status /tools /help /quit",
+    "Slash: /handoff /resume /rollover /context /session <id> /model /queue /retry",
+    "       /expand [n] /status /tools /help /quit",
 ]
 SLASH_MENU = [
     ("/handoff",  "store this session's state on its toolserver row (engine)"),
@@ -50,6 +51,16 @@ SLASH_MENU = [
 
 CTRL = {name: ord(ch) - 64 for name, ch in {"A": "A", "C": "C", "D": "D", "G": "G", "K": "K", "L": "L",
                                               "O": "O", "P": "P", "Q": "Q", "T": "T", "U": "U", "X": "X"}.items()}
+
+# Fallback decoding for CSI sequences terminfo did not fold into a KEY_* (seen
+# with Home/End over tmux: they arrive as ESC[H / ESC[F, not khome/kend). Keyed
+# by the bytes AFTER "ESC[".
+_CSI_KEYS = {
+    "H": curses.KEY_HOME, "1~": curses.KEY_HOME, "7~": curses.KEY_HOME,
+    "F": curses.KEY_END, "4~": curses.KEY_END, "8~": curses.KEY_END,
+    "A": curses.KEY_UP, "B": curses.KEY_DOWN, "C": curses.KEY_RIGHT, "D": curses.KEY_LEFT,
+    "5~": curses.KEY_PPAGE, "6~": curses.KEY_NPAGE, "Z": curses.KEY_BTAB, "3~": curses.KEY_DC,
+}
 
 
 def toolserver_probe(explicit=None):
@@ -325,7 +336,7 @@ class App:
             return
         lines = []
         try:
-            events, _cursor = self.client.events(sid, "0")
+            events = self.client.events(sid, "0").events   # EventPage(events, busy, queue, cursor, source, truncated)
         except Exception as exc:
             events = []
             lines.append("events unavailable: %s" % exc)
@@ -386,17 +397,26 @@ class App:
             self.dispatch({"type": "notice", "text": "no session to set a model on — send a prompt first"})
             return
         chosen = options[pick]
-        target = (row.role or row.id) if row else self.m.active_sid
         try:
             if self.client.kind == "hugpy":
                 self.client.set_model((row.id if row else self.m.active_sid), chosen.model)
                 note = "model: " + chosen.model
-            elif chosen.backend and chosen.backend != row.backend:
-                self.client.set_provider(target, chosen.backend, chosen.model)
-                note = "provider → %s/%s" % (chosen.backend, chosen.model or "default")
             else:
-                doc = self.client.set_model(target, chosen.model)
-                note = "model: %s%s" % (chosen.model or "default", " (staged)" if staged_model(doc, target) else "")
+                # abstract-claude roster set_provider/set_model key on a STANDING
+                # ROLE. A plain cs-* / native session has no role, so posting its
+                # id as a role silently no-ops — refuse with a factual notice
+                # rather than pretend it took (and avoid row.backend on None).
+                if not (row and row.role):
+                    self.dispatch({"type": "notice",
+                                   "text": "model is set per role — switch to a role (Tab) to change its model"})
+                    return
+                if chosen.backend and chosen.backend != row.backend:
+                    self.client.set_provider(row.role, chosen.backend, chosen.model)
+                    note = "provider → %s/%s" % (chosen.backend, chosen.model or "default")
+                else:
+                    doc = self.client.set_model(row.role, chosen.model)
+                    note = "model: %s%s" % (chosen.model or "default",
+                                            " (staged)" if staged_model(doc, row.role) else "")
             self.dispatch({"type": "notice", "text": note})
             self.roster_now.set()
         except ServeError as exc:
@@ -410,8 +430,10 @@ class App:
             return
         rows = [r for r in roster.roles if r.id] + [s for s in roster.sessions if s.id not in {r.id for r in roster.roles}]
         if wanted:
+            wl = wanted.lower()
             for r in rows:
-                if wanted in (r.id, r.role, (r.label or "").lower()) or r.id.startswith(wanted):
+                if wanted == r.id or wl == (r.role or "").lower() or wl == (r.label or "").lower() \
+                        or r.id.startswith(wanted):
                     self.dispatch({"type": "select", "sid": r.id})
                     return
             self.dispatch({"type": "notice", "text": "no session %s" % wanted})
@@ -495,6 +517,57 @@ class App:
             return key
         return key
 
+    def _menu_open(self):
+        """True while the slash command menu is on screen (composer focus, the
+        buffer is a single `/token` and draw() found matches)."""
+        return (self.m.focus == "composer" and bool(self._slash_hits)
+                and self.composer.buffer.startswith("/")
+                and " " not in self.composer.buffer)
+
+    def _read_csi(self):
+        """Read the tail of an ESC-[ control sequence (already consumed ESC and
+        '['); returns e.g. '200~' / '201~' / 'A'. Reads nodelay — the terminal
+        sends the whole sequence in one burst — tolerating a few empty reads."""
+        out, misses = [], 0
+        while misses < 3:
+            ch = self.getkey()
+            if ch == -1:
+                misses += 1
+                continue
+            misses = 0
+            c = ch if isinstance(ch, str) else (chr(ch) if 32 <= ch < 0x110000 else "")
+            if not c:
+                break
+            out.append(c)
+            if c.isalpha() or c == "~":
+                break
+        return "".join(out)
+
+    def _paste(self):
+        """Insert a bracketed-paste payload literally (CR -> newline) instead of
+        letting each line's Enter submit. Ends at ESC[201~ or a 2 s deadline."""
+        buf, deadline = [], self.now() + 2.0
+        while self.now() < deadline:
+            ch = self.getkey()
+            if ch == -1:
+                time.sleep(0.005)                          # paste may arrive chunked; wait for 201~
+                continue
+            if ch == 27:
+                nxt = self.getkey()
+                if nxt in (ord("["), "["):
+                    if self._read_csi() == "201~":
+                        break
+                continue
+            if isinstance(ch, str):
+                buf.append(ch)
+            elif ch in (10, 13):
+                buf.append("\n")
+            elif 32 <= ch < 0x110000:
+                buf.append(chr(ch))
+        text = "".join(buf)
+        if text and self.m.focus == "composer":
+            self.composer.insert(text)
+
     def handle_key(self, key):
         """Returns 'quit' to leave the loop."""
         m = self.m
@@ -515,20 +588,33 @@ class App:
             elif key == "r":
                 self.retry()
             return None
-        if key == 27:                                     # Esc / Alt-chord
+        menu_open = self._menu_open()
+        if key == 27:                                     # Esc / Alt-chord / CSI
             self.screen.nodelay(True)
             try:
                 nxt = self.getkey()
+                if nxt in (ord("["), "["):
+                    seq = self._read_csi()
+                    if seq == "200~":                      # bracketed paste start
+                        self._paste()
+                        return None
+                    mapped = _CSI_KEYS.get(seq)            # Home/End/etc terminfo missed
+                    if mapped is not None:
+                        self.screen.timeout(100)           # restore before re-dispatch (finally also will)
+                        return self.handle_key(mapped)
+                    return None                            # other CSI: swallow quietly
             finally:
-                self.screen.nodelay(False)
+                self.screen.timeout(100)                   # NEVER nodelay(False): keep the poll tick alive
             if nxt in (10, 13):
                 self.composer.newline()
-            elif nxt == -1:
-                self.dispatch({"type": "notice", "text": ""})
+            elif nxt == -1:                                # bare Esc
+                if menu_open:
+                    self.composer.clear()                  # Esc closes the slash menu
+                else:
+                    self.dispatch({"type": "notice", "text": ""})
+            elif isinstance(nxt, str) and m.focus == "composer":
+                self.composer.insert(nxt)                  # Alt+<letter>: don't swallow the letter
             return None
-        menu_open = (m.focus == "composer" and self._slash_hits
-                     and self.composer.buffer.startswith("/")
-                     and " " not in self.composer.buffer)
         if menu_open and key == curses.KEY_UP:
             self.slash_sel = (self.slash_sel - 1) % len(self._slash_hits)
             return None
@@ -581,7 +667,10 @@ class App:
         elif key == getattr(curses, "KEY_MOUSE", None):
             self.click()
         elif key == CTRL["T"]:
-            self.dispatch({"type": "expand", "index": None if m.focus == "composer" else m.selected})
+            # transcript focus with a real selection expands it; otherwise (incl.
+            # selected == -1) fall through to _expand's latest-card default.
+            index = m.selected if (m.focus == "transcript" and m.selected != -1) else None
+            self.dispatch({"type": "expand", "index": index})
         elif key == CTRL["L"]:
             self.screen.clear()
         elif key == CTRL["U"] or key == curses.KEY_PPAGE:
@@ -597,12 +686,16 @@ class App:
         elif key == curses.KEY_UP:
             if m.focus == "transcript":
                 self.dispatch({"type": "move", "delta": -1})
-            elif not self.composer.multiline:
+            elif self.composer.multiline:
+                self.composer.up()               # caret up one line within the composer
+            else:
                 self.composer.recall(-1)
         elif key == curses.KEY_DOWN:
             if m.focus == "transcript":
                 self.dispatch({"type": "move", "delta": 1})
-            elif not self.composer.multiline:
+            elif self.composer.multiline:
+                self.composer.down()
+            else:
                 self.composer.recall(1)
         elif key in (curses.KEY_BACKSPACE, 127, 8):
             self.composer.backspace()
@@ -613,9 +706,18 @@ class App:
         elif key == curses.KEY_RIGHT:
             self.composer.right()
         elif key == curses.KEY_HOME:
-            self.composer.home()
+            if m.focus == "transcript":
+                # jump selection to the first block so the view follows to the top
+                # (a bare scroll-to-top would be yanked back by selection-follow).
+                self.dispatch({"type": "scroll", "to": "top"})
+                self.dispatch({"type": "move", "delta": -(10 ** 6)})
+            else:
+                self.composer.home()
         elif key == curses.KEY_END:
-            if m.focus == "transcript" or not self.composer.buffer:
+            if m.focus == "transcript":
+                self.dispatch({"type": "scroll", "to": "end"})
+                self.dispatch({"type": "move", "delta": 10 ** 6})
+            elif not self.composer.buffer:
                 self.dispatch({"type": "scroll", "to": "end"})
             else:
                 self.composer.end()
@@ -635,10 +737,19 @@ class App:
         return None
 
     def click(self):
-        """Left click on a transcript row toggles that call / chip (serve parity)."""
+        """Left click on a transcript row toggles that call / chip (serve parity);
+        the scroll wheel scrolls the transcript."""
         try:
             _, _x, y, _, bstate = curses.getmouse()
         except curses.error:
+            return
+        up = getattr(curses, "BUTTON4_PRESSED", 0)
+        down = getattr(curses, "BUTTON5_PRESSED", 0)
+        if up and bstate & up:
+            self.scroll(-max(1, self.page_rows() // 3))
+            return
+        if down and bstate & down:
+            self.scroll(max(1, self.page_rows() // 3))
             return
         target = self.hits.get(y)
         if target is None or not bstate & curses.BUTTON1_CLICKED:
@@ -678,15 +789,20 @@ class App:
             bar = "─" * max(0, rects.rule.w)
             panels.put(scr, rects.rule.y, 0, bar, self.theme.MUTED)
             panels.put(scr, rects.rule.y, 2, title, self.theme.MUTED)
+            # focus cue: which pane keys drive, right-aligned on the rule row.
+            marker = "[transcript ↑↓ select]" if m.focus == "transcript" else "[composer]"
+            panels.put(scr, rects.rule.y, max(0, rects.rule.w - len(marker) - 2), marker,
+                       self.theme.ACCENT if m.focus == "transcript" else self.theme.MUTED)
         cy, cx = cv.draw_composer(scr, self.composer, rects.composer, self.theme)
         buf = self.composer.buffer
         if m.focus == "composer" and buf.startswith("/") and " " not in buf and "\n" not in buf:
-            hits = [(c, d) for c, d in SLASH_MENU if c.startswith(buf)]
+            max_rows = max(1, rects.rule.y - 1)            # only as many rows as fit above the rule
+            hits = [(c, d) for c, d in SLASH_MENU if c.startswith(buf)][:max_rows]
             self._slash_hits = [c for c, _ in hits]
             self.slash_sel = min(self.slash_sel, max(0, len(hits) - 1))
             top = max(1, rects.rule.y - len(hits))
             box_w = max(10, rects.transcript.w - 1)
-            for i, (c, d) in enumerate(hits[: rects.rule.y - 1]):
+            for i, (c, d) in enumerate(hits):
                 line = (" ▸ " if i == self.slash_sel else "   ") + "%-10s %s" % (c, d)
                 panels.put(scr, top + i, rects.transcript.x,
                            line[:box_w].ljust(box_w),      # solid row: occlude the transcript
@@ -696,9 +812,14 @@ class App:
             self.slash_sel = 0
         panels.draw_status(scr, m, rects.status, self.theme, self.now())
         try:
-            scr.move(cy, cx)
+            curses.curs_set(1 if m.focus == "composer" else 0)   # park the caret off the transcript
         except curses.error:
             pass
+        if m.focus == "composer":
+            try:
+                scr.move(cy, cx)
+            except curses.error:
+                pass
         scr.refresh()
 
     def run(self):
@@ -713,10 +834,13 @@ class App:
         except curses.error:
             pass
         if os.environ.get("HUGPY_TUI_MOUSE", "1") != "0":
-            try:                  # click toggles tool calls; Shift+drag still selects text
-                curses.mousemask(curses.BUTTON1_CLICKED)
+            try:                  # click toggles tool calls; wheel scrolls; Shift+drag still selects text
+                mask = curses.BUTTON1_CLICKED | getattr(curses, "BUTTON4_PRESSED", 0) \
+                    | getattr(curses, "BUTTON5_PRESSED", 0)
+                curses.mousemask(mask)
             except (curses.error, AttributeError):
                 pass
+        self._paste_mode(True)    # bracketed paste: multi-line pastes insert, never auto-submit
         h, w = self.screen.getmaxyx()
         self.dispatch({"type": "resize", "h": h, "w": w})
         self.start_poller()
@@ -733,8 +857,21 @@ class App:
             return 0              # SIGINT still lands if raw() was unavailable
         finally:
             self.closed.set()
+            self._paste_mode(False)
             try:
                 curses.noraw()
                 curses.curs_set(0)
             except curses.error:
                 pass
+
+    @staticmethod
+    def _paste_mode(on):
+        """Toggle the terminal's bracketed-paste mode (DECSET 2004). Written
+        straight to the tty so pasted newlines arrive wrapped in ESC[200~/201~
+        instead of as submitting Enters."""
+        try:
+            import sys
+            sys.stdout.write("\x1b[?2004h" if on else "\x1b[?2004l")
+            sys.stdout.flush()
+        except Exception:
+            pass

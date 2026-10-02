@@ -146,12 +146,17 @@ def draw_transcript(scr, m, rect, theme, wide=False, hits=None):
         return 0, len(lines)
     max_first = max(0, len(lines) - height)
     if m.focus == "transcript" and m.selected != -1:
-        # Keep the selected block in view.
+        # Keep the selected block in view, scrolling the MINIMUM needed (never
+        # snapping the row to the pane top on a one-row move).
         rows = [i for i, ln in enumerate(lines) if ln.block_index == m.selected]
-        if rows and scroll >= 0 and not (scroll <= rows[0] < scroll + height):
-            scroll = min(max_first, rows[0])
-        elif rows and scroll < 0 and rows[0] < max_first:
-            scroll = rows[0]
+        if rows:
+            cur = max_first if scroll < 0 else min(scroll, max_first)
+            if rows[0] < cur:
+                scroll = rows[0]                       # selection above view: pull up to it
+            elif rows[-1] >= cur + height:
+                scroll = min(max_first, rows[-1] - height + 1)   # below view: bring to bottom row
+            else:
+                scroll = cur                           # already visible: leave the viewport put
     first = max_first if scroll < 0 else min(scroll, max_first)
     for row, line in enumerate(lines[first:first + height]):
         attr = getattr(theme, line.attr, 0)
