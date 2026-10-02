@@ -298,6 +298,12 @@ class AbstractClaudeClient(Client):
     def rollover(self):
         return self.http.get("/api/session/rollover")
 
+    def roll(self, sid, by="tui"):
+        """Trigger the serve's native rollover for a session (handoff ->
+        fresh successor -> resume, session chain written by the serve)."""
+        return self.http.post("/api/session/rollover",
+                              {"action": "roll", "session_id": sid, "by": by})
+
     # -- writes ------------------------------------------------------------
     def send(self, sid, text, on_event=None):
         body = {"session_id": sid, "prompt": text}

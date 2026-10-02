@@ -90,6 +90,8 @@ class App:
         self.events = queue.Queue()
         self.closed = threading.Event()
         self.composer = cv.Composer()
+        self.slash_sel = 0
+        self._slash_hits = []
         self.theme = theme
         self.sse_active = set()
         self.roster_now = threading.Event()
@@ -275,6 +277,18 @@ class App:
         elif cmd == "/expand":
             index = int(args[0]) if args and args[0].isdigit() else None
             self.dispatch({"type": "expand", "index": index})
+        elif cmd == "/rollover":
+            sid = self.m.active_sid
+            if not sid:
+                self.dispatch({"type": "notice", "text": "no session"})
+            else:
+                try:
+                    res = self.client.roll(sid)
+                    self.dispatch({"type": "notice",
+                                   "text": "rollover: " + (res.get("note") or
+                                           ("queued" if res.get("ok") else str(res.get("error"))))})
+                except ServeError as exc:
+                    self.dispatch({"type": "notice", "text": "rollover failed: %s" % exc})
         elif cmd == "/context":
             self.show_context()
         elif cmd == "/status":
@@ -500,13 +514,28 @@ class App:
             elif nxt == -1:
                 self.dispatch({"type": "notice", "text": ""})
             return None
-        if key == 9 and m.focus == "composer" and self.composer.buffer.startswith("/") \
-                and " " not in self.composer.buffer:
-            hits = [c for c, _ in SLASH_MENU if c.startswith(self.composer.buffer)]
-            if hits:
-                self.composer.clear()
-                self.composer.insert(hits[0] + (" " if hits[0] in ("/session", "/expand") else ""))
+        menu_open = (m.focus == "composer" and self._slash_hits
+                     and self.composer.buffer.startswith("/")
+                     and " " not in self.composer.buffer)
+        if menu_open and key == curses.KEY_UP:
+            self.slash_sel = (self.slash_sel - 1) % len(self._slash_hits)
             return None
+        if menu_open and key == curses.KEY_DOWN:
+            self.slash_sel = (self.slash_sel + 1) % len(self._slash_hits)
+            return None
+        if menu_open and key == 9:
+            pick = self._slash_hits[self.slash_sel]
+            self.composer.clear()
+            self.composer.insert(pick + (" " if pick in ("/session", "/expand") else ""))
+            return None
+        if menu_open and key in (10, 13, curses.KEY_ENTER):
+            pick = self._slash_hits[self.slash_sel]
+            if pick in ("/session", "/expand"):
+                self.composer.clear()
+                self.composer.insert(pick + " ")
+                return None
+            self.composer.clear()
+            return self.submit(pick)
         if key in (10, 13, curses.KEY_ENTER):
             if m.focus == "transcript":
                 self.dispatch({"type": "expand"})
@@ -641,12 +670,17 @@ class App:
         buf = self.composer.buffer
         if m.focus == "composer" and buf.startswith("/") and " " not in buf and "\n" not in buf:
             hits = [(c, d) for c, d in SLASH_MENU if c.startswith(buf)]
+            self._slash_hits = [c for c, _ in hits]
+            self.slash_sel = min(self.slash_sel, max(0, len(hits) - 1))
             top = max(1, rects.rule.y - len(hits))
             for i, (c, d) in enumerate(hits[: rects.rule.y - 1]):
-                line = " %-10s %s " % (c, d)
+                line = (" ▸ " if i == self.slash_sel else "   ") + "%-10s %s " % (c, d)
                 panels.put(scr, top + i, rects.transcript.x,
                            line[: max(10, rects.transcript.w - 1)],
-                           self.theme.MUTED if i else 0)
+                           0 if i == self.slash_sel else self.theme.MUTED)
+        else:
+            self._slash_hits = []
+            self.slash_sel = 0
         panels.draw_status(scr, m, rects.status, self.theme, self.now())
         try:
             scr.move(cy, cx)
