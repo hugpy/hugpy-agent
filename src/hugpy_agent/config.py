@@ -17,7 +17,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-DEFAULT_BASE = "https://dev.hugpy.ai/api"
+from abstract_toolserver import hugpy_home
+
+# The fleet pointer is resolved centrally (abstract_toolserver.hugpy_home.base:
+# env → ~/.hugpy/.env → http://127.0.0.1:7002); no hugpy arm keeps its own.
+DEFAULT_BASE = hugpy_home.DEFAULT_BASE
 # Operator-chosen agent brain — BRAIN SWITCH 2026-07-17 (operator call on the
 # P3.4 scorecard): Qwen3-Coder-Next replaces flux2-klein. Reliability over
 # speed — coder passed 4/4 eval tasks vs klein's 3/4 (klein looped on
@@ -165,7 +169,7 @@ def _as_bool(value) -> bool | None:
 
 @dataclass
 class Config:
-    base: str = DEFAULT_BASE
+    base: str = field(default_factory=hugpy_home.base)
     api_key: str = ""
     model: str = DEFAULT_AGENT_BRAIN
     # Second-in-line brain (HUGPY_AGENT_BRAIN_2). Empty (the default) turns

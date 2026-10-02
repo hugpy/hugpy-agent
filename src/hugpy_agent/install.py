@@ -203,8 +203,9 @@ def main(argv=None, home: str | None = None, runner=None) -> int:
         description="Install hugpy-agent as a systemd user service "
                     "(unit + 0600 env file + linger + enable).")
     p.add_argument("--central", default=os.environ.get("HUGPY_BASE"),
-                   help="fleet base URL (HUGPY_BASE), e.g. "
-                        "https://dev.hugpy.ai/api")
+                   help="fleet base URL (HUGPY_BASE; default from "
+                        "~/.hugpy/.env, else http://127.0.0.1:7002), e.g. "
+                        "https://dev.hugpy.ai")
     # Secrets prefer the ENVIRONMENT over argv: bootstrap.sh exports them so
     # they never appear in `ps` / shell history on the target box.
     p.add_argument("--key", default=os.environ.get("HUGPY_API_KEY"),

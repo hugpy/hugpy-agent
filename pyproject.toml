@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hugpy-agent"
-version = "0.1.102"
+version = "0.1.103"
 description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,7 +25,7 @@ classifiers = [
 # abstract-toolserver is the CENTRAL toolserver client (stdlib-only core, no
 # server stack): the one shared client/discovery every consumer pins
 # (abstract-toolserver CENTRALIZATION.md, 2026-09-30).
-dependencies = ["hugpy-tools", "abstract-toolserver>=0.0.53"]
+dependencies = ["hugpy-tools", "abstract-toolserver>=0.0.54"]
 
 # Optional extras. No extra pins a vendor SDK (anthropic / openai / google …);
 # the only abstract-* base dependency is the stdlib-only toolserver client above.
