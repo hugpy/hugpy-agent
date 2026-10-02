@@ -177,7 +177,7 @@ class AppTests(unittest.TestCase):
 
         def getmouse():
             y = next(row for row, target in ui.hits.items() if target == -3)      # chip of the run at block 1
-            return (0, 3, y, 0, curses.BUTTON1_CLICKED)
+            return (0, ui.side_w + 3, y, 0, curses.BUTTON1_CLICKED)   # in the transcript, not the sidebar
         with patch.object(app_mod.curses, "getmouse", getmouse, create=True):
             self.run_app(ui)
         self.assertEqual(ui.m.lane().groups_open, {1})

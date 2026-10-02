@@ -17,7 +17,9 @@ import time
 from ..serve_client import ServeError
 from ..serve_client.abstract_claude import is_cs, staged_model
 from . import layout
+from . import loci as loci_mod
 from .state import Model, reduce
+from . import loci as loci_mod
 from .views import composer as cv
 from .views import modals, panels, theme as theme_mod, transcript
 
@@ -39,6 +41,7 @@ SLASH_MENU = [
     ("/rollover", "roll now · on/off/auto/manual/status = auto-roller switch"),
     ("/context",  "show the whole session as fed to the model + tokens"),
     ("/session",  "switch session (or Ctrl-G picker)"),
+    ("/locus",    "switch locus (named serve, ssh-tunnelled when remote)"),
     ("/model",    "model picker"),
     ("/queue",    "queue view"),
     ("/retry",    "retry / un-hold"),
@@ -110,8 +113,21 @@ class App:
         self.poll_error = ""
         self.last_lines = (0, 0)
         self.hits = {}                  # screen row -> transcript target (mouse clicks)
+        self.side_hits = {}             # screen row -> session id (sidebar clicks)
+        self.side_w = 0                 # sidebar width at last draw (0 when folded)
         self._sel_seen = -1             # last drawn selection: follow it only when it CHANGES
         self.now = time.monotonic
+        # -- loci: named serves the operator can switch between (tui/loci.py)
+        self.loci = loci_mod.load_loci()
+        self.tunnels = loci_mod.Tunnels()
+        self.active_locus = next((e["locus"] for e in self.loci
+                                  if (e.get("serve") or "").rstrip("/") == client.base.rstrip("/")), "")
+        if not self.active_locus:
+            self.loci.insert(0, {"locus": "here", "serve": client.base})
+            self.active_locus = "here"
+        self._locus_held = {}           # locus -> (client, Model) parked by switch_locus
+        self.locus_hits = []            # [(x0, x1, locus)] on the header row (mouse)
+        self.pause_poll = threading.Event()
 
     # -- thread -> main loop ---------------------------------------------------
     def send(self, kind, value):
@@ -155,6 +171,9 @@ class App:
     def _poll_loop(self):
         due = {"roster": 0.0, "state": 0.0, "rollover": 0.0, "tools": 0.0, "usage": 0.0}
         while not self.closed.is_set():
+            if self.pause_poll.is_set():
+                self._sleep(0.1)
+                continue
             m = self.m
             now = self.now()
             if m.net_retry_at and now < m.net_retry_at:
@@ -291,6 +310,8 @@ class App:
             self.pick_model()
         elif cmd == "/session":
             self.pick_session(args[0] if args else None)
+        elif cmd == "/locus":
+            self.pick_locus(args[0] if args else None)
         elif cmd == "/queue":
             self.open_queue()
         elif cmd == "/retry":
@@ -471,6 +492,56 @@ class App:
         except ServeError as exc:
             self.dispatch({"type": "notice", "text": str(exc)})
 
+    def pick_locus(self, wanted=None):
+        """/locus [name] — picker over tui-loci.json; switches the whole serve."""
+        if not self.loci:
+            self.dispatch({"type": "notice", "text": "no loci (write ~/.hugpy/tui-loci.json)"})
+            return
+        if wanted:
+            entry = next((e for e in self.loci if e["locus"].lower() == wanted.lower()
+                          or e["locus"].lower().startswith(wanted.lower())), None)
+            if entry is None:
+                self.dispatch({"type": "notice", "text": "no locus %s" % wanted})
+                return
+            self.switch_locus(entry)
+            return
+        labels = ["%-10s %s%s" % (e["locus"], e.get("serve") or ("ssh " + e.get("ssh", "")),
+                                  " · current" if e["locus"] == self.active_locus else "")
+                  for e in self.loci]
+        current = next((i for i, e in enumerate(self.loci) if e["locus"] == self.active_locus), 0)
+        pick = modals.choose(self.screen, "LOCI", labels, self.theme, self.drain, selected=current)
+        if pick is not None:
+            self.switch_locus(self.loci[pick])
+
+    def switch_locus(self, entry):
+        """Park the current (client, model), connect to the entry's serve
+        (opening its ssh tunnel when remote) and adopt or create its state."""
+        if entry["locus"] == self.active_locus:
+            return
+        from ..serve_client import connect
+        from .discovery import identify, probe
+        self.dispatch({"type": "notice", "text": "locus %s: connecting…" % entry["locus"]})
+        self.draw()
+        self.pause_poll.set()           # the poller must not race the swap
+        try:
+            held = self._locus_held.pop(entry["locus"], None)
+            if held is None:
+                base = self.tunnels.base_for(entry)
+                kind = identify(probe(base, timeout=2.0))
+                if kind is None:
+                    raise RuntimeError("%s is not a serve" % base)
+                held = (connect(base, kind), Model(kind=kind, base=base))
+            self._locus_held[self.active_locus] = (self.client, self.m)
+            self.client, self.m = held
+            self.active_locus = entry["locus"]
+            self.sse_active = set()
+            self.roster_now.set()
+            self.dispatch({"type": "notice", "text": "locus %s" % entry["locus"]})
+        except (RuntimeError, ServeError, OSError) as exc:
+            self.dispatch({"type": "notice", "text": "locus %s: %s" % (entry["locus"], exc)})
+        finally:
+            self.pause_poll.clear()
+
     def pick_session(self, wanted=None):
         roster = self.m.roster
         if not roster or not (roster.roles or roster.sessions):
@@ -636,6 +707,10 @@ class App:
                 self.dispatch({"type": "expand_all"})
             elif key == "r":
                 self.retry()
+            else:
+                # typing always types: any other printable bounces focus back
+                self.dispatch({"type": "focus", "which": "composer"})
+                self.composer.insert(key)
             return None
         menu_open = self._menu_open()
         if key == 27:                                     # Esc / Alt-chord / CSI
@@ -787,6 +862,13 @@ class App:
             self.dispatch({"type": "expand_all"})
         elif m.focus == "transcript" and key == ord("r"):
             self.retry()
+        elif 32 <= key < 0x110000:
+            # typing always types: printable in transcript focus returns to the composer
+            self.dispatch({"type": "focus", "which": "composer"})
+            try:
+                self.composer.insert(chr(key))
+            except ValueError:
+                pass
         return None
 
     def click(self):
@@ -804,8 +886,21 @@ class App:
         if down and bstate & down:
             self.scroll(max(1, self.page_rows() // 3))
             return
+        if not bstate & curses.BUTTON1_CLICKED:
+            return
+        if y == 0 and self.locus_hits:                 # header: click a locus tab
+            for x0, x1, name in self.locus_hits:
+                if x0 <= _x <= x1:
+                    self.pick_locus(name)
+                    return
+            return
+        if self.side_w and _x <= self.side_w:          # sidebar: click a row to switch
+            sid = self.side_hits.get(y)
+            if sid is not None and sid != self.m.active_sid:
+                self.dispatch({"type": "select", "sid": sid})
+            return
         target = self.hits.get(y)
-        if target is None or not bstate & curses.BUTTON1_CLICKED:
+        if target is None:
             return
         self.dispatch({"type": "expand", "index": target, "select": True})
 
@@ -833,8 +928,12 @@ class App:
         h, w = scr.getmaxyx()
         rows, _ = self.composer.lines(max(1, w - 2))
         rects = layout.compute(h, w, len(rows))
-        panels.draw_header(scr, m, rects.header, self.theme, folded=rects.narrow)
-        panels.draw_sidebar(scr, m, rects.sidebar, self.theme)
+        self.locus_hits = []
+        panels.draw_header(scr, m, rects.header, self.theme, folded=rects.narrow,
+                           loci=self.loci, active_locus=self.active_locus, locus_hits=self.locus_hits)
+        self.side_hits = {}
+        self.side_w = rects.sidebar.w
+        panels.draw_sidebar(scr, m, rects.sidebar, self.theme, hits=self.side_hits)
         self.hits = {}
         self.last_lines = transcript.draw_transcript(scr, m, rects.transcript, self.theme, wide=rects.wide,
                                                      hits=self.hits, follow_sel=m.selected != self._sel_seen)
@@ -852,6 +951,11 @@ class App:
             panels.put(scr, rects.rule.y, max(0, rects.rule.w - len(marker) - 2), marker,
                        self.theme.ACCENT if m.focus == "transcript" else self.theme.MUTED)
         cy, cx = cv.draw_composer(scr, self.composer, rects.composer, self.theme)
+        if m.focus == "transcript" and not self.composer.buffer:
+            # The composer is not receiving keys: say so where the operator is looking.
+            panels.put(scr, rects.composer.y, rects.composer.x + 2,
+                       "transcript selected — just type (or F2) to return to the prompt",
+                       self.theme.ACCENT, rects.composer.w - 2)
         buf = self.composer.buffer
         if m.focus == "composer" and buf.startswith("/") and " " not in buf and "\n" not in buf:
             max_rows = max(1, rects.rule.y - 1)            # only as many rows as fit above the rule
@@ -915,6 +1019,7 @@ class App:
             return 0              # SIGINT still lands if raw() was unavailable
         finally:
             self.closed.set()
+            self.tunnels.close()
             self._paste_mode(False)
             try:
                 curses.noraw()

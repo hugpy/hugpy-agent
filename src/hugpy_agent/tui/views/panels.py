@@ -53,7 +53,7 @@ def other_sessions(m, limit=8):
     return rows[:limit]
 
 
-def draw_header(scr, m, rect, theme, folded=False):
+def draw_header(scr, m, rect, theme, folded=False, loci=None, active_locus="", locus_hits=None):
     host = m.base.replace("http://", "").replace("https://", "")
     text = "HUGPY AGENT · %s %s" % (m.kind or "serve", host)
     if folded:
@@ -64,10 +64,35 @@ def draw_header(scr, m, rect, theme, folded=False):
             marks.append("[%s]" % mark if r.id == m.active_sid else mark)
         port = host.rsplit(":", 1)[-1] if ":" in host else host
         text = "HUGPY · %s %s  %s" % ("ac" if m.kind == "abstract-claude" else (m.kind or "?"), port, " ".join(marks))
+        if active_locus:
+            text += "  @" + active_locus
+        put(scr, rect.y, rect.x, text, theme.ACCENT, rect.w)
+        return
     put(scr, rect.y, rect.x, text, theme.ACCENT, rect.w)
+    if not loci:
+        return
+    # Locus tabs, right of the title: `LOCUS  hugpy │ keeper │ hs-fresh`
+    # (current one highlighted; each tab's x-span lands in locus_hits for clicks).
+    x = rect.x + len(text) + 3
+    put(scr, rect.y, x, "LOCUS", theme.MUTED, max(0, rect.w - x))
+    x += 6
+    for i, entry in enumerate(loci):
+        name = entry["locus"]
+        if i:
+            put(scr, rect.y, x, " │ ", theme.MUTED, max(0, rect.w - x))
+            x += 3
+        if x + len(name) > rect.w:
+            break
+        current = name == active_locus
+        put(scr, rect.y, x, ("[%s]" % name) if current else name,
+            theme.SELECT if current else 0, max(0, rect.w - x))
+        span = len(name) + (2 if current else 0)
+        if locus_hits is not None:
+            locus_hits.append((x, x + span - 1, name))
+        x += span
 
 
-def draw_sidebar(scr, m, rect, theme):
+def draw_sidebar(scr, m, rect, theme, hits=None):
     if rect.h <= 0:
         return
     y = rect.y
@@ -86,6 +111,8 @@ def draw_sidebar(scr, m, rect, theme):
             line = "%s %-7s %s" % (mark, name[:7], state or (r.backend or "")[:8])
         attr = theme.SELECT if r.id == m.active_sid else (theme.HELD if r.paused else 0)
         put(scr, y, rect.x, line, attr, rect.w)
+        if hits is not None:
+            hits[y] = r.id
         y += 1
     others = other_sessions(m)
     if others and y + 1 < rect.bottom:
@@ -98,6 +125,8 @@ def draw_sidebar(scr, m, rect, theme):
             mark = "●" if s.id == m.active_sid else "○"
             line = "%s %s %s" % (mark, short_id(s.id), (s.label or s.backend)[: max(1, rect.w - 12)])
             put(scr, y, rect.x, line, theme.SELECT if s.id == m.active_sid else theme.MUTED, rect.w)
+            if hits is not None:
+                hits[y] = s.id
             y += 1
     # Separator column (transcript starts at rect.w + 1).
     for row in range(rect.y, rect.bottom):
