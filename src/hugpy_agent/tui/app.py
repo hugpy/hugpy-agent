@@ -216,9 +216,12 @@ class App:
         if native:
             self.sse_active.add(sid)
         try:
+            had_sid = bool(self.m.active_sid)
             receipt = self.client.send(sid, text, on_event=(lambda ev: self.send(
                 "action", {"type": "sse_event", "sid": sid, "event": ev, "now": self.now()})) if native else None)
             self.send("action", {"type": "sent", "receipt": receipt, "now": self.now()})
+            if not had_sid:
+                self.roster_now.set()      # the new session shows up in pickers at once
         except ServeError as exc:
             self.send("notice", "send failed: %s" % exc)
         except (TimeoutError, OSError) as exc:
@@ -376,14 +379,17 @@ class App:
             self.dispatch({"type": "notice", "text": "no models offered"})
             return
         labels = ["%s  (%s)" % (o.label or o.model, o.backend) for o in options]
-        pick = modals.choose(self.screen, "MODEL · %s" % ((row.label or row.id) if row else "?"), labels, self.theme, self.drain)
-        if pick is None or row is None:
+        pick = modals.choose(self.screen, "MODEL · %s" % ((row.label or row.id) if row else (self.m.active_sid or "?")[:13]), labels, self.theme, self.drain)
+        if pick is None:
+            return
+        if row is None and not self.m.active_sid:
+            self.dispatch({"type": "notice", "text": "no session to set a model on — send a prompt first"})
             return
         chosen = options[pick]
-        target = row.role or row.id
+        target = (row.role or row.id) if row else self.m.active_sid
         try:
             if self.client.kind == "hugpy":
-                self.client.set_model(row.id, chosen.model)
+                self.client.set_model((row.id if row else self.m.active_sid), chosen.model)
                 note = "model: " + chosen.model
             elif chosen.backend and chosen.backend != row.backend:
                 self.client.set_provider(target, chosen.backend, chosen.model)
@@ -398,7 +404,9 @@ class App:
 
     def pick_session(self, wanted=None):
         roster = self.m.roster
-        if not roster:
+        if not roster or not (roster.roles or roster.sessions):
+            self.dispatch({"type": "notice",
+                           "text": "no sessions on this serve yet — type a prompt to start one"})
             return
         rows = [r for r in roster.roles if r.id] + [s for s in roster.sessions if s.id not in {r.id for r in roster.roles}]
         if wanted:
