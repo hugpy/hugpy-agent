@@ -353,8 +353,12 @@ def _sent(m, a):
     receipt = a["receipt"]
     entry = {"receipt": receipt, "ts": a.get("now", 0.0), "unacked": False}
     notice = "Queued" if receipt.queued else m.notice
+    # a first prompt sent with sid "new": adopt the serve-minted session id
+    active = m.active_sid or (receipt.session_id
+                              if receipt.session_id and receipt.session_id != "new" else "")
     # Sending un-holds (audit B.11); the next queue view confirms it.
     return replace(m, pending_receipts=m.pending_receipts + [entry], notice=notice,
+                   active_sid=active,
                    held=(False, "") if m.held[0] and not receipt.queued else m.held)
 
 

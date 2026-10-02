@@ -187,8 +187,10 @@ class App:
             return self.slash(text)
         sid = self.m.active_sid
         if not sid:
-            self.dispatch({"type": "notice", "text": "no session selected (Ctrl-G)"})
-            return
+            # no session yet: the serve mints one for sid "new"; the receipt
+            # carries the real id and _sent adopts it as active.
+            sid = "new"
+            self.dispatch({"type": "notice", "text": "starting a new session…"})
         threading.Thread(target=self._send, args=(sid, text), daemon=True).start()
 
     def _send(self, sid, text):
