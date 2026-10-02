@@ -48,6 +48,10 @@ class Lane:
     expanded: set = field(default_factory=set)
     groups_open: set = field(default_factory=set)   # start index of opened ⚙ call chips
     rebaseline: bool = False      # App must reload from cursor "0"
+    tok_in: int = 0               # accumulated from per-row usage meta (cs-* has no usage DB)
+    tok_out: int = 0
+    cost: float = 0.0
+    saw_usage: bool = False       # per-row usage seen: done.exchange would double-count
 
 
 @dataclass
@@ -165,12 +169,29 @@ def _apply_event(m, lane, ev, now, stale=False):
         return m
     lane.seen.add(key)
     k = ev.kind
+    u = ev.meta.get("usage")
+    if isinstance(u, dict):
+        lane.tok_in += int(u.get("input_tokens") or u.get("in") or 0)
+        lane.tok_out += int(u.get("output_tokens") or u.get("out") or 0)
+        lane.saw_usage = True
+    c = ev.meta.get("cost")
+    if isinstance(c, dict):
+        lane.cost += float(c.get("usd") or c.get("cost_usd") or c.get("cost") or 0)
+    elif isinstance(c, (int, float)):
+        lane.cost += float(c)
     if stale and k in ("approval", "question"):
         blocks.append(Block(k, ev.text, name=ev.name, detail=ev.detail, request_id=ev.request_id,
                             ts=ev.ts, seq=ev.seq, decision="expired"))
         return m
     if k == "user":
         _close_streaming(blocks)
+        for i, bb in enumerate(blocks):
+            if bb.kind == "user" and bb.meta.get("local") and bb.text == ev.text:
+                if ev.meta.get("sse"):
+                    return m                     # keep the echo; sse preview is dropped at sse_done
+                blocks[i] = Block("user", ev.text, ts=ev.ts, seq=ev.seq, meta=dict(ev.meta))
+                lane.turn_text = False
+                return _clear_receipts(m, ev.meta.get("message_ids"))
         blocks.append(Block("user", ev.text, ts=ev.ts, seq=ev.seq, meta=dict(ev.meta)))
         lane.turn_text = False
         return _clear_receipts(m, ev.meta.get("message_ids"))
@@ -274,6 +295,9 @@ def _apply_event(m, lane, ev, now, stale=False):
             m = replace(m, notice="Queued")
         if meta.get("exchange"):
             ex = meta["exchange"]
+            if not lane.saw_usage:
+                lane.tok_in += int(ex.get("in") or ex.get("input_tokens") or 0)
+                lane.tok_out += int(ex.get("out") or ex.get("output_tokens") or 0)
             cost = (meta.get("cost") or {}).get("usd", 0) if isinstance(meta.get("cost"), dict) else 0
             m = replace(m, usage=Usage(int(ex.get("in") or ex.get("input_tokens") or 0),
                                        int(ex.get("out") or ex.get("output_tokens") or 0),
@@ -351,6 +375,17 @@ def _roster(m, a):
                    net="live" if m.net == "connecting" else m.net)
 
 
+def _local_user(m, a):
+    """Echo the operator's prompt into the lane immediately; the server's
+    user event replaces it in place (or it is dropped on receipt_lost)."""
+    sid = a["sid"]
+    lane = _copy_lane(m, sid)
+    _close_streaming(lane.blocks)
+    lane.blocks.append(Block("user", a["text"], ts=a.get("now", 0.0), meta={"local": True}))
+    lane.scroll = -1
+    return _with_lane(m, sid, lane)
+
+
 def _sent(m, a):
     receipt = a["receipt"]
     entry = {"receipt": receipt, "ts": a.get("now", 0.0), "unacked": False}
@@ -358,6 +393,10 @@ def _sent(m, a):
     # a first prompt sent with sid "new": adopt the serve-minted session id
     active = m.active_sid or (receipt.session_id
                               if receipt.session_id and receipt.session_id != "new" else "")
+    if active and active != "new" and "new" in m.lanes and active not in m.lanes:
+        lanes = dict(m.lanes)
+        lanes[active] = lanes.pop("new")     # carry the local echo into the real lane
+        m = replace(m, lanes=lanes)
     # Sending un-holds (audit B.11); the next queue view confirms it.
     return replace(m, pending_receipts=m.pending_receipts + [entry], notice=notice,
                    active_sid=active,
@@ -534,7 +573,7 @@ def _quit_confirm(m, a):
 
 _HANDLERS = {
     "events": _events, "sse_event": _sse_event, "sse_done": _sse_done, "roster": _roster,
-    "sent": _sent, "queue": _queue, "net": _net, "tick": _tick, "receipt_lost": _receipt_lost,
+    "local_user": _local_user, "sent": _sent, "queue": _queue, "net": _net, "tick": _tick, "receipt_lost": _receipt_lost,
     "resize": _resize, "select": _select, "scroll": _scroll, "move": _move, "expand": _expand, "expand_all": _expand_all,
     "approval_shown": _approval_shown, "approval_answered": _approval_answered, "notice": _notice,
     "focus": _focus, "usage": _usage, "tools": _tools, "quit_confirm": _quit_confirm,

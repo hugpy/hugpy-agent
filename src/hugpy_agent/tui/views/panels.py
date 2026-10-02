@@ -139,8 +139,15 @@ def status_fields(m, now=None):
         total = m.usage.in_tokens + m.usage.out_tokens
         ctx = "/%s" % _k(m.usage.context_window) if m.usage.context_window else ""
         fields.append("tok %s%s" % (_k(total), ctx))
-    elif row is not None and row.backend == "claude" and (row.id or "").startswith("cs-"):
-        fields.append("tok n/a")                       # decision 2: no usage rows for cs-* claude
+    else:
+        lane = m.lane() if hasattr(m, "lane") else None
+        if lane is not None and (lane.tok_in or lane.tok_out or lane.cost):
+            tok = "tok %s in/%s out" % (_k(lane.tok_in), _k(lane.tok_out))
+            if lane.cost:
+                tok += " $%.2f" % lane.cost
+            fields.append(tok)                         # cs-*: summed from per-row usage meta
+        elif row is not None and row.backend == "claude" and (row.id or "").startswith("cs-"):
+            fields.append("tok n/a")                   # no usage anywhere yet for this cs-* session
     fields.append("tools: %s" % (m.tools or "off"))
     net = {"live": "● live", "degraded": "◌ retrying", "down": "✕ down", "connecting": "… connecting"}[m.net]
     if m.net in ("degraded", "down") and m.net_retry_at:

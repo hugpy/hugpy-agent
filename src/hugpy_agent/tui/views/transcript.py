@@ -129,7 +129,7 @@ def render_lines(m, width, wide=False):
     return lines
 
 
-def draw_transcript(scr, m, rect, theme, wide=False, hits=None):
+def draw_transcript(scr, m, rect, theme, wide=False, hits=None, follow_sel=True):
     """Returns (first_visible_line, total_lines) for the scroll reducer."""
     if rect.h <= 0 or rect.w <= 0:
         return 0, 0
@@ -145,7 +145,7 @@ def draw_transcript(scr, m, rect, theme, wide=False, hits=None):
     if height <= 0:
         return 0, len(lines)
     max_first = max(0, len(lines) - height)
-    if m.focus == "transcript" and m.selected != -1 and scroll >= 0:
+    if m.focus == "transcript" and m.selected != -1 and scroll >= 0 and follow_sel:
         # Keep the selected block in view, scrolling the MINIMUM needed (never
         # snapping the row to the pane top on a one-row move).
         rows = [i for i, ln in enumerate(lines) if ln.block_index == m.selected]

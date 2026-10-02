@@ -110,6 +110,7 @@ class App:
         self.poll_error = ""
         self.last_lines = (0, 0)
         self.hits = {}                  # screen row -> transcript target (mouse clicks)
+        self._sel_seen = -1             # last drawn selection: follow it only when it CHANGES
         self.now = time.monotonic
 
     # -- thread -> main loop ---------------------------------------------------
@@ -221,6 +222,7 @@ class App:
             # carries the real id and _sent adopts it as active.
             sid = "new"
             self.dispatch({"type": "notice", "text": "starting a new session…"})
+        self.dispatch({"type": "local_user", "sid": sid, "text": text, "now": self.now()})
         threading.Thread(target=self._send, args=(sid, text), daemon=True).start()
 
     def _send(self, sid, text):
@@ -789,7 +791,8 @@ class App:
         panels.draw_sidebar(scr, m, rects.sidebar, self.theme)
         self.hits = {}
         self.last_lines = transcript.draw_transcript(scr, m, rects.transcript, self.theme, wide=rects.wide,
-                                                     hits=self.hits)
+                                                     hits=self.hits, follow_sel=m.selected != self._sel_seen)
+        self._sel_seen = m.selected
         if m.active_sid and not m.lane().loaded:
             panels.put(scr, rects.transcript.y, rects.transcript.x,
                        "loading session %s …" % m.active_sid[:13], self.theme.MUTED)
