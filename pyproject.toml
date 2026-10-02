@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hugpy-agent"
-version = "0.1.98"
+version = "0.1.99"
 description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
 readme = "README.md"
 requires-python = ">=3.10"

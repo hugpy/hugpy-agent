@@ -400,12 +400,26 @@ class App:
                           self.theme, self.drain)
 
     def show_tools(self):
+        """Name + first description line, grouped by category prefix — a wall
+        of bare mcp names is unscannable (operator 2026-10-02)."""
         lines = []
         try:
             if self.tools_list:
-                tools = self.tools_list()
-                for t in tools or []:
-                    lines.append(t if isinstance(t, str) else (t.get("name") or str(t)))
+                by_cat = {}
+                for t in self.tools_list() or []:
+                    if isinstance(t, str):
+                        name, desc = t, ""
+                    else:
+                        name = t.get("name") or str(t)
+                        desc = (t.get("description") or "").strip().split("\n", 1)[0]
+                        if len(desc) > 140:
+                            desc = desc[:139] + "…"
+                    by_cat.setdefault(name.split("_", 1)[0], []).append((name, desc))
+                for cat in sorted(by_cat):
+                    lines.append("── %s (%d) " % (cat, len(by_cat[cat])))
+                    w = max(len(n) for n, _ in by_cat[cat])
+                    for name, desc in sorted(by_cat[cat]):
+                        lines.append("  %-*s  %s" % (w, name, desc) if desc else "  " + name)
             elif self.tools_status:
                 lines.append(str(self.tools_status()))
         except Exception as exc:

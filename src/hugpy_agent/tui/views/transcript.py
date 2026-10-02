@@ -26,6 +26,14 @@ def _first_line(text):
     return (text or "").strip().split("\n", 1)[0]
 
 
+def _ts(block):
+    """`[HH:MM] ` from the block's event time; '' when the serve sent none."""
+    if not getattr(block, "ts", 0):
+        return ""
+    import time
+    return time.strftime("[%H:%M] ", time.localtime(block.ts))
+
+
 def _mark(block):
     return tc.status_mark(block)
 
@@ -50,7 +58,7 @@ def tool_lines(block, index, width, expanded, wide=False, depth=0, children=0):
         attr = "TOOL"                                  # still running
     else:
         attr = "MUTED"
-    lines = [Line(cut(pad + tc.head(block, expanded, children), width), attr, index)]
+    lines = [Line(cut(pad + _ts(block) + tc.head(block, expanded, children), width), attr, index)]
     if not expanded:
         if wide and block.output:
             lines.append(Line(cut(pad + "    ↳ " + _first_line(block.output), width), attr if attr == "TOOL_ERR" else "MUTED", index))
@@ -71,9 +79,10 @@ def block_lines(block, index, width, expanded, wide=False, depth=0, children=0):
     """Lines for one block (attr names resolved by draw_transcript)."""
     kind = block.kind
     if kind == "user":
-        return [Line(t, "USER", index) for t in wrap("▶ " + block.text, width)]
+        return [Line(t, "USER", index) for t in wrap(_ts(block) + "▶ " + block.text, width)]
     if kind == "assistant":
-        text = block.text + (" ▍" if block.streaming else "")
+        stamp = _ts(block) if (block.text or "").strip() else ""
+        text = stamp + block.text + (" ▍" if block.streaming else "")
         return [Line(t, "ASSIST", index) for t in wrap(text, width)]
     if kind == "thinking":
         pad = "  " * depth
@@ -86,10 +95,10 @@ def block_lines(block, index, width, expanded, wide=False, depth=0, children=0):
             return [Line(t, "MUTED", index) for t in wrap("· " + block.text + "\n" + block.detail, width)]
         return [Line(cut("· " + block.text, width), "MUTED", index)]
     if kind == "note":
-        return [Line(t, "TOOL_ERR" if block.ok is False else "MUTED", index) for t in wrap("» " + block.text, width)]
+        return [Line(t, "TOOL_ERR" if block.ok is False else "MUTED", index) for t in wrap(_ts(block) + "» " + block.text, width)]
     if kind in ("approval", "question"):
         state = block.decision or "pending"
-        return [Line(t, "TOOL", index) for t in wrap("? %s → %s" % (block.text, state), width)]
+        return [Line(t, "TOOL", index) for t in wrap(_ts(block) + "? %s → %s" % (block.text, state), width)]
     if kind == "tool":
         return tool_lines(block, index, width, expanded, wide, depth, children)
     return [Line(t, "MUTED", index) for t in wrap(block.text, width)]

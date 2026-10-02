@@ -43,8 +43,13 @@ def feed(m, events, busy=False):
     return st.reduce(m, {"type": "events", "sid": CS, "page": page, "now": 1.0})
 
 
+import re as _re
+_STAMP = _re.compile(r"\[\d{2}:\d{2}\] ")
+
 def texts(m, width=100):
-    return [ln.text for ln in transcript.render_lines(m, width)]
+    # timestamps are wall-clock (TZ-dependent): strip them so the layout
+    # asserts stay stable; _ts itself is covered in test_tui_views
+    return [_STAMP.sub("", ln.text, 1) for ln in transcript.render_lines(m, width)]
 
 
 class SummariserTests(unittest.TestCase):
