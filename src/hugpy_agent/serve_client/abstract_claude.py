@@ -309,8 +309,17 @@ class AbstractClaudeClient(Client):
                               {"action": "roll", "session_id": sid, "by": by})
 
     # -- writes ------------------------------------------------------------
+    ROLE_IDS = ("keeper", "chat", "worker", "local")
+
     def send(self, sid, text, on_event=None):
         body = {"session_id": sid, "prompt": text}
+        if sid in self.ROLE_IDS:
+            # Role panes (the Local/B pane above all) are not claude sessions —
+            # posting them to /api/session/chat makes the serve run
+            # `claude --resume local` and fail. The relay route owns them.
+            doc = self.http.post("/api/session/%s/message" % sid,
+                                 {"text": text, "from": "operator", "by": "tui"})
+            return Receipt(session_id=sid, queued=bool(doc.get("queued")))
         if is_cs(sid):
             doc = self.http.post("/api/console/chat", body)
             return Receipt(session_id=doc.get("session_id", sid), message_ids=list(doc.get("message_ids") or []),
