@@ -753,6 +753,10 @@ def cmd_runs(args) -> int:
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = _direct_harness_argv(argv)
+    # ~/.hugpy/.env ($HUGPY_HOME) fills settings the shell didn't export
+    # (HUGPY_AGENT_SERVE, HUGPY_SERVE_TOKEN, ...); the environment still wins.
+    from abstract_toolserver import hugpy_home
+    hugpy_home.load()
     ap = argparse.ArgumentParser(
         prog="hugpy-agent",
         description="Portable agent runtime on the hugpy fleet. `hugpy-agent "
