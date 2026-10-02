@@ -6,6 +6,38 @@ adapter, assess→act→observe loop with a crash-safe SQLite journal, a
 workspace-jailed toolset, markdown memory, and a CLI. **Python ≥ 3.10,
 stdlib only — zero dependencies.**
 
+## Part of the hugpy orbit
+
+```
+                    ┌──────────────────────────── hugpy (fleet) ───────────────────────────┐
+                    │ central + workers: platform · engine · fleet · server · media · …     │
+                    │ OpenAI-compatible /v1 — every local model, incl. B (Qwen3-Coder-Next) │
+                    └───────▲───────────────────────▲──────────────────────────▲───────────┘
+                            │ inference             │ inference                │ B reductions
+   ┌────────────────────────┴──┐   ┌────────────────┴──────────┐   ┌───────────┴───────────────┐
+   │ hugpy-station             │   │ hugpy-agent               │   │ abstract-toolserver       │
+   │ desktop + headless console│──▶│ agent runtime · TUI ·     │◀─▶│ comms · ledgers · boards ·│
+   │ tmux seats per locus      │   │ OpenCode/qwen seats       │   │ exchanges · MCP · b_ask   │
+   └────────────┬──────────────┘   └────────────┬──────────────┘   └───────────▲───────────────┘
+                │ keeper/codex seats            │ --serve                      │ tools (MCP/HTTP)
+   ┌────────────▼──────────────┐   ┌────────────▼──────────────┐               │
+   │ abstract-gpt (Codex seat) │   │ abstract-claude serve ────┼───────────────┘
+   │ abstract-claude (Claude)  │   │  └ abstract-serve-core    │
+   └───────────────────────────┘   └───────────────────────────┘
+          everything ships through abstract-pypit → PyPI (+ GitHub)
+```
+
+| Package | Role | PyPI |
+|---|---|---|
+| **hugpy** (14 lockstep dists) | the self-hosted LLM fleet: central, workers, engine, media, server | [hugpy](https://pypi.org/project/hugpy/) |
+| **hugpy-station** | Electron desktop + headless backend; tmux seats, prompt composer, loop/bug scan | deb via central install links |
+| **hugpy-agent** | agent runtime on the fleet; `hugpy-agent tui` over abstract-claude serve | [hugpy-agent](https://pypi.org/project/hugpy-agent/) |
+| **abstract-claude** | Claude Code launch/session/rollover + `abstract-claude serve` (roles keeper/chat/worker/local) | [abstract-claude](https://pypi.org/project/abstract-claude/) |
+| **abstract-serve-core** | the HTTP routes `abstract-claude serve` actually runs (queue, relay, rollover sweeps) | [abstract-serve-core](https://pypi.org/project/abstract-serve-core/) |
+| **abstract-gpt** | Codex/ChatGPT seat counterpart of abstract-claude | [abstract-gpt](https://pypi.org/project/abstract-gpt/) |
+| **abstract-toolserver** | one tool service per host: comms, ledgers, boards, exchanges, MCP bridge, B on call | [abstract-toolserver](https://pypi.org/project/abstract-toolserver/) |
+| **abstract-pypit** | one-command publisher: bump → build → PyPI → GitHub push | [abstract-pypit](https://pypi.org/project/abstract-pypit/) |
+
 ## Install
 
 ```sh
