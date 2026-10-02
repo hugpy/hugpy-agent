@@ -673,10 +673,11 @@ class App:
             self._slash_hits = [c for c, _ in hits]
             self.slash_sel = min(self.slash_sel, max(0, len(hits) - 1))
             top = max(1, rects.rule.y - len(hits))
+            box_w = max(10, rects.transcript.w - 1)
             for i, (c, d) in enumerate(hits[: rects.rule.y - 1]):
-                line = (" ▸ " if i == self.slash_sel else "   ") + "%-10s %s " % (c, d)
+                line = (" ▸ " if i == self.slash_sel else "   ") + "%-10s %s" % (c, d)
                 panels.put(scr, top + i, rects.transcript.x,
-                           line[: max(10, rects.transcript.w - 1)],
+                           line[:box_w].ljust(box_w),      # solid row: occlude the transcript
                            0 if i == self.slash_sel else self.theme.MUTED)
         else:
             self._slash_hits = []
