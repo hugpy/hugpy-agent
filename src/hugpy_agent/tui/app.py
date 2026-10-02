@@ -32,6 +32,22 @@ HELP = [
     "Ctrl-K queue · r (transcript focus) retry / un-hold · Ctrl-A reopen approval · Ctrl-L redraw",
     "Slash: /model /session <id> /queue /retry /expand [n] /status /tools /help /quit",
 ]
+SLASH_MENU = [
+    ("/handoff",  "store this session's state on its toolserver row (engine)"),
+    ("/resume",   "load the state this session continues (engine)"),
+    ("/rollover", "handoff -> clear -> resume, toolserver-managed (engine)"),
+    ("/context",  "show the whole session as fed to the model + tokens"),
+    ("/session",  "switch session (or Ctrl-G picker)"),
+    ("/model",    "model picker"),
+    ("/queue",    "queue view"),
+    ("/retry",    "retry / un-hold"),
+    ("/expand",   "expand card [n]"),
+    ("/status",   "status line into transcript"),
+    ("/tools",    "tool list"),
+    ("/help",     "keys and commands"),
+    ("/quit",     "leave the TUI"),
+]
+
 CTRL = {name: ord(ch) - 64 for name, ch in {"A": "A", "C": "C", "D": "D", "G": "G", "K": "K", "L": "L",
                                               "O": "O", "P": "P", "Q": "Q", "T": "T", "U": "U", "X": "X"}.items()}
 
@@ -259,6 +275,8 @@ class App:
         elif cmd == "/expand":
             index = int(args[0]) if args and args[0].isdigit() else None
             self.dispatch({"type": "expand", "index": index})
+        elif cmd == "/context":
+            self.show_context()
         elif cmd == "/status":
             self.status_note()
         elif cmd == "/tools":
@@ -277,6 +295,42 @@ class App:
                                       (lane.cursor, lane.source or "-"))]
         self.m = self.m.__class__(**dict(self.m.__dict__, lanes=dict(self.m.lanes, **{
             self.m.active_sid: lane.__class__(**dict(lane.__dict__, blocks=blocks))})))
+
+    def show_context(self):
+        """The whole session as the model sees it on the next call, with tokens."""
+        sid = self.m.active_sid
+        if not sid:
+            self.dispatch({"type": "notice", "text": "no session"})
+            return
+        lines = []
+        try:
+            events, _cursor = self.client.events(sid, "0")
+        except Exception as exc:
+            events = []
+            lines.append("events unavailable: %s" % exc)
+        for ev in events or []:
+            k = getattr(ev, "kind", "")
+            txt = (getattr(ev, "text", "") or "").rstrip()
+            if k in ("user", "prompt"):
+                lines.append("USER: " + txt)
+            elif k in ("text", "assistant"):
+                lines.append("ASSISTANT: " + txt)
+            elif k in ("tool", "tool_call"):
+                lines.append("TOOL: %s" % (getattr(ev, "meta", {}) or {}).get("name", txt[:80]))
+            elif txt:
+                lines.append("%s: %s" % (k.upper() or "EVENT", txt[:200]))
+        u = getattr(self.m, "usage", None)
+        if u:
+            lines.append("")
+            lines.append("tokens: %s in / %s out%s" % (
+                "{:,}".format(getattr(u, "in_tokens", 0)),
+                "{:,}".format(getattr(u, "out_tokens", 0)),
+                "  $%.4f" % u.cost_usd if float(getattr(u, "cost_usd", 0) or 0) else ""))
+        flat = []
+        for ln in lines:
+            flat.extend(ln.splitlines() or [""])
+        modals.text_modal(self.screen, "CONTEXT %s" % sid[:13], flat or ["(empty)"],
+                          self.theme, self.drain)
 
     def show_tools(self):
         lines = []
@@ -446,6 +500,13 @@ class App:
             elif nxt == -1:
                 self.dispatch({"type": "notice", "text": ""})
             return None
+        if key == 9 and m.focus == "composer" and self.composer.buffer.startswith("/") \
+                and " " not in self.composer.buffer:
+            hits = [c for c, _ in SLASH_MENU if c.startswith(self.composer.buffer)]
+            if hits:
+                self.composer.clear()
+                self.composer.insert(hits[0] + (" " if hits[0] in ("/session", "/expand") else ""))
+            return None
         if key in (10, 13, curses.KEY_ENTER):
             if m.focus == "transcript":
                 self.dispatch({"type": "expand"})
@@ -571,7 +632,21 @@ class App:
         self.hits = {}
         self.last_lines = transcript.draw_transcript(scr, m, rects.transcript, self.theme, wide=rects.wide,
                                                      hits=self.hits)
+        if rects.rule.h:
+            title = " prompt — / for commands · Enter send · \\+Enter newline "
+            bar = "─" * max(0, rects.rule.w)
+            panels.put(scr, rects.rule.y, 0, bar, self.theme.MUTED)
+            panels.put(scr, rects.rule.y, 2, title, self.theme.MUTED)
         cy, cx = cv.draw_composer(scr, self.composer, rects.composer, self.theme)
+        buf = self.composer.buffer
+        if m.focus == "composer" and buf.startswith("/") and " " not in buf and "\n" not in buf:
+            hits = [(c, d) for c, d in SLASH_MENU if c.startswith(buf)]
+            top = max(1, rects.rule.y - len(hits))
+            for i, (c, d) in enumerate(hits[: rects.rule.y - 1]):
+                line = " %-10s %s " % (c, d)
+                panels.put(scr, top + i, rects.transcript.x,
+                           line[: max(10, rects.transcript.w - 1)],
+                           self.theme.MUTED if i else 0)
         panels.draw_status(scr, m, rects.status, self.theme, self.now())
         try:
             scr.move(cy, cx)

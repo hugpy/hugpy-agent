@@ -118,6 +118,14 @@ def status_fields(m, now=None):
         fields.append(provider)
     elif m.active_sid:
         fields.append(short_id(m.active_sid))
+    u = getattr(m, "usage", None)
+    if u:
+        toks = "tok %s in/%s out" % ("{:,}".format(getattr(u, "in_tokens", 0)),
+                                       "{:,}".format(getattr(u, "out_tokens", 0)))
+        cost = float(getattr(u, "cost_usd", 0) or 0)
+        if cost:
+            toks += " $%.2f" % cost
+        fields.append(toks)
     if m.held[0]:
         fields.append("HELD")
     elif m.busy:

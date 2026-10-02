@@ -28,6 +28,7 @@ class Rects(NamedTuple):
     status: Rect
     narrow: bool
     wide: bool
+    rule: Rect = Rect(0, 0, 0, 0)   # the composer's top border/title row
 
 
 def composer_cap(h, w):
@@ -41,7 +42,8 @@ def compute(h, w, composer_lines=1):
     header = Rect(0, 0, 1, w)
     status = Rect(h - 1, 0, 1, w)
     composer = Rect(h - 1 - lines, 0, lines, w)
-    body_h = max(1, composer.y - 1)
+    rule = Rect(composer.y - 1, 0, 1, w)
+    body_h = max(1, rule.y - 1)
     if narrow:
         sidebar = Rect(1, 0, 0, 0)
         transcript = Rect(1, 0, body_h, w)
@@ -49,4 +51,4 @@ def compute(h, w, composer_lines=1):
         side_w = 28 if wide else 20
         sidebar = Rect(1, 0, body_h, side_w)
         transcript = Rect(1, side_w + 1, body_h, w - side_w - 1)
-    return Rects(header, sidebar, transcript, composer, status, narrow, wide)
+    return Rects(header, sidebar, transcript, composer, status, narrow, wide, rule)
