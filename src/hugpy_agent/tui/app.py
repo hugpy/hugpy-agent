@@ -264,7 +264,10 @@ class App:
         elif cmd == "/tools":
             self.show_tools()
         else:
-            self.dispatch({"type": "notice", "text": "unknown command %s (/help)" % cmd})
+            # not a TUI command: forward to the ENGINE (session-first commands
+            # like /handoff /resume /rollover live there, not here)
+            sid = self.m.active_sid or "new"
+            threading.Thread(target=self._send, args=(sid, text), daemon=True).start()
 
     def status_note(self):
         from .state import Block
