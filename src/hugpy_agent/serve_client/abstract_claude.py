@@ -298,6 +298,10 @@ class AbstractClaudeClient(Client):
     def rollover(self):
         return self.http.get("/api/session/rollover")
 
+    def roll_mode(self, mode, by="tui"):
+        """Flip the serve's auto-roller: auto | manual | off (on == auto)."""
+        return self.http.post("/api/session/rollover", action="mode", mode=mode, by=by)
+
     def roll(self, sid, by="tui"):
         """Trigger the serve's native rollover for a session (handoff ->
         fresh successor -> resume, session chain written by the serve)."""

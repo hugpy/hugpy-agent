@@ -36,7 +36,7 @@ HELP = [
 SLASH_MENU = [
     ("/handoff",  "store this session's state on its toolserver row (engine)"),
     ("/resume",   "load the state this session continues (engine)"),
-    ("/rollover", "handoff -> clear -> resume, toolserver-managed (engine)"),
+    ("/rollover", "roll now · on/off/auto/manual/status = auto-roller switch"),
     ("/context",  "show the whole session as fed to the model + tokens"),
     ("/session",  "switch session (or Ctrl-G picker)"),
     ("/model",    "model picker"),
@@ -299,6 +299,9 @@ class App:
             index = int(args[0]) if args and args[0].isdigit() else None
             self.dispatch({"type": "expand", "index": index})
         elif cmd == "/rollover":
+            if args and args[0].lower() in ("on", "off", "auto", "manual", "status"):
+                self.roller_switch(args[0].lower())
+                return
             sid = self.m.active_sid
             if not sid:
                 self.dispatch({"type": "notice", "text": "no session"})
@@ -321,6 +324,35 @@ class App:
             # like /handoff /resume /rollover live there, not here)
             sid = self.m.active_sid or "new"
             threading.Thread(target=self._send, args=(sid, text), daemon=True).start()
+
+    def roller_switch(self, mode):
+        """/rollover on|off|auto|manual|status — the serve's auto-roller switch."""
+        try:
+            if mode == "status":
+                doc = self.client.rollover() or {}
+                pol = doc.get("policy") or {}
+                pend = doc.get("pending") or {}
+                text = "roller: %s · %sk ctx · sweep %ss" % (
+                    pol.get("rollover_mode", "?"),
+                    int(pol.get("rollover_context_tokens", 0) or 0) // 1000,
+                    pol.get("rollover_sweep_s", "?"))
+                if pend:
+                    text += " · PENDING %s" % str(pend.get("session_id", ""))[:8]
+                self.dispatch({"type": "notice", "text": text})
+                return
+            if not hasattr(self.client, "roll_mode"):
+                self.dispatch({"type": "notice", "text": "this serve has no roller switch"})
+                return
+            res = self.client.roll_mode(mode)
+            if res.get("ok"):
+                text = "roller → %s" % res.get("mode")
+                if res.get("warning"):
+                    text += " ⚠ %s" % res["warning"]
+            else:
+                text = "roller: %s" % res.get("error")
+            self.dispatch({"type": "notice", "text": text})
+        except ServeError as exc:
+            self.dispatch({"type": "notice", "text": "roller: %s" % exc})
 
     def status_note(self):
         from .state import Block
