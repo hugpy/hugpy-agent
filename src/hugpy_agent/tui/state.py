@@ -132,11 +132,16 @@ def _last_open_card(blocks, name=None):
     return None
 
 
-def _clear_receipts(m, message_ids):
+def _clear_receipts(m, message_ids, sid=""):
+    """Ack receipts by message id; a serve that mints no message ids (hugpy)
+    acks by session instead — its user/done event proves the prompt landed."""
     ids = set(message_ids or [])
-    if not ids:
-        return m
-    keep = [r for r in m.pending_receipts if not ids & set(r["receipt"].message_ids)]
+    def acked(r):
+        rec = r["receipt"]
+        if ids and ids & set(rec.message_ids):
+            return True
+        return bool(sid) and not rec.message_ids and rec.session_id in (sid, "new")
+    keep = [r for r in m.pending_receipts if not acked(r)]
     return replace(m, pending_receipts=keep) if len(keep) != len(m.pending_receipts) else m
 
 
@@ -191,10 +196,10 @@ def _apply_event(m, lane, ev, now, stale=False):
                     return m                     # keep the echo; sse preview is dropped at sse_done
                 blocks[i] = Block("user", ev.text, ts=ev.ts, seq=ev.seq, meta=dict(ev.meta))
                 lane.turn_text = False
-                return _clear_receipts(m, ev.meta.get("message_ids"))
+                return _clear_receipts(m, ev.meta.get("message_ids"), sid=ev.session_id)
         blocks.append(Block("user", ev.text, ts=ev.ts, seq=ev.seq, meta=dict(ev.meta)))
         lane.turn_text = False
-        return _clear_receipts(m, ev.meta.get("message_ids"))
+        return _clear_receipts(m, ev.meta.get("message_ids"), sid=ev.session_id)
     if k == "status":
         if stale:
             return m                                    # a finished turn's "compiling" is not news
@@ -284,7 +289,7 @@ def _apply_event(m, lane, ev, now, stale=False):
         if ev.text and not lane.turn_text:
             blocks.append(Block("assistant", ev.text, ts=ev.ts, seq=ev.seq, ok=ev.ok))
         lane.turn_text = False
-        m = _clear_receipts(m, meta.get("message_ids"))
+        m = _clear_receipts(m, meta.get("message_ids"), sid=ev.session_id)
         if meta.get("held"):
             m = replace(m, held=(True, meta.get("error") or "held"))
         elif meta.get("error"):
