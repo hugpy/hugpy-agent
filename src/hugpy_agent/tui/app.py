@@ -9,6 +9,7 @@ send runs in its own short thread (native rows stream SSE from it).
 from __future__ import annotations
 
 import curses
+import subprocess
 import os
 import queue
 import threading
@@ -43,6 +44,7 @@ SLASH_MENU = [
     ("/session",  "switch session (or Ctrl-G picker)"),
     ("/locus",    "switch locus (named serve, ssh-tunnelled when remote)"),
     ("/model",    "model picker"),
+    ("/shell",    "open a login shell (exit returns here)"),
     ("/queue",    "queue view"),
     ("/retry",    "retry / un-hold"),
     ("/expand",   "expand card [n]"),
@@ -308,6 +310,8 @@ class App:
             modals.text_modal(self.screen, "HELP", HELP, self.theme, self.drain)
         elif cmd == "/model":
             self.pick_model()
+        elif cmd == "/shell":
+            self.open_shell()
         elif cmd == "/session":
             self.pick_session(args[0] if args else None)
         elif cmd == "/locus":
@@ -565,6 +569,21 @@ class App:
         pick = modals.choose(self.screen, "SESSIONS", labels, self.theme, self.drain, selected=current)
         if pick is not None:
             self.dispatch({"type": "select", "sid": rows[pick].id})
+
+    def open_shell(self):
+        """The standing shell row: hand the terminal to a login shell, then
+        restore the TUI exactly as it was when the shell exits."""
+        curses.def_prog_mode()
+        curses.endwin()
+        try:
+            print("hugpy-agent tui: shell — type `exit` to return", flush=True)
+            subprocess.call([os.environ.get("SHELL") or "/bin/bash", "-l"])
+        except OSError as exc:
+            print("shell failed: %s" % exc, flush=True)
+        finally:
+            curses.reset_prog_mode()
+            self.screen.clear()
+            self.screen.refresh()
 
     def cycle_role(self, delta):
         roles = [r for r in panels.role_rows(self.m) if r.id]
@@ -896,6 +915,9 @@ class App:
             return
         if self.side_w and _x <= self.side_w:          # sidebar: click a row to switch
             sid = self.side_hits.get(y)
+            if sid == panels.SHELL_ROW:
+                self.open_shell()
+                return
             if sid is not None and sid != self.m.active_sid:
                 self.dispatch({"type": "select", "sid": sid})
             return

@@ -52,7 +52,7 @@ class RenderUnitTests(unittest.TestCase):
         # ExecStart runs the daemon, not a one-shot:
         exec_line = [l for l in unit.splitlines()
                      if l.startswith("ExecStart=")][0]
-        self.assertTrue(exec_line.endswith(" serve"))
+        self.assertTrue(exec_line.endswith(" serve --sessions"))
         self.assertIn("%h/hugpy-agent/venv/bin/hugpy-agent", exec_line)
 
     def test_portable_no_expanded_home_and_no_secrets(self):

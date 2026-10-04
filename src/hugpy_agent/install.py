@@ -39,7 +39,7 @@ import sys
 UNIT_NAME = "hugpy-agent.service"
 # Paths as the UNIT sees them (%h = the service user's home).
 UNIT_ENV_FILE = "%h/.config/hugpy-agent/agent.env"
-UNIT_EXEC_DEFAULT = "%h/hugpy-agent/venv/bin/hugpy-agent serve"
+UNIT_EXEC_DEFAULT = "%h/hugpy-agent/venv/bin/hugpy-agent serve --sessions"
 # The same paths relative to an injectable home (for the actual writes).
 REL_UNIT_PATH = os.path.join(".config", "systemd", "user", UNIT_NAME)
 REL_ENV_PATH = os.path.join(".config", "hugpy-agent", "agent.env")
@@ -152,9 +152,9 @@ def install(values: dict, home: str | None = None, venv: str | None = None,
     if venv == os.path.join(home, REL_VENV):
         exec_start = UNIT_EXEC_DEFAULT
     elif venv.startswith(home + os.sep):
-        exec_start = "%h" + venv[len(home):] + "/bin/hugpy-agent serve"
+        exec_start = "%h" + venv[len(home):] + "/bin/hugpy-agent serve --sessions"
     else:
-        exec_start = os.path.join(venv, "bin", "hugpy-agent") + " serve"
+        exec_start = os.path.join(venv, "bin", "hugpy-agent") + " serve --sessions"
 
     unit_path = os.path.join(home, REL_UNIT_PATH)
     env_path = os.path.join(home, REL_ENV_PATH)

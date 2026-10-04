@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import curses
+import os
 import time
 
 from ...branding import logo_lines
@@ -9,6 +10,7 @@ from ..layout import Rect
 from .text import clean, cut, width as vw
 
 ROLE_ORDER = ("keeper", "chat", "worker", "local")
+SHELL_ROW = "__shell__"       # sidebar hit id of the standing shell row
 
 
 def put(scr, y, x, text, attr=0, limit=None):
@@ -113,6 +115,14 @@ def draw_sidebar(scr, m, rect, theme, hits=None):
         put(scr, y, rect.x, line, attr, rect.w)
         if hits is not None:
             hits[y] = r.id
+        y += 1
+    # Standing shell, below Local/B (operator 2026-10-04): a plain login shell on
+    # this host; the TUI suspends while it runs and `exit` comes back here.
+    if m.roster and y < rect.bottom:
+        put(scr, y, rect.x, "○ %-7s %s" % ("shell", os.path.basename(os.environ.get("SHELL") or "bash")) if rect.w >= 28
+            else "○ shell", 0, rect.w)
+        if hits is not None:
+            hits[y] = SHELL_ROW
         y += 1
     others = other_sessions(m)
     if others and y + 1 < rect.bottom:

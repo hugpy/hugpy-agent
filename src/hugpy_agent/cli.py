@@ -286,6 +286,37 @@ def _ensure_toolserver_async():
     threading.Thread(target=_run, name="ensure-toolserver", daemon=True).start()
 
 
+def _serve_wants_console(args) -> bool:
+    """`hugpy-agent serve [--host H] [--port P] [--no-browser]` IS the shared
+    Serve console — the same contract as `abstract-claude serve` and
+    `abstract-gpt serve`, so any of the three can lead a station's serve
+    (operator 2026-10-03). The Hugpy session service (:9126) is chosen
+    explicitly (--sessions) or by its own flags (--profiles/--workspace/--state
+    or anything daemon/node-shaped), so existing units keep their meaning."""
+    if getattr(args, "console", False):
+        return True
+    if getattr(args, "sessions", False) or getattr(args, "daemon", False):
+        return False
+    if args.profiles or getattr(args, "workspace", None) or args.state is not None:
+        return False
+    if args.task_source or args.agent_node or args.max_cycles is not None or args.task_queue:
+        return False
+    return True
+
+
+def cmd_seat_report(args) -> int:
+    """Same `seat-report` as abstract-claude's, so a station runner can watch a
+    serve led by any of the three CLIs. The reporter lives in abstract-claude."""
+    try:
+        from abstract_claude.seat_report import run
+    except ImportError as exc:
+        print("hugpy-agent seat-report needs abstract-claude (" + str(exc) + ")", file=sys.stderr)
+        return 2
+    return run(args.seat, args.watch_pid, status_file=args.status_file or "", locus=args.locus or "",
+               model=args.model or "", config_dir=args.config_dir or "", tmux=args.tmux or "",
+               session_id=args.session_id or "", interval=args.interval, once=args.once)
+
+
 def cmd_serve(args) -> int:
     """Run Hugpy's session serve by default, or its task daemon explicitly.
 
@@ -300,19 +331,24 @@ def cmd_serve(args) -> int:
     exit 0 — under Restart=on-failure the unit stays stopped. A second
     signal falls through to the default handler for a hard exit (every
     journal write is committed, so this is still safe)."""
-    if getattr(args, "console", False):
+    if _serve_wants_console(args):
         try:
             from abstract_serve_core.serve_cli import main as serve_main
         except ImportError as exc:
             print("hugpy-agent serve --console requires `pip install hugpy-agent[serve]` (" + str(exc) + ")", file=sys.stderr)
             return 2
-        argv = ["--host", args.host, "--port", str(args.console_port)]
+        port = args.console_port if args.console_port is not None else (args.port or 9124)
+        argv = ["--host", args.host, "--port", str(port)]
         if args.no_browser:
             argv.append("--no-browser")
         os.environ["AC_SERVE_BACKEND"] = "hugpy"
         return serve_main(argv)
     _ensure_toolserver_async()
     session_service = not getattr(args, "daemon", False)
+    if args.port is None:
+        args.port = 9126
+    if args.console_port is None:
+        args.console_port = 9124
     if session_service:
         url = f"http://{args.host}:{args.port}"
         def session_server_is_live():
@@ -366,7 +402,7 @@ def cmd_serve(args) -> int:
                         return
                     time.sleep(0.1)
             threading.Thread(target=open_when_ready, daemon=True).start()
-        return serve_http(["--profiles", str(profiles), "--state", args.state,
+        return serve_http(["--profiles", str(profiles), "--state", args.state or "~/.local/state/hugpy-agent-serve",
                            "--host", args.host, "--port", str(args.port),
                            "--workspace", cfg.workspace, "--policy", cfg.policy_mode]) or 0
     from .serve import Daemon
@@ -1007,14 +1043,18 @@ def main(argv=None) -> int:
                    help=argparse.SUPPRESS)  # accepted for compatibility; sessions are now default
     p.add_argument("--profiles", help="JSON model profile configuration "
                    "(default: ~/.config/hugpy-agent/profiles.json)")
-    p.add_argument("--state", default="~/.local/state/hugpy-agent-serve")
+    p.add_argument("--state", default=None,
+                   help="session-service state dir (default ~/.local/state/hugpy-agent-serve)")
     p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=9126)
+    p.add_argument("--port", type=int, default=None,
+                   help="console port (default 9124); session service: default 9126")
+    p.add_argument("--sessions", action="store_true",
+                   help="run the Hugpy session service (:9126) instead of the console")
     p.add_argument("--no-browser", action="store_true",
                    help="do not open the session-service URL when joining or starting it")
     p.add_argument("--console", action="store_true",
                    help="run the shared provider-neutral Serve console")
-    p.add_argument("--console-port", type=int, default=9124,
+    p.add_argument("--console-port", type=int, default=None,
                    help="port for the shared Serve console (with --console)")
     p.add_argument("--task-source", dest="task_source",
                    choices=["discord-inbox", "queue"],
@@ -1039,6 +1079,19 @@ def main(argv=None) -> int:
                    help="exit after N poll cycles (smoke/testing; default "
                         "run until stopped)")
     p.set_defaults(fn=cmd_serve)
+
+    p = sub.add_parser("seat-report", help="report this seat's state to the toolserver (same as abstract-claude seat-report)")
+    p.add_argument("--seat", required=True, choices=["mct", "claude-code", "local", "shell", "keeper"])
+    p.add_argument("--watch-pid", type=int, required=True)
+    p.add_argument("--status-file", default="")
+    p.add_argument("--locus", default="")
+    p.add_argument("--model", default="")
+    p.add_argument("--config-dir", default="")
+    p.add_argument("--tmux", default="")
+    p.add_argument("--session-id", default="")
+    p.add_argument("--interval", type=int, default=30)
+    p.add_argument("--once", action="store_true")
+    p.set_defaults(fn=cmd_seat_report)
 
     p = sub.add_parser("tui", help="terminal client for abstract-claude serve / hugpy-agent serve")
     p.add_argument("--serve", help="serve URL (default: $HUGPY_AGENT_SERVE, then 127.0.0.1:9124/9125/9126)")
