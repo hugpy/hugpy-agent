@@ -388,6 +388,35 @@ class App:
         threading.Thread(target=self._poll_loop, daemon=True, name="tui-poll").start()
         if self.tools_status:
             threading.Thread(target=self._tools_loop, daemon=True, name="tui-tools").start()
+        self.refresh_loci()
+
+    def refresh_loci(self):
+        """Read the toolserver's loci registry off the main thread and adopt it.
+        Unreachable or refused: the file's loci stay, with a log row."""
+        if not loci_mod.registry_enabled():
+            return
+
+        def work():
+            try:
+                found = loci_mod.fetch_registry()
+            except Exception as exc:                       # noqa: BLE001 — the file is the fallback
+                self.diag.warn("loci registry: %s: %s" % (type(exc).__name__, exc))
+                return
+            self.send("call", lambda: self.adopt_loci(found))
+        threading.Thread(target=work, daemon=True, name="tui-loci").start()
+
+    def adopt_loci(self, registry):
+        """Main thread: the registry's loci replace the list; the locus we are on
+        and the parked ones keep their entries whatever the registry says."""
+        merged = loci_mod.merge(registry, loci_mod.load_loci())
+        base = self.client.base.rstrip("/")
+        if self.active_locus == "here" and not self._locus_held:
+            self.active_locus = next((e["locus"] for e in merged
+                                      if (e.get("serve") or "").rstrip("/") == base), "here")
+        named = {e["locus"] for e in merged}
+        keep = [e for e in self.loci if e["locus"] not in named
+                and (e["locus"] == self.active_locus or e["locus"] in self._locus_held)]
+        self.loci = keep + merged
 
     def _poll_loop(self):
         due = {"roster": 0.0, "state": 0.0, "rollover": 0.0, "usage": 0.0}
@@ -938,9 +967,11 @@ class App:
             self.say(str(exc), "error")
 
     def pick_locus(self, wanted=None):
-        """/locus [name] — picker over tui-loci.json; switches the whole serve."""
+        """/locus [name] — picker over the loci (toolserver registry, then
+        tui-loci.json); switches the whole serve."""
+        self.refresh_loci()             # the next open shows what was registered since
         if not self.loci:
-            self.say("no loci (write ~/.hugpy/tui-loci.json)")
+            self.say("no loci (none publish a serve in the toolserver registry; ~/.hugpy/tui-loci.json adds more)")
             return
         if wanted:
             entry = next((e for e in self.loci if e["locus"].lower() == wanted.lower()

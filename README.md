@@ -777,9 +777,18 @@ TodoWrite calls render as `N todos`; `mcp__toolserver__x` renders as
 
 ### Loci (multiple serves, local or over SSH)
 
-`tui/loci.py` reads `~/.hugpy/tui-loci.json` (override: `$HUGPY_TUI_LOCI`), a
-list of `{locus, serve}` or `{locus, ssh, port}` entries. A remote locus gets an
-on-demand `ssh -N -L` tunnel, opened on first switch and closed on quit. Switch
+The loci come from the toolserver's loci registry: every active locus whose
+pointer publishes a `serve_url` is listed, with no local configuration. A serve
+on this host is used directly; a serve on another host is reached through an
+on-demand `ssh -N -L` tunnel to the locus's registered ssh endpoint, opened on
+first switch and closed on quit. The registry is read in the background at start
+and each time `/locus` opens; if the toolserver cannot be reached the TUI keeps
+working from the file below and logs why (`/log`).
+
+`~/.hugpy/tui-loci.json` adds loci the registry does not name, as a list of
+`{locus, serve}` or `{locus, ssh, port}` entries (a registry locus of the same
+name wins). Setting `$HUGPY_TUI_LOCI` names the file and turns the registry off,
+so that file is the whole list. Switch
 with `/locus` or by clicking a header tab (tabs need ≈90 columns; narrower
 terminals fold to `@locus`). Each locus's client and model are parked when you
 leave, so switching back is instant. Pollers pause during a locus swap.
