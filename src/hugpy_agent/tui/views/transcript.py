@@ -14,6 +14,10 @@ from .. import toolcalls as tc
 from .text import cut, wrap
 
 CARD_LIMIT = 40          # lines of input / output shown when expanded
+# How an approval card reads once decided (raw serve decision -> words).
+DECISIONS_SHOWN = {"allow_once": "allowed once", "allow_session": "allowed for this session",
+                   "deny": "denied", "accept": "accepted", "acceptForSession": "accepted for this session",
+                   "decline": "declined", "cancel": "cancelled"}
 
 
 class Line(NamedTuple):
@@ -91,13 +95,15 @@ def block_lines(block, index, width, expanded, wide=False, depth=0, children=0):
         more = "…" if "\n" in (block.text or "").strip() else ""
         return [Line(cut(pad + "💭 " + _first_line(block.text) + more, width), "THINK", index)]
     if kind == "system":
+        attr = "TOOL_ERR" if block.meta.get("warn") else "MUTED"
         if expanded and block.detail:
-            return [Line(t, "MUTED", index) for t in wrap("· " + block.text + "\n" + block.detail, width)]
-        return [Line(cut("· " + block.text, width), "MUTED", index)]
+            return [Line(t, attr, index) for t in wrap("· " + block.text + "\n" + block.detail, width)]
+        more = " …" if block.detail and not expanded else ""
+        return [Line(cut("· " + block.text + more, width), attr, index)]
     if kind == "note":
         return [Line(t, "TOOL_ERR" if block.ok is False else "MUTED", index) for t in wrap(_ts(block) + "» " + block.text, width)]
     if kind in ("approval", "question"):
-        state = block.decision or "pending"
+        state = DECISIONS_SHOWN.get(block.decision, block.decision) or "pending"
         return [Line(t, "TOOL", index) for t in wrap(_ts(block) + "? %s → %s" % (block.text, state), width)]
     if kind == "tool":
         return tool_lines(block, index, width, expanded, wide, depth, children)
@@ -153,6 +159,10 @@ def draw_transcript(scr, m, rect, theme, wide=False, hits=None, follow_sel=True)
     scroll = m.lane().scroll
     if height <= 0:
         return 0, len(lines)
+    if not lines and m.active_sid and m.lane().loaded:
+        put(scr, y, rect.x, "no messages in this session yet — type a prompt below to start",
+            theme.MUTED, rect.w)
+        return 0, 0
     max_first = max(0, len(lines) - height)
     if m.focus == "transcript" and m.selected != -1 and scroll >= 0 and follow_sel:
         # Keep the selected block in view, scrolling the MINIMUM needed (never

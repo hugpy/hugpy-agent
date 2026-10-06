@@ -59,6 +59,13 @@ class Store:
             row["data"] = json.loads(row["data"])
         return rows
 
+    def clear_floor(self, sid):
+        """Event id of the last /clear marker for the session (0 = none). The
+        turn-history queries start after it, so a clear hides earlier turns
+        from the model while the durable event log (the transcript) keeps them."""
+        rows = self.query("SELECT MAX(id) AS m FROM events WHERE session=? AND kind='clear'", (sid,))
+        return int(rows[0]["m"]) if rows and rows[0]["m"] is not None else 0
+
 
 class OperatorComms:
     def __init__(self, runtime, sid, control):
@@ -100,6 +107,8 @@ class Runtime:
         self.lock = threading.RLock()
         self.active = {}
         self.closing = False
+        self.emergency_profiles = {}   # name -> in-memory openai-chat profile (break-glass)
+        self.emergency_servers = {}    # sid  -> EmergencyServer (local llama-server)
         self.catalog = {}
         self.catalog_at = 0
         self.catalog_lock = threading.Lock()
@@ -113,7 +122,9 @@ class Runtime:
                 self.catalog_thread = threading.Thread(target=self._refresh_catalog, args=(profiles,), daemon=True)
                 self.catalog_thread.start()
             catalog = {k: v for k, v in self.catalog.items() if k.split(":", 1)[0] in profiles}
-        return default, {**profiles, **catalog}
+        # Emergency profiles are injected live (not from the file, not filtered
+        # by the catalog prefix rule) so a break-glass session is launchable.
+        return default, {**profiles, **catalog, **self.emergency_profiles}
 
     def _refresh_catalog(self, profiles):
         from ..gateway import Gateway
@@ -232,6 +243,82 @@ class Runtime:
                 self.store.event(sid, "model", name)
         return self.view(sid)
 
+    def clear_context(self, sid):
+        """Wipe the model's context for a session without touching the durable
+        transcript: a `clear` marker becomes the floor the next turn's history
+        starts after, and the native/run bindings are dropped so a client-held
+        context (a CLI session) restarts clean too. The event log is kept, so
+        the display is unchanged."""
+        with self.lock:
+            self.store.session(sid)                      # KeyError -> 404 if unknown
+            if sid in self.active:
+                raise RuntimeError("Wait for the turn to finish before clearing")
+            self.store.event(sid, "clear", {"by": "operator"})
+            self.store.query("UPDATE sessions SET native_id=NULL,run_id=NULL,updated=? WHERE id=?",
+                             (time.time(), sid))
+        return self.view(sid)
+
+    def emergency_preflight(self):
+        """JSON-able preflight for the TUI Emergency window: a llama-server
+        binary, local GGUFs and hardware, with any blocking errors. Never
+        raises — a missing mount degrades to an error string, not a 500."""
+        from .. import emergency as em
+        pf = em.preflight()
+        return {"llama_bin": pf.llama_bin, "threads": pf.threads, "ready": pf.ready,
+                "errors": pf.errors,
+                "models": [{"path": m.path, "name": m.name, "size_bytes": m.size_bytes,
+                            "mmproj": m.mmproj} for m in pf.models]}
+
+    def launch_emergency(self, model_path=None, gpu_layers="auto", ctx=8192):
+        """Break-glass: start a local llama-server on a GGUF (no hugpy wrapper /
+        central / toolserver in the path) and open a conversation-mode session
+        on it. The model loads in the background so this returns at once; the
+        session carries `note` events (loading -> ready/failed)."""
+        from .. import emergency as em
+        with self.lock:
+            if self.closing:
+                raise RuntimeError("Service is closing")
+            pf = em.preflight()
+            if not pf.llama_bin:
+                raise ValueError("; ".join(pf.errors) or "no llama-server binary found")
+            if model_path:
+                model = em.model_for(model_path)
+                if model is None:
+                    raise ValueError("model not found: %s" % model_path)
+            elif pf.models:
+                model = pf.models[0]
+            else:
+                raise ValueError("; ".join(pf.errors) or "no GGUF models found")
+            server = em.EmergencyServer(model, llama_bin=pf.llama_bin, threads=pf.threads,
+                                        ctx=int(ctx), gpu_layers=gpu_layers, log_dir=str(self.root))
+            name = "emergency:%d" % server.port
+            self.emergency_profiles[name] = server.profile(name)
+            try:
+                server.start()
+            except (RuntimeError, OSError) as exc:
+                self.emergency_profiles.pop(name, None)
+                raise ValueError("emergency launch failed: %s" % exc)
+            view = self.create(name)          # profiles() now includes this one
+            sid = view["id"]
+            self.emergency_servers[sid] = server
+            self.store.event(sid, "note", "emergency: starting %s on :%d (loading…)"
+                             % (model.name, server.port))
+        threading.Thread(target=self._emergency_wait, args=(sid, server), daemon=True).start()
+        return view
+
+    def _emergency_wait(self, sid, server):
+        ok, detail = server.wait_ready(timeout=240)
+        with self.lock:
+            if ok:
+                self.store.event(sid, "note", "emergency: ready on :%d — send a message"
+                                 % server.port)
+            else:
+                self.store.event(sid, "note", "emergency: failed — %s" % detail)
+                server.stop()
+                self.emergency_servers.pop(sid, None)
+                self.store.query("UPDATE sessions SET status='interrupted',updated=? WHERE id=?",
+                                 (time.time(), sid))
+
     def start(self, sid, text="", resume=False):
         if not isinstance(text, str) or (not resume and not text.strip()) or len(text) > 100000:
             raise ValueError("A nonempty message of at most 100000 characters is required")
@@ -291,8 +378,14 @@ class Runtime:
         with self.lock:
             self.closing = True
             ids = list(self.active)
+            servers = list(self.emergency_servers.values())
         for sid in ids:
             self.stop(sid)
+        for server in servers:
+            try:
+                server.stop()
+            except Exception:
+                pass
 
     def _run(self, session, profile, text, resume, control):
         sid = session["id"]
@@ -305,7 +398,8 @@ class Runtime:
             if profile["protocol"] in CLIENTS:
                 from .native import run
                 if not session["native_id"]:
-                    prior = self.store.query("SELECT kind,data FROM events WHERE session=? AND kind IN ('user','reply') ORDER BY id DESC LIMIT 17", (sid,))
+                    floor = self.store.clear_floor(sid)
+                    prior = self.store.query("SELECT kind,data FROM events WHERE session=? AND kind IN ('user','reply') AND id>? ORDER BY id DESC LIMIT 17", (sid, floor))
                     history = json.dumps([{r["kind"]: json.loads(r["data"])} for r in reversed(prior[1:])])
                     if len(prior) > 1:
                         text = "Prior conversation:\n" + history[-16000:] + "\nCurrent request:\n" + text
@@ -340,7 +434,8 @@ class Runtime:
                 if resume:
                     report = loop.resume(session["run_id"])
                 else:
-                    prior = self.store.query("SELECT kind,data FROM events WHERE session=? AND kind IN ('user','reply') ORDER BY id DESC LIMIT 17", (sid,))
+                    floor = self.store.clear_floor(sid)
+                    prior = self.store.query("SELECT kind,data FROM events WHERE session=? AND kind IN ('user','reply') AND id>? ORDER BY id DESC LIMIT 17", (sid, floor))
                     prior = list(reversed(prior[1:]))  # newest user text is the task below
                     # Bound conversational history separately from the full durable transcript.
                     history = json.dumps([{r["kind"]: json.loads(r["data"])} for r in prior])

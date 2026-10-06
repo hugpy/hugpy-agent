@@ -80,6 +80,37 @@ tool with your full report. That is the only way to finish.
 {tools_block}"""
 
 
+class _DeltaGate:
+    """Filters the live delta stream so the <tool_call> block — which a
+    prompted-mode model streams as plain text — never reaches the transcript.
+    Text before the first opener streams; from the opener on is swallowed. A
+    tail that could be a partial opener is held back so a tag split across
+    chunks is still caught."""
+
+    _OPENER = "<tool_call>"
+
+    def __init__(self):
+        self._buf = ""
+        self._gated = False
+
+    def feed(self, chunk: str) -> str:
+        if self._gated:
+            return ""
+        self._buf += chunk or ""
+        cut = self._buf.find(self._OPENER)
+        if cut != -1:
+            out, self._buf, self._gated = self._buf[:cut], "", True
+            return out
+        hold = 0
+        for k in range(min(len(self._OPENER) - 1, len(self._buf)), 0, -1):
+            if self._buf.endswith(self._OPENER[:k]):
+                hold = k
+                break
+        keep = len(self._buf) - hold
+        out, self._buf = self._buf[:keep], self._buf[keep:]
+        return out
+
+
 class AgentLoop:
     def __init__(self, cfg: Config, gateway: Gateway | None = None,
                  registry: Registry | None = None, journal: Journal | None = None,
@@ -219,12 +250,25 @@ class AgentLoop:
                                   "support tools; using prompted")
 
     # ── prompt assembly ──────────────────────────────────────────────────
+    def _stream_delta(self, gate, piece):
+        shown = gate.feed(piece)
+        if shown:
+            self.on_event("delta", shown)
+
     def _system_prompt(self) -> str:
         mem = self.memory.load_index()
         memory_block = ("\nWorkspace memory index (fetch entries with fs_read "
                         "if relevant):\n%s\n" % mem) if mem else ""
-        tools_block = self.adapter.system_prompt_block(self.registry.specs())
+        specs = self.registry.specs()
+        tools_block = self.adapter.system_prompt_block(specs)
         template = _SYSTEM_TEMPLATE
+        if any(s.name == "ts_call" for s in specs):
+            template = template.replace(
+                "- If a tool returns an error, adapt — try a different approach rather than repeating the same call.",
+                "- If a tool returns an error, adapt — try a different approach rather than repeating the same call.\n"
+                "- To use a toolserver tool, FIRST call ts_categories, then ts_list on a category to get the tool's "
+                "exact name and argument schema; pass that exact name to ts_call. Never pass a guessed name, a slash "
+                "path, or a doc path to ts_call.")
         if self.conversation:
             template = template.replace("- Make EXACTLY ONE tool call per reply, then stop and wait for its result.",
                 "- Use tools only when the request needs them; make one tool call at a time.")
@@ -360,15 +404,17 @@ class AgentLoop:
                 text = last["content"] if isinstance(last["content"], str) else ""
                 a_seq = last["seq"]
                 native_calls = []
+                streamed = False
             else:
                 self._compact_if_needed(run_id)
                 wire = self.journal.wire_messages(run_id)
+                gate = _DeltaGate()
                 res = self.gateway.chat(
                     wire, model=self.active_model,
                     max_tokens=self.cfg.max_tokens,
                     tools=self.adapter.wire_tools(self.registry.specs()),
                     stream=(self.adapter.mode != adapter_mod.MODE_NATIVE),
-                    on_delta=lambda p: self.on_event("delta", p))
+                    on_delta=lambda p: self._stream_delta(gate, p))
                 est_total += res.est_tokens + sum(
                     estimate_tokens(json.dumps(m.get("content"))) for m in wire)
                 if not res.ok and not res.text:
@@ -397,10 +443,16 @@ class AgentLoop:
                     continue
                 text = adapter_mod.scrub(res.text)
                 a_seq = self.journal.append_message(run_id, "assistant", text)
-                self.on_event("assistant", text)
                 native_calls = res.native_tool_calls
+                streamed = True
 
             outcome = self.adapter.extract(text, native_calls)
+            if streamed and outcome.plain_text:
+                # Display the reply with <tool_call> blocks stripped (the live
+                # delta stream is gated too); the raw text stays in the journal
+                # as the model's own turn so the following tool_response reads
+                # coherently. A pure tool call (no prose) shows only its card.
+                self.on_event("assistant", outcome.plain_text)
 
             if not outcome.calls:
                 if self.conversation and not outcome.errors and text.strip():

@@ -1,9 +1,9 @@
 """Find and identify a serve (h26 §1.3).
 
 Order: --serve URL -> $HUGPY_AGENT_SERVE -> :9124 -> :9125 -> :9126, each
-probed with GET /api/state (0.8 s). The kind is detected from the reply's
-SHAPE, not the port: hugpy-agent serve says so (`service` + `protocol_version`);
-abstract-claude serve has a Claude Code `version` plus busy/root/oauth keys.
+probed with GET /api/state (0.8 s). The API kind is detected from the reply,
+not the port: current servers advertise `service` + `protocol_version`.
+Legacy shared Serve replies are still recognized by their old state shape.
 """
 from __future__ import annotations
 
@@ -14,17 +14,20 @@ import urllib.request
 from ..serve_client.base import ServeError
 
 DEFAULTS = ("http://127.0.0.1:9124", "http://127.0.0.1:9125", "http://127.0.0.1:9126")
-KINDS = ("auto", "abstract-claude", "hugpy")
+KINDS = ("auto", "abstract-serve", "abstract-claude", "hugpy")
 
 
 def identify(doc):
     if not isinstance(doc, dict):
         return None
+    if doc.get("service") == "abstract-serve" and doc.get("protocol_version") == 1:
+        return "abstract-serve"
     if doc.get("service") == "hugpy-agent" and "protocol_version" in doc:
         return "hugpy"
+    # Compatibility with shared Serve releases before the protocol marker.
     version = str(doc.get("version") or "")
     if version[:1].isdigit() and any(k in doc for k in ("busy", "root", "oauth")):
-        return "abstract-claude"
+        return "abstract-serve"
     return None
 
 
@@ -51,9 +54,11 @@ def candidates(explicit=None, env=None):
 
 
 def discover(explicit=None, kind="auto", env=None, opener=None):
-    """Return (base, kind). `kind` other than auto rejects mismatches."""
+    """Return (base, API kind). `kind` other than auto rejects mismatches."""
     if kind not in KINDS:
-        raise ServeError("unknown --kind %r (auto|abstract-claude|hugpy)" % (kind,))
+        raise ServeError("unknown --kind %r (auto|abstract-serve|hugpy)" % (kind,))
+    # Keep the old spelling working for scripts and existing operator configs.
+    expected = "abstract-serve" if kind == "abstract-claude" else kind
     tried = []
     for base in candidates(explicit, env):
         doc = probe(base, opener)
@@ -61,9 +66,9 @@ def discover(explicit=None, kind="auto", env=None, opener=None):
         if found is None:
             tried.append(base)
             continue
-        if kind != "auto" and found != kind:
+        if expected != "auto" and found != expected:
             if explicit and base == explicit.rstrip("/"):
-                raise ServeError("%s is %s, expected %s" % (base, found, kind))
+                raise ServeError("%s is %s, expected %s" % (base, found, expected))
             tried.append(base)
             continue
         return base, found

@@ -57,7 +57,7 @@ def other_sessions(m, limit=8):
 
 def draw_header(scr, m, rect, theme, folded=False, loci=None, active_locus="", locus_hits=None):
     host = m.base.replace("http://", "").replace("https://", "")
-    text = "HUGPY AGENT · %s %s" % (m.kind or "serve", host)
+    text = "hugpy-agent %s" % host
     if folded:
         # Narrow: the sidebar folds into the header as `[K] C W L`.
         marks = []
@@ -65,7 +65,7 @@ def draw_header(scr, m, rect, theme, folded=False, loci=None, active_locus="", l
             mark = (r.label or r.role or "?")[:1].upper()
             marks.append("[%s]" % mark if r.id == m.active_sid else mark)
         port = host.rsplit(":", 1)[-1] if ":" in host else host
-        text = "HUGPY · %s %s  %s" % ("ac" if m.kind == "abstract-claude" else (m.kind or "?"), port, " ".join(marks))
+        text = "hugpy :%s  %s" % (port, " ".join(marks))
         if active_locus:
             text += "  @" + active_locus
         put(scr, rect.y, rect.x, text, theme.ACCENT, rect.w)
@@ -143,56 +143,84 @@ def draw_sidebar(scr, m, rect, theme, hits=None):
         put(scr, row, rect.x + rect.w, "│", theme.MUTED, 1)
 
 
-def status_fields(m, now=None):
-    """Left -> right fields (§3.4); the drawer drops from the right when narrow."""
+SERVE_LABELS = {"abstract-serve": "abstract-serve", "abstract-claude": "abstract-serve", "hugpy": "hugpy-agent"}
+
+
+def serve_label(m):
+    """Provider-neutral serve field (branding ruling 2026-10-06): the API the
+    TUI speaks + its port, never a provider name."""
+    port = m.base.rsplit(":", 1)[-1].strip("/") if ":" in m.base.split("//", 1)[-1] else ""
+    name = SERVE_LABELS.get(m.kind, m.kind or "serve")
+    return "[%s %s]" % (name, port) if port else "[%s]" % name
+
+
+def token_field(m):
+    """ONE token field: provider usage totals when the serve has them, else
+    the per-call counters (context of the last call + output so far)."""
+    u = m.usage
+    if u is not None and ((u.in_tokens or 0) + (u.out_tokens or 0) or u.context_window or u.cost_usd):
+        total = (u.in_tokens or 0) + (u.out_tokens or 0)
+        text = "tok %s%s" % (_k(total), "/%s" % _k(u.context_window) if u.context_window else "")
+        if float(u.cost_usd or 0):
+            text += " $%.2f" % u.cost_usd
+        return text
+    lane = m.lane() if hasattr(m, "lane") else None
+    if lane is not None and lane.ctx_tokens:
+        text = "ctx %s · out %s" % (_k(lane.ctx_tokens), _k(lane.tok_out))
+    elif lane is not None and (lane.tok_in or lane.tok_out):
+        text = "tok %s in/%s out" % (_k(lane.tok_in), _k(lane.tok_out))
+    else:
+        row = m.session
+        return "tok n/a" if row is not None and (row.id or "").startswith("cs-") else ""
+    if lane.cost:
+        text += " $%.2f" % lane.cost
+    return text
+
+
+# Drop order when the bar is narrow: lowest priority first (rightmost among
+# equals). What the operator must always see — which serve, which session,
+# busy/held, unseen errors, connection — outranks counters.
+_KEEP, _HIGH, _MID, _LOW = 4, 3, 2, 1
+
+
+def status_items(m, now=None):
+    """[(text, priority)] left -> right (§3.4)."""
     now = time.monotonic() if now is None else now
-    port = m.base.rsplit(":", 1)[-1].strip("/") if ":" in m.base else ""
-    fields = ["[%s %s]" % ("ac" if m.kind == "abstract-claude" else (m.kind or "?"), port)]
+    items = [(serve_label(m), _KEEP)]
     row = m.session
     if row is not None:
-        fields.append("%s %s" % ((row.label or row.role or "session").lower(), short_id(row.id)))
+        items.append(("%s %s" % ((row.label or row.role or "session").lower(), short_id(row.id)), _HIGH))
         provider = "%s/%s" % (row.backend, (row.model or "").split(":")[-1]) if row.model else (row.backend or "")
         if row.pending_model:
             provider += " → %s staged" % row.pending_model
-        fields.append(provider)
+        items.append((provider, _MID))
     elif m.active_sid:
-        fields.append(short_id(m.active_sid))
-    u = getattr(m, "usage", None)
-    if u:
-        toks = "tok %s in/%s out" % ("{:,}".format(getattr(u, "in_tokens", 0)),
-                                       "{:,}".format(getattr(u, "out_tokens", 0)))
-        cost = float(getattr(u, "cost_usd", 0) or 0)
-        if cost:
-            toks += " $%.2f" % cost
-        fields.append(toks)
+        items.append((short_id(m.active_sid), _HIGH))
     if m.held[0]:
-        fields.append("HELD")
+        items.append(("HELD", _KEEP))
     elif m.busy:
-        fields.append("BUSY %ds" % max(0, int(now - m.busy_since)) if m.busy_since else "BUSY")
+        items.append(("BUSY %ds" % max(0, int(now - m.busy_since)) if m.busy_since else "BUSY", _HIGH))
     else:
-        fields.append("idle")
+        items.append(("idle", _HIGH))
+    if getattr(m, "alerts", 0):
+        items.append(("⚠ %d /log" % m.alerts, _HIGH))
     if m.queue is not None:
         depth = len(m.queue.items)
-        fields.append("q:%d%s" % (depth, "" if m.queue.auto else " auto off"))
-    if m.usage is not None:
-        total = m.usage.in_tokens + m.usage.out_tokens
-        ctx = "/%s" % _k(m.usage.context_window) if m.usage.context_window else ""
-        fields.append("tok %s%s" % (_k(total), ctx))
-    else:
-        lane = m.lane() if hasattr(m, "lane") else None
-        if lane is not None and (lane.tok_in or lane.tok_out or lane.cost):
-            tok = "tok %s in/%s out" % (_k(lane.tok_in), _k(lane.tok_out))
-            if lane.cost:
-                tok += " $%.2f" % lane.cost
-            fields.append(tok)                         # cs-*: summed from per-row usage meta
-        elif row is not None and row.backend == "claude" and (row.id or "").startswith("cs-"):
-            fields.append("tok n/a")                   # no usage anywhere yet for this cs-* session
-    fields.append("tools: %s" % (m.tools or "off"))
+        items.append(("q:%d%s" % (depth, "" if m.queue.auto else " auto off"), _MID))
+    tok = token_field(m)
+    if tok:
+        items.append((tok, _LOW))
+    items.append(("tools: %s" % (m.tools or "off"), _LOW))
     net = {"live": "● live", "degraded": "◌ retrying", "down": "✕ down", "connecting": "… connecting"}[m.net]
     if m.net in ("degraded", "down") and m.net_retry_at:
         net += " %ds" % max(0, int(m.net_retry_at - now))
-    fields.append(net)
-    return fields
+    items.append((net, _HIGH if m.net == "live" else _KEEP))
+    return items
+
+
+def status_fields(m, now=None):
+    """Left -> right field texts (§3.4)."""
+    return [text for text, _ in status_items(m, now)]
 
 
 def _k(n):
@@ -203,33 +231,38 @@ def _k(n):
 def status_text(m, width, now=None, reserve=0):
     """Fields joined to fit `width` minus the help tail and `reserve` cells
     (the notice); dropped from the right until they fit."""
-    fields = status_fields(m, now)
-    tail = "? help"
+    items = status_items(m, now)
+    tail = "F1 help"
     room = width - vw(tail) - 1 - reserve
-    while len(fields) > 1 and vw(" · ".join(fields)) > room:
-        fields.pop()
-    return " · ".join(fields), tail
+    while len(items) > 1 and vw(" · ".join(t for t, _ in items)) > room:
+        low = min(p for _, p in items)
+        drop = max(i for i, (_, p) in enumerate(items) if p == low)
+        items.pop(drop)
+    return " · ".join(t for t, _ in items), tail
 
 
 def draw_status(scr, m, rect, theme, now=None):
-    notice = cut(m.notice or "", max(0, rect.w // 3))
+    # errors get up to half the bar (they carry the fix); info a third
+    share = 2 if getattr(m, "notice_level", "info") == "error" else 3
+    notice = cut(m.notice or "", max(0, rect.w // share))
     text, tail = status_text(m, rect.w, now, reserve=(vw(notice) + 2) if notice else 0)
     put(scr, rect.y, rect.x, text, theme.MUTED, rect.w)
     if notice:
+        attr = theme.TOOL_ERR if getattr(m, "notice_level", "info") == "error" else theme.ACCENT
         put(scr, rect.y, min(rect.x + vw(text) + 2, max(rect.x, rect.x + rect.w - vw(tail) - vw(notice) - 2)),
-            notice, theme.ACCENT)
+            notice, attr)
     put(scr, rect.y, max(rect.x, rect.x + rect.w - vw(tail) - 1), tail, theme.MUTED)
     return text
 
 
-def draw_splash(scr, base, theme):
+def draw_splash(scr, base, theme, version=""):
     """Branded home treatment until the first roster+events land (no timer)."""
     h, w = scr.getmaxyx()
-    lines = logo_lines()
+    lines = logo_lines() if h >= 20 and w >= 60 else []
     top = max(1, (h - len(lines) - 5) // 2)
     for offset, line in enumerate(lines):
         put(scr, top + offset, max(0, (w - vw(line)) // 2), line, curses.A_BOLD)
-    title = "HUGPY AGENT"
+    title = "hugpy-agent" + (" " + version if version else "")
     subtitle = "Your models. Your workers. One fleet."
     status = "Connecting to " + base
     put(scr, top + len(lines) + 1, max(0, (w - len(title)) // 2), title, theme.ACCENT)

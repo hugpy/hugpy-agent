@@ -25,7 +25,7 @@ def page(events, busy=False, queue=None, cursor=None, source="console", truncate
 
 def model(sid=CS):
     roster = Roster(roles=[Session(id=sid, role="keeper", label="Keeper", backend="hugpy", model="m")])
-    return st.reduce(st.Model(kind="abstract-claude", base="http://x"), {"type": "roster", "roster": roster})
+    return st.reduce(st.Model(kind="abstract-serve", base="http://x"), {"type": "roster", "roster": roster})
 
 
 def feed(m, events, **kw):

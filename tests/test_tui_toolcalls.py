@@ -35,7 +35,7 @@ def result(seq, text, ok=True, tool_id="", **kw):
 
 def model():
     roster = Roster(roles=[Session(id=CS, role="keeper", label="Keeper", backend="claude", model="m")])
-    return st.reduce(st.Model(kind="abstract-claude", base="http://x"), {"type": "roster", "roster": roster})
+    return st.reduce(st.Model(kind="abstract-serve", base="http://x"), {"type": "roster", "roster": roster})
 
 
 def feed(m, events, busy=False):

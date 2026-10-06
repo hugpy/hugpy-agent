@@ -16,7 +16,10 @@ def no_tb(name, screen):
 
 def group_initial():
     s = H.capture()
-    H.check("initial: header rendered (not splash)", "HUGPY AGENT" in s and "Connecting to" not in s, s)
+    H.check("initial: header rendered (not splash)", s.startswith("hugpy-agent ") and "Connecting to" not in s, s)
+    H.check("initial: header is provider-neutral", "claude" not in s.splitlines()[0].lower(), s)
+    H.check("initial: status bar names the API, not a provider", "[abstract-serve " in s, s)
+    H.check("initial: one token field", s.splitlines()[-1].count("tok ") + s.splitlines()[-1].count("ctx ") <= 1, s)
     H.check("initial: composer prompt visible", s.rstrip().splitlines()[-2].startswith(">") or "\n>" in s, s)
     H.check("initial: roster/roles shown", "ROLES" in s and "keeper" in s, s)
     H.check("initial: active role marked ●", "● keeper" in s, s)
@@ -203,6 +206,7 @@ def group_help_tools():
     time.sleep(0.5)
     s = H.capture()
     H.check("help: /help modal opens", "HELP" in s and "Enter send" in s, s)
+    H.check("help: lists the new commands", "/find" in s and "/export" in s and "/log" in s, s)
     H.keys("Escape")
     time.sleep(0.3)
     _clear_composer()
@@ -289,11 +293,11 @@ def group_resize():
     H.resize(90, 30)
     time.sleep(0.4)
     s = H.capture()
-    H.check("resize: narrow layout not corrupted", "HUGPY" in s and "Traceback" not in s, s)
+    H.check("resize: narrow layout not corrupted", "hugpy" in s and "Traceback" not in s, s)
     H.resize(70, 24)
     time.sleep(0.4)
     s = H.capture()
-    H.check("resize: <80 cols folds sidebar, still renders", "HUGPY" in s and "Traceback" not in s, s)
+    H.check("resize: <80 cols folds sidebar, still renders", "hugpy :" in s and "Traceback" not in s, s)
     H.resize(H.WIDTH, H.HEIGHT)
     time.sleep(0.4)
     s = H.capture()
@@ -311,8 +315,10 @@ def _composer_line(screen):
 
 
 def _clear_composer():
-    # Backspace the buffer empty. (Ctrl-C would QUIT the app once the buffer is
-    # already empty, so never use it to clear.)
+    # Caret to the very end (a multi-line buffer may hold the caret on line 1),
+    # then backspace the buffer empty. (Ctrl-C would QUIT the app once the
+    # buffer is already empty, so never use it to clear.)
+    H.keys("Down", "Down", "Down", "End", delay=0.15)
     H.keys(*(["BSpace"] * 48), delay=0.25)
 
 
@@ -343,10 +349,119 @@ def _transcript_top(screen):
 
 def _active_role(screen_e):
     for l in H.reversed_lines(screen_e):
+        if l.startswith("hugpy-agent"):
+            continue                                  # header locus tabs are reversed too
+        l = l.split("│", 1)[0]                        # sidebar column only
         for role in ("keeper", "chat", "worker", "local"):
             if role in l:
                 return role
     return None
+
+
+def group_tools_out():
+    """/find jumps, y copies (OSC 52 notice), /export writes, /log shows diagnostics."""
+    import os
+    import time
+    _clear_composer()
+    H.literal("/find TAIL reply")
+    H.keys("Enter")
+    time.sleep(0.6)
+    s = H.capture()
+    H.check("find: /find reports the hit", "find 'TAIL reply'" in s, s)
+    se = H.capture_e()
+    H.check("find: the matching block is selected", any("TAIL reply" in l for l in H.reversed_lines(se)), se)
+    H.literal("y")
+    time.sleep(0.4)
+    s = H.capture()
+    H.check("copy: y in transcript focus copies (OSC 52)", "copied" in s and "OSC 52" in s, s)
+    H.keys("F2")
+    _clear_composer()
+    H.literal("/export")
+    H.keys("Enter")
+    time.sleep(0.6)
+    s = H.capture()
+    files = os.listdir(H.EXPORTS) if os.path.isdir(H.EXPORTS) else []
+    H.check("export: notice names the file", "exported" in s, s)
+    H.check("export: a private Markdown file exists",
+            len(files) == 1 and (os.stat(os.path.join(H.EXPORTS, files[0])).st_mode & 0o077) == 0, s)
+    _clear_composer()
+    H.literal("/log")
+    H.keys("Enter")
+    time.sleep(0.6)
+    s = H.capture()
+    H.check("log: /log shows build + serve diagnostics", "LOG" in s and "hugpy-agent" in s and "serve   http" in s, s)
+    H.keys("Escape")
+    time.sleep(0.3)
+    no_tb("tools-out", H.capture())
+
+
+def group_permission(port):
+    """A serve permission request on a cs- session opens a modal; y answers
+    allow_once over /api/console/approval and the card shows the decision."""
+    import time
+    _clear_composer()
+    H.literal("/session cs-dead")
+    H.keys("Enter")
+    time.sleep(1.5)
+    s = H.capture()
+    H.check("permission: cs- worker shows per-call context tokens", "ctx 31.2k" in s, s)
+    H.stub_control(port, permission=True)
+    time.sleep(2.0)
+    s = H.capture()
+    H.check("permission: modal opens for the request", "? Allow Bash" in s and "rm -rf build" in s, s)
+    H.check("permission: keys name serve decisions", "allow for this session" in s, s)
+    H.literal("y")
+    time.sleep(2.0)
+    approvals = H.stub_control(port).get("approvals") or []
+    H.check("permission: y posted allow_once", approvals and approvals[-1].get("decision") == "allow_once"
+            and approvals[-1].get("request_id") == "perm-rig", str(approvals))
+    s = H.capture()
+    H.check("permission: card shows the decision", "→ allowed once" in s, s)
+    no_tb("permission", s)
+    _clear_composer()
+    H.literal("/session keeper")
+    H.keys("Enter")
+    time.sleep(0.8)
+
+
+def group_chaos(port):
+    """Malformed replies must not kill the poller: the UI keeps drawing, the
+    fault is counted + logged, and polling recovers when the serve does."""
+    import time
+    H.stub_control(port, chaos="garbage")
+    time.sleep(3.5)
+    _clear_composer()
+    H.literal("still typing")
+    s = H.capture()
+    H.check("chaos: UI still takes input under malformed replies", "> still typing" in s, s)
+    H.check("chaos: the fault is surfaced (alert or notice)", "⚠" in s or "poll:" in s, s)
+    H.stub_control(port, chaos="")
+    time.sleep(3.0)
+    _clear_composer()
+    s = H.capture()
+    H.check("chaos: recovers to live", "● live" in s, s)
+    no_tb("chaos", s)
+
+
+def group_outage(stub, port):
+    """Serve dies: banner + retry countdown, input still works; serve comes
+    back on the same port: live again without restarting the TUI."""
+    import time
+    stub.terminate()
+    stub.wait(5)
+    time.sleep(9.0)
+    s = H.capture()
+    H.check("outage: shows the serve is unreachable", "unreachable" in s or "✕ down" in s or "retrying" in s, s)
+    H.literal("x")
+    s = H.capture()
+    H.check("outage: typing still echoes", "> x" in s, s)
+    H.keys("BSpace")
+    stub2, _ = H.start_stub(port)
+    time.sleep(12.0)
+    s = H.capture()
+    H.check("outage: reconnects when the serve returns", "● live" in s, s)
+    no_tb("outage", s)
+    return stub2
 
 
 def main():
@@ -368,6 +483,10 @@ def main():
         group_paste()
         group_multiline_caret()
         group_home_top()
+        group_tools_out()
+        group_permission(port)
+        group_chaos(port)
+        stub = group_outage(stub, port)
         group_resize()
     finally:
         H.kill_session()

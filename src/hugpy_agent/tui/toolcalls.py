@@ -1,4 +1,4 @@
-"""Tool-call presentation rules, ported from the abstract-claude serve console
+"""Tool-call presentation rules, ported from the shared Serve console
 (pure: no curses, no I/O; transcript.py draws, state.py selects).
 
 Serve rules this mirrors (server.py `_fmt_tool` + webui `Or`/`AcCalls`):
@@ -287,8 +287,8 @@ def chip_text(blocks, hidden, is_open):
 
 def match_result(blocks, tool_id="", parent=""):
     """Index of the open tool card a tool_result belongs to, or None.
-    By id when known; otherwise the OLDEST open non-Agent card (Claude returns
-    results in tool_use order, and an Agent's own result only lands after its
+    By id when known; otherwise the OLDEST open non-Agent card (Serve preserves
+    result order, and an Agent's own result only lands after its
     subagent's calls finished), falling back to the oldest open Agent card."""
     if tool_id:
         for i, b in enumerate(blocks):

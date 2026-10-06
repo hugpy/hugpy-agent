@@ -60,7 +60,7 @@ def model(blocks=(), **kw):
                                    backend="hugpy", model="hugpy-fleet:Qwen3-32B"),
                            Session(id="local", role="local", label="Local", backend="b")],
                     sessions=[Session(id="cs-%032x" % i, backend="gpt", label="s%d" % i, updated=i) for i in range(12)])
-    m = st.Model(kind="abstract-claude", base="http://127.0.0.1:9124", roster=roster, active_sid=CS, net="live")
+    m = st.Model(kind="abstract-serve", base="http://127.0.0.1:9124", roster=roster, active_sid=CS, net="live")
     lane = st.Lane(blocks=list(blocks), loaded=True)
     m = st.replace(m, lanes={CS: lane}, **kw)
     return m
@@ -73,19 +73,20 @@ class LayoutTests(unittest.TestCase):
     def test_layout_bounds(self):
         r = layout.compute(24, 80, 1)
         self.assertEqual(r.header, (0, 0, 1, 80))
-        self.assertEqual(r.sidebar, (1, 0, 21, 20))
-        self.assertEqual(r.transcript, (1, 21, 21, 59))
+        self.assertEqual(r.sidebar, (1, 0, 20, 20))     # body rows 1-20; row 21 is the prompt rule
+        self.assertEqual(r.transcript, (1, 21, 20, 59))
+        self.assertEqual(r.rule, (21, 0, 1, 80))
         self.assertEqual(r.composer, (22, 0, 1, 80))
         self.assertEqual(r.status, (23, 0, 1, 80))
         self.assertFalse(r.narrow or r.wide)
         r = layout.compute(24, 80, 9)
         self.assertEqual(r.composer.h, 6)              # capped
-        self.assertEqual(r.transcript.h, 16)
+        self.assertEqual(r.transcript.h, 15)
         r = layout.compute(15, 40, 5)
         self.assertTrue(r.narrow)
         self.assertEqual(r.sidebar.h, 0)
         self.assertEqual(r.composer.h, 3)
-        self.assertEqual(r.transcript, (1, 0, 10, 40))
+        self.assertEqual(r.transcript, (1, 0, 9, 40))
         r = layout.compute(40, 130, 1)
         self.assertTrue(r.wide)
         self.assertEqual(r.sidebar.w, 28)
@@ -100,7 +101,7 @@ class PanelTests(unittest.TestCase):
     def test_splash(self):
         scr = Screen()
         panels.draw_splash(scr, "http://127.0.0.1:9124", T)
-        self.assertTrue(scr.has("HUGPY AGENT"))
+        self.assertTrue(scr.has("hugpy-agent"))
         self.assertTrue(scr.has("Your models. Your workers. One fleet."))
         self.assertTrue(scr.has("Connecting to http://127.0.0.1:9124"))
         self.assertTrue(any("█" in t for t in scr.text))
@@ -114,10 +115,11 @@ class PanelTests(unittest.TestCase):
             panels.draw_header(scr, m, r.header, T, folded=r.narrow)
             panels.draw_sidebar(scr, m, r.sidebar, T)
             if r.narrow:
-                self.assertTrue(scr.has("HUGPY · ac 9124  [K] C W L"))
+                self.assertTrue(scr.has("hugpy :9124  [K] C W L"))
                 self.assertFalse(scr.has("ROLES"))
             else:
-                self.assertTrue(scr.has("HUGPY AGENT · abstract-claude 127.0.0.1:9124"))
+                self.assertTrue(scr.has("hugpy-agent 127.0.0.1:9124"))   # neutral (ruling 2026-10-06)
+                self.assertFalse(any("claude" in t.lower() for t in scr.text if t.startswith("hugpy-agent")))
                 self.assertTrue(scr.has("● keeper"))
                 self.assertTrue(scr.has("○ chat"))
                 self.assertTrue(scr.has("SESSIONS"))
@@ -129,14 +131,17 @@ class PanelTests(unittest.TestCase):
         m = model(busy=True, busy_since=88.0, queue=QueueView(auto=False, items=[QueueItem("a", "x")] * 3),
                   usage=Usage(12300, 0, 240000, 0, "gpt"), tools="3 ✓")
         fields = panels.status_fields(m, now=100.0)
-        self.assertEqual(fields, ["[ac 9124]", "keeper cs-cd16…", "hugpy/Qwen3-Coder-Next-GGUF", "BUSY 12s",
+        self.assertEqual(fields, ["[abstract-serve 9124]", "keeper cs-cd16…", "hugpy/Qwen3-Coder-Next-GGUF", "BUSY 12s",
                                   "q:3 auto off", "tok 12.3k/240.0k", "tools: 3 ✓", "● live"])
         full, tail = panels.status_text(m, 140, now=100.0)
         self.assertIn("● live", full)
-        self.assertEqual(tail, "? help")
-        short, _ = panels.status_text(m, 40, now=100.0)
-        self.assertTrue(short.startswith("[ac 9124] · keeper"))
-        self.assertNotIn("tok", short)                     # dropped from the right first
+        self.assertEqual(tail, "F1 help")
+        self.assertEqual(sum(1 for f in fields if f.startswith(("tok", "ctx"))), 1)   # ONE token field
+        short, _ = panels.status_text(m, 48, now=100.0)
+        self.assertTrue(short.startswith("[abstract-serve 9124] · keeper"))
+        self.assertNotIn("tok", short)                     # counters drop first ...
+        mid, _ = panels.status_text(m, 80, now=100.0)       # ... state + connection stay
+        self.assertEqual(mid, "[abstract-serve 9124] · keeper cs-cd16… · BUSY 12s · ● live")
         held = model(held=(True, "paused"), net="degraded", net_retry_at=104.0)
         self.assertIn("HELD", panels.status_fields(held, now=100.0))
         self.assertIn("◌ retrying 4s", panels.status_fields(held, now=100.0))
@@ -147,9 +152,9 @@ class PanelTests(unittest.TestCase):
         self.assertIn("tok n/a", panels.status_fields(claude_cs, now=0))
         scr = Screen()
         drawn = panels.draw_status(scr, st.replace(m, notice="compiling…"), layout.compute(24, 80).status, T, now=100.0)
-        self.assertTrue(scr.has("? help"))
+        self.assertTrue(scr.has("F1 help"))
         self.assertTrue(scr.has("compiling…"))
-        self.assertTrue(drawn.startswith("[ac 9124]"))
+        self.assertTrue(drawn.startswith("[abstract-serve 9124]"))
 
 
 def blocks():
@@ -172,7 +177,7 @@ class TranscriptTests(unittest.TestCase):
         self.assertIn("▸ ⚙ 2 calls · 💭 first thought second thought", texts)
         self.assertIn("▸ ⚒ Bash · ls  ✗", texts)
         self.assertEqual([ln.attr for ln in lines if ln.text.startswith("▸ ⚒ Bash")], ["TOOL_ERR"])
-        self.assertIn("· claude-opus-4-8 · 3 tools", texts)
+        self.assertIn("· claude-opus-4-8 · 3 tools …", texts)        # … = expandable detail
         self.assertIn("? Run command → pending", texts)
         self.assertEqual(lines[0].text, "▶ hello there")
         self.assertEqual(lines[0].attr, "USER")

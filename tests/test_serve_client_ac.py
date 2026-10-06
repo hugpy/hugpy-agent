@@ -6,7 +6,7 @@ import unittest
 
 from helpers import FakeServe, fixture
 
-from hugpy_agent.serve_client import Event, ServeError, connect
+from hugpy_agent.serve_client import Event, ProviderOption, ServeError, connect
 from hugpy_agent.serve_client import abstract_claude as ac
 from hugpy_agent.serve_client.http import Http
 
@@ -274,6 +274,14 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(ac.staged_model(doc, "chat"), "claude-opus-5")
         self.assertIsNone(ac.staged_model(doc, "keeper"))
 
+    def test_neutral_model_selection_routes_provider_choice(self):
+        row = self.client.roster().roles[0]
+        note = self.client.select_model(row, ProviderOption("gpt", "gpt-model", "GPT model"))
+        self.assertEqual(note, "provider → gpt/gpt-model")
+        body = self.fake.posts("/api/session/roster")[-1][1]
+        self.assertEqual(body["action"], "set_provider")
+        self.assertEqual((body["backend"], body["model"]), ("gpt", "gpt-model"))
+
     def test_usage_native_only(self):
         self.assertIsNone(self.client.usage(CS))
         usage = self.client.usage(NATIVE)
@@ -295,7 +303,7 @@ class LiveSmoke(unittest.TestCase):
     def test_live_reads(self):
         from hugpy_agent.tui.discovery import identify
         client = connect(self.BASE, "abstract-claude", timeout=5)
-        self.assertEqual(identify(client.probe()), "abstract-claude")
+        self.assertEqual(identify(client.probe()), "abstract-serve")
         roster = client.roster()
         keeper = next(r for r in roster.roles if r.role == "keeper")
         page = client.events(keeper.id, 0, max_pages=1)

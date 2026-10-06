@@ -71,6 +71,12 @@ def handler(runtime, token):
                     return self.reply(200, runtime.state())
                 if not post and path == "/api/tools":
                     return self.reply(200, runtime.tools())
+                if not post and path == "/api/emergency/preflight":
+                    return self.reply(200, runtime.emergency_preflight())
+                if post and path == "/api/sessions/emergency":
+                    data = self.body()
+                    return self.reply(202, runtime.launch_emergency(
+                        data.get("model_path") or None, data.get("gpu_layers", "auto")))
                 if post and path == "/api/sessions":
                     return self.reply(201, runtime.create(self.body().get("profile")))
                 parts = path.strip("/").split("/")
@@ -92,6 +98,8 @@ def handler(runtime, token):
                             return self.reply(200, runtime.answer(sid, data.get("id"), data.get("choice")))
                         if action == "stop":
                             return self.reply(200, runtime.stop(sid))
+                        if action == "clear":
+                            return self.reply(200, runtime.clear_context(sid))
                 self.reply(404, {"error": "Unknown route"})
             except KeyError:
                 self.reply(404, {"error": "Unknown session"})

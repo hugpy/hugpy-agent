@@ -52,6 +52,7 @@ class Lane:
     tok_out: int = 0
     cost: float = 0.0
     saw_usage: bool = False       # per-row usage seen: done.exchange would double-count
+    ctx_tokens: int = 0           # context the LAST call carried (in + cache read + cache write)
 
 
 @dataclass
@@ -75,6 +76,9 @@ class Model:
     focus: str = "composer"       # composer|transcript
     selected: int = -1
     notice: str = ""
+    notice_level: str = "info"    # info|error — errors draw in the error colour and linger longer
+    find: str = ""                # last /find query (F3 / bare /find repeats it)
+    alerts: int = 0               # errors since the operator last opened /log
     size: tuple = (24, 80)
     roster_stale: bool = False
     tools: str = "off"            # toolserver status-bar field (operator addition)
@@ -176,8 +180,13 @@ def _apply_event(m, lane, ev, now, stale=False):
     k = ev.kind
     u = ev.meta.get("usage")
     if isinstance(u, dict):
-        lane.tok_in += int(u.get("input_tokens") or u.get("in") or 0)
+        fresh = int(u.get("input_tokens") or u.get("in") or 0)
+        cached = int(u.get("cache_read_input_tokens") or u.get("cr") or 0) + \
+            int(u.get("cache_creation_input_tokens") or u.get("cw") or 0)
+        lane.tok_in += fresh
         lane.tok_out += int(u.get("output_tokens") or u.get("out") or 0)
+        if fresh or cached:
+            lane.ctx_tokens = fresh + cached
         lane.saw_usage = True
     c = ev.meta.get("cost")
     if isinstance(c, dict):
@@ -185,6 +194,7 @@ def _apply_event(m, lane, ev, now, stale=False):
     elif isinstance(c, (int, float)):
         lane.cost += float(c)
     if stale and k in ("approval", "question"):
+        _close_streaming(blocks)                        # else the reply before it keeps its ▍ forever
         blocks.append(Block(k, ev.text, name=ev.name, detail=ev.detail, request_id=ev.request_id,
                             ts=ev.ts, seq=ev.seq, decision="expired"))
         return m
@@ -225,6 +235,11 @@ def _apply_event(m, lane, ev, now, stale=False):
         return m
     if k == "tool":
         _close_streaming(blocks)
+        if "result" in ev.meta:                         # call + result in one row (hugpy serve)
+            meta = {key: v for key, v in ev.meta.items() if key not in ("result", "result_ok")}
+            blocks.append(Block("tool", ev.text, name=ev.name, detail=ev.detail, output=ev.meta["result"],
+                                ok=bool(ev.meta.get("result_ok", True)), ts=ev.ts, seq=ev.seq, meta=meta))
+            return m
         if ev.meta.get("status") == "completed":
             i = _last_open_card(blocks, ev.name)
             if i is not None:
@@ -263,9 +278,17 @@ def _apply_event(m, lane, ev, now, stale=False):
                             ev.ts or now, ev.session_id)
         return replace(m, approvals=m.approvals + [approval], approval_open=True)
     if k == "resolved":
+        found = False
         for i, b in enumerate(blocks):
-            if b.request_id == ev.request_id and b.kind in ("approval", "question") and not b.decision:
-                blocks[i] = replace(b, decision="resolved")
+            if ev.request_id and b.request_id == ev.request_id and b.kind in ("approval", "question"):
+                found = True
+                if not b.decision or b.decision in ("resolved", "expired"):
+                    blocks[i] = replace(b, decision=ev.text or "resolved")
+        if not found and ev.meta.get("line"):
+            # decided without a card on screen (mode/rule, another client, an
+            # expired page): keep the audit trail as a one-liner
+            blocks.append(Block("system", ev.meta["line"], ts=ev.ts, seq=ev.seq,
+                                meta={"warn": "denied" in ev.meta["line"] or "cancelled" in ev.meta["line"]}))
         approvals = [a for a in m.approvals if a.request_id != ev.request_id]
         return replace(m, approvals=approvals, approval_open=m.approval_open and bool(approvals))
     if k == "usage":
@@ -343,8 +366,9 @@ def _events(m, a):
     last_done = max([i for i, e in enumerate(page.events) if e.kind == "done"] or [-1])
     wall = a.get("wall")
     for i, ev in enumerate(page.events):
+        ttl = ev.meta.get("ttl") or APPROVAL_TTL_S       # serve permissions wait 30 min
         stale = not ev.meta.get("pending") and (
-            i < last_done or bool(wall and ev.ts and wall - ev.ts > APPROVAL_TTL_S))
+            i < last_done or bool(wall and ev.ts and wall - ev.ts > ttl))
         m = _apply_event(m, lane, ev, now, stale)
     lane.cursor = str(page.cursor)
     lane.loaded = True
@@ -554,7 +578,42 @@ def _approval_answered(m, a):
 
 
 def _notice(m, a):
-    return replace(m, notice=a.get("text", ""))
+    return replace(m, notice=a.get("text", ""), notice_level=a.get("level") or "info")
+
+
+def block_text(b):
+    """Searchable / copyable text of one block."""
+    if b.kind == "tool":
+        parts = [b.name, b.text, b.detail, b.output]
+    else:
+        parts = [b.text, b.detail, b.output]
+    return "\n".join(p for p in parts if p)
+
+
+def _find(m, a):
+    """/find: select the next block (after the current selection, wrapping)
+    whose text matches, opening a collapsed chip that hides it."""
+    query = (a.get("query") or m.find or "").strip()
+    if not query:
+        return replace(m, notice="find: give some text (/find <text>)", notice_level="info")
+    lane = _copy_lane(m, m.active_sid)
+    q = query.lower()
+    hits = [i for i, b in enumerate(lane.blocks) if q in block_text(b).lower()]
+    if not hits:
+        return replace(m, find=query, notice="find: no match for %r" % query, notice_level="info")
+    start = m.selected if m.selected >= 0 else -1
+    nxt = next((i for i in hits if i > start), hits[0])
+    hidden = _hidden_in_group(lane, nxt)
+    if hidden is not None:
+        lane.groups_open.add(hidden)
+    for parent, kids in tc.children_of(lane.blocks).items():
+        if nxt in kids:
+            lane.expanded.add(parent)                     # nested under an Agent card: open it
+    if lane.scroll < 0:
+        lane.scroll = max(0, int(a.get("current") or 0))  # leave tail-follow so the jump sticks
+    m = _with_lane(m, m.active_sid, lane)
+    return replace(m, find=query, focus="transcript", selected=nxt,
+                   notice="find %r: %d/%d" % (query, hits.index(nxt) + 1, len(hits)), notice_level="info")
 
 
 def _focus(m, a):
@@ -562,6 +621,10 @@ def _focus(m, a):
     order = visible_targets(m) if which == "transcript" else []
     selected = m.selected if m.selected in order else (order[-1] if order else -1)
     return replace(m, focus=which, selected=selected)
+
+
+def _alerts(m, a):
+    return replace(m, alerts=0 if a.get("clear") else m.alerts + int(a.get("add") or 0))
 
 
 def _usage(m, a):
@@ -581,5 +644,6 @@ _HANDLERS = {
     "local_user": _local_user, "sent": _sent, "queue": _queue, "net": _net, "tick": _tick, "receipt_lost": _receipt_lost,
     "resize": _resize, "select": _select, "scroll": _scroll, "move": _move, "expand": _expand, "expand_all": _expand_all,
     "approval_shown": _approval_shown, "approval_answered": _approval_answered, "notice": _notice,
-    "focus": _focus, "usage": _usage, "tools": _tools, "quit_confirm": _quit_confirm,
+    "focus": _focus, "usage": _usage, "tools": _tools, "quit_confirm": _quit_confirm, "find": _find,
+    "alerts": _alerts,
 }

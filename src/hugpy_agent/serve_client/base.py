@@ -1,7 +1,7 @@
 """Backend-neutral serve protocol types (h26 §1.1).
 
 Everything the TUI reducer sees comes through these dataclasses; the adapters
-(abstract_claude.py, hugpy_serve.py) normalise raw serve JSON into them so the
+(abstract_serve.py, hugpy_serve.py) normalise raw serve JSON into them so the
 reducer never touches a serve shape. No curses imports here, ever.
 """
 from __future__ import annotations
@@ -159,6 +159,8 @@ class Client(ABC):
     @abstractmethod
     def set_model(self, role, model): ...
     @abstractmethod
+    def select_model(self, row, option): ...
+    @abstractmethod
     def state(self) -> dict: ...
 
     def usage(self, sid) -> Usage | None:
@@ -166,3 +168,15 @@ class Client(ABC):
 
     def rollover(self) -> dict:
         return {}
+
+    def clear(self, sid):
+        """Wipe a session's model context (display kept). Serves that cannot
+        do this say so, so the TUI can surface a notice."""
+        raise ServeError("this serve has no context clear")
+
+    def emergency_preflight(self):
+        """Local llama-server + GGUFs available for a break-glass launch."""
+        raise ServeError("this serve has no emergency inference")
+
+    def launch_emergency(self, model_path=None, gpu_layers="auto"):
+        raise ServeError("this serve has no emergency inference")

@@ -31,7 +31,7 @@ stdlib only — zero dependencies.**
 |---|---|---|
 | **hugpy** (14 lockstep dists) | the self-hosted LLM fleet: central, workers, engine, media, server | [hugpy](https://pypi.org/project/hugpy/) |
 | **hugpy-station** | Electron desktop + headless backend; tmux seats, prompt composer, loop/bug scan | deb via central install links |
-| **hugpy-agent** | agent runtime on the fleet; `hugpy-agent tui` over abstract-claude serve | [hugpy-agent](https://pypi.org/project/hugpy-agent/) |
+| **hugpy-agent** | agent runtime on the fleet; `hugpy-agent tui` over the shared Serve API | [hugpy-agent](https://pypi.org/project/hugpy-agent/) |
 | **abstract-claude** | Claude Code launch/session/rollover + `abstract-claude serve` (roles keeper/chat/worker/local) | [abstract-claude](https://pypi.org/project/abstract-claude/) |
 | **abstract-serve-core** | the HTTP routes `abstract-claude serve` actually runs (queue, relay, rollover sweeps) | [abstract-serve-core](https://pypi.org/project/abstract-serve-core/) |
 | **abstract-gpt** | Codex/ChatGPT seat counterpart of abstract-claude | [abstract-gpt](https://pypi.org/project/abstract-gpt/) |
@@ -697,23 +697,35 @@ Seed lineage: the wire-contract client code is lifted from the field-tested
 
 ## Terminal client (`hugpy-agent tui`)
 
-![hugpy-agent splash: Your models. Your workers. One fleet.](https://raw.githubusercontent.com/hugpy/hugpy-agent/main/docs/img/hugpy-agent-splash.png)
+![hugpy-agent splash: the wordmark, version, "Your models. Your workers. One fleet." and the serve it is connecting to](https://raw.githubusercontent.com/hugpy/hugpy-agent/main/docs/img/hugpy-agent-splash.png)
 
-![hugpy-agent tui: locus tabs (keeper · hugpy · hs-fresh), roles with their models, sessions, transcript with toolserver tool cards, status bar with provider](https://raw.githubusercontent.com/hugpy/hugpy-agent/main/docs/img/hugpy-agent-tui.png)
+![hugpy-agent tui: locus tabs, roles on three providers, sessions; a keeper on a Hugpy fleet model with a ⚙ chip of three calls, a failed call with its error, a permission decided by the operator and a call still running; status bar with serve API, model, BUSY, context/output tokens, toolserver tools and connection state](https://raw.githubusercontent.com/hugpy/hugpy-agent/main/docs/img/hugpy-agent-tui.png)
 
-`hugpy-agent tui` is a curses harness (stdlib only) over **abstract-claude
-serve** (`/api/console/*`, the keeper console on `:9124` / hugpy locus `:9125`)
-and, unchanged from before, **hugpy-agent serve** (`:9126`). Discovery order:
+![hugpy-agent tui permission prompt: Allow Bash with the command, description and risk; allow once / allow for this session / deny](https://raw.githubusercontent.com/hugpy/hugpy-agent/main/docs/img/hugpy-agent-approval.png)
+
+`hugpy-agent tui` is a provider-neutral curses client (stdlib only) over the
+shared **Serve API** (`/api/console/*`, commonly on `:9124` / `:9125`) and
+**hugpy-agent serve** (`:9126`). Discovery order:
 `--serve URL` → `$HUGPY_AGENT_SERVE` → `127.0.0.1:9124` → `:9125` → `:9126`,
 each probed with `GET /api/state`; the serve kind is detected from the reply's
-shape (`--kind abstract-claude|hugpy` pins it, `--session <cs-id|uuid|role>`
+shape (`--kind abstract-serve|hugpy` pins it; legacy `abstract-claude` remains
+an alias; `--session <cs-id|uuid|role>`
 opens a row directly, `--token` / `HUGPY_SERVE_TOKEN` adds a bearer). Standing
 roles (Keeper, Chat, Worker, Local) sit in the sidebar; cs-* rows are read via
 `/api/console/events` (raw events: text deltas, thinking, tool cards,
-approvals), native Claude uuid rows via `/api/session/events` + the chat SSE.
-The status bar shows serve, session, provider/model (`→ staged`), busy/held,
-queue depth, tokens (`n/a` for cs-* claude rows), `tools: N ✓` (toolserver) and
-the network state; the splash uses the Hugpy Agent wordmark.
+approvals, serve permission requests, per-call usage), and native sessions via
+`/api/session/events` + chat SSE. On hugpy-agent serve every runtime event is
+shown: tool calls as cards with their results, model/client errors, nudges,
+repairs, loop-guard stops, policy denials and why a turn aborted. Provider
+choices come from Serve's backend/model/label options, so installed providers
+are selected through the same interface.
+The status bar shows the serve API and port (`[abstract-serve 9124]` /
+`[hugpy-agent 9126]` — never a provider name), session, provider/model
+(`→ staged`), busy/held, unseen errors (`⚠ N /log`), queue depth, ONE token
+field (`tok total/window`, or `ctx <last call's context> · out <output>` from
+per-call rows), `tools: N ✓` (toolserver) and the network state. When the bar
+is narrow, counters drop before session/state/connection. Notices fade (info
+8 s, errors 20 s, errors in red).
 
 | key | action |
 |---|---|
@@ -723,21 +735,43 @@ the network state; the splash uses the Hugpy Agent wordmark.
 | Tab / Shift-Tab · F2 | next/previous role · focus transcript ↔ composer |
 | PgUp/PgDn, Ctrl-U/Ctrl-D · End · Ctrl-T | scroll · follow tail · expand latest tool card |
 | Up/Down (transcript) · Enter/Space | select block · expand/collapse card |
-| `y a n c` / digits | answer an approval / question modal (Esc hides, Ctrl-A reopens) |
+| `y a n c` / digits | answer an approval / permission / question modal: allow·accept, for this session, deny·decline, cancel (Esc hides, Ctrl-A reopens; the modal closes itself when another client answers) |
+| `y` (transcript) | copy the selected block (or the last reply) to the clipboard via OSC 52 |
+| F1 · F3 | help · find next |
 | `r` (transcript) · Ctrl-L · Ctrl-Q | retry / un-hold · redraw · quit |
+| `/` (in any picker) | filter the list |
 
-Slash commands: `/model /session <id> /queue /retry /expand [n] /status /tools /handoff /locus /help /quit`.
-`/handoff` stores the session's state on its toolserver ledger row; `/locus` opens the locus picker.
+Slash commands: `/model /session <id> /clear /new /emergency /locus /queue /retry /expand [n]
+/find <text> /copy /export [path] /status /tools /log /handoff /resume /rollover /context /shell /help /quit`.
+`/handoff` stores the session's state on its toolserver ledger row; `/locus` opens the locus picker;
+`/export` writes the loaded transcript as Markdown (mode 0600) to `~/.hugpy/exports/` (`$HUGPY_TUI_EXPORTS`);
+`/log` shows build, serve, locus, session, terminal and every notice/error.
+
+**Reliability.** The UI never freezes on a slow serve: data a picker needs is
+fetched with a `⋯ … — Esc cancels` status line (keys typed meanwhile are
+replayed), other calls run in the background. The poller survives malformed
+replies and outages (banner + retry countdown, reconnects by itself); the main
+loop has a crash guard (an internal error is logged and shown, the TUI keeps
+running; a fault loop stops it cleanly with the log path). Late replies from a
+locus you switched away from are dropped. Thread tracebacks and stray stderr go
+to `~/.hugpy/logs/tui.log` (2 MB × 3 rotation; `HUGPY_TUI_LOG=<path>` or
+`off`), never over the screen.
+
 Tests: `PYTHONPATH=tests:src python -m pytest tests/test_serve_client_*.py tests/test_tui_*.py`
-(`HUGPY_TUI_LIVE=1` adds a GET-only smoke against `127.0.0.1:9124`).
+(`HUGPY_TUI_LIVE=1` adds a GET-only smoke against `127.0.0.1:9124`). The PTY rig
+(`PYTHONPATH=tests python3 tests/tui_rig/run_tests.py`, needs tmux) drives the
+real TUI against a stub serve, including malformed replies, a serve outage and
+a permission prompt. The screenshots above are the real TUI on synthetic
+demo data (`tests/tui_rig/demo_data.py`); regenerate them with
+`python3 tests/tui_rig/screenshots.py` (tmux, `unshare -rn`, Playwright + Chrome).
 
 ### Layout
 
-Header: `HUGPY AGENT · abstract-claude <host:port> LOCUS [tabs]`, clock and
-token counters top-right. Left sidebar: **ROLES** (keeper / chat / worker /
-local, each with backend + model) above **SESSIONS**. Centre: transcript.
-Bottom: the composer line, prefixed `>`, and the status bar. Token counters are
-blank on hugpy serves — the hugpy serve engine emits no per-turn usage.
+Header: `hugpy-agent <host:port>  LOCUS [tabs]` (provider-neutral). Left
+sidebar: **ROLES** (keeper / chat / worker / local, each with backend + model)
+above **SESSIONS**. Centre: transcript (an empty session says so). Bottom: the
+composer line, prefixed `>`, and the status bar. Token counters are blank on
+hugpy serves — the hugpy serve engine emits no per-turn usage.
 TodoWrite calls render as `N todos`; `mcp__toolserver__x` renders as
 `toolserver:x`.
 
@@ -757,7 +791,7 @@ leave, so switching back is instant. Pollers pause during a locus swap.
   wheel scrolls the transcript (BUTTON4/5). Shift+drag selects text in the
   terminal as usual.
 - **Typing always types**: any printable key pressed while the transcript has
-  focus (other than `a`, `r`, Space) refocuses the composer and is inserted.
+  focus (other than `a`, `r`, `y`, Space) refocuses the composer and is inserted.
   The hint `transcript selected — just type (or F2)` marks that state.
 - Bracketed paste is supported; a multi-line paste never auto-submits.
 - The terminal runs in `curses.raw`, so Ctrl-C and Ctrl-Q arrive as keys

@@ -1,40 +1,69 @@
 """curses loop + threads for `hugpy-agent tui` (h26 §1.2 app.py).
 
 Pattern is fleet_tui.Console: worker threads never touch curses, they post
-`(kind, value)` tuples to a queue.Queue and the main loop `drain()`s them into
-the reducer before every draw. One Poller thread reads the serve (events 1 s,
-roster 10 s, state 5 s, rollover 30 s, toolserver 15 s, backoff on error); each
-send runs in its own short thread (native rows stream SSE from it).
+`(kind, value, gen)` tuples to a queue.Queue and the main loop `drain()`s them
+into the reducer before every draw. One Poller thread reads the serve (events
+1 s, roster 10 s, state 5 s, rollover 30 s, backoff on error), one probe
+thread reads the toolserver (15 s); each send runs in its own short thread
+(native rows stream SSE from it).
+
+Operational rules (enterprise hardening, 0.1.111):
+
+* The main thread never blocks on the network without telling the operator:
+  data a modal needs is fetched by `wait()` (status-line spinner, Esc cancels,
+  keys typed meanwhile are replayed in order); fire-and-forget calls go
+  through `bg()`; a stale-receipt check is a background task.
+* No thread dies silently: the poller survives any exception, the main loop
+  has a crash guard, thread tracebacks and stray stderr go to the log
+  (tui/diag.py, ~/.hugpy/logs/tui.log) — never over the screen.
+* Every queued message carries the locus generation it was produced under;
+  after a locus switch the old serve's late replies are dropped, not applied
+  to the new serve's state.
 """
 from __future__ import annotations
 
+import collections
 import curses
-import subprocess
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 
 from ..serve_client import ServeError
-from ..serve_client.abstract_claude import is_cs, staged_model
+from ..serve_client.abstract_serve import is_console_session
 from . import layout
 from . import loci as loci_mod
+from . import output
+from .diag import Diag
 from .state import Model, reduce
-from . import loci as loci_mod
 from .views import composer as cv
 from .views import modals, panels, theme as theme_mod, transcript
 
 HELP = [
-    "Enter send · \\+Enter / Alt+Enter newline · Up/Down history (single line)",
+    "Enter send · \\+Enter / Alt+Enter newline · Up/Down history (single line) or caret (multi-line)",
     "Ctrl-C clear composer / interrupt / quit · Ctrl-X interrupt · Ctrl-Q quit",
     "Tab / Shift-Tab next / previous role · Ctrl-G session picker · Ctrl-P model picker",
-    "F2 focus transcript <-> composer · Up/Down select block · Enter/Space/click expand card",
-    "Tool calls: ▸ ⚒ collapsed call (✓ ok ✗ error … running) · ▸ ⚙ N calls = consecutive calls",
-    "  Enter/Space/click opens a chip or call · Ctrl-O (or a, transcript focus) toggle all",
-    "PgUp/PgDn, Ctrl-U/Ctrl-D scroll · End follow tail · Ctrl-T expand latest tool card",
-    "Ctrl-K queue · r (transcript focus) retry / un-hold · Ctrl-A reopen approval · Ctrl-L redraw",
-    "Slash: /handoff /resume /rollover /context /session <id> /model /queue /retry",
-    "       /expand [n] /status /tools /help /quit",
+    "F1 this help · F2 focus transcript <-> composer · F3 find next · Ctrl-L redraw",
+    "",
+    "Transcript focus (F2): Up/Down select · Enter/Space/click expand · a toggle all",
+    "  y copy the selected block to the clipboard (OSC 52) · r retry / un-hold",
+    "  any other key returns to the composer and types",
+    "Tool calls: ▸ ⚒ collapsed call (✓ ok ✗ error … running – no result) · ▸ ⚙ N calls = consecutive calls",
+    "  Ctrl-O toggle all cards · Ctrl-T expand the latest card",
+    "PgUp/PgDn, Ctrl-U/Ctrl-D scroll · Home top · End follow tail · mouse wheel scrolls",
+    "Ctrl-K queue · Ctrl-A reopen a hidden approval",
+    "",
+    "Pickers: Up/Down · Enter choose · / filter · Esc back",
+    "Approvals: y allow/accept · a for this session · n deny/decline · c cancel · Esc hide",
+    "Waiting on the serve (⋯ in the status bar): Esc cancels, keys typed meanwhile are kept",
+    "",
+    "Slash: /handoff /resume /rollover /context /session <id> /clear /new /locus /model",
+    "       /emergency /shell /queue /retry /expand [n] /status /tools",
+    "       /find <text> /copy /export [path] /log /help /quit",
+    "",
+    "Log: every notice and internal error is kept in /log and %s",
 ]
 SLASH_MENU = [
     ("/handoff",  "store this session's state on its toolserver row (engine)"),
@@ -42,17 +71,25 @@ SLASH_MENU = [
     ("/rollover", "roll now · on/off/auto/manual/status = auto-roller switch"),
     ("/context",  "show the whole session as fed to the model + tokens"),
     ("/session",  "switch session (or Ctrl-G picker)"),
+    ("/clear",    "wipe the model's context for this session (transcript kept)"),
+    ("/new",      "start a fresh session"),
+    ("/emergency", "break-glass: run a local GGUF as an agent (picker; [name]|auto)"),
     ("/locus",    "switch locus (named serve, ssh-tunnelled when remote)"),
     ("/model",    "model picker"),
     ("/shell",    "open a login shell (exit returns here)"),
     ("/queue",    "queue view"),
     ("/retry",    "retry / un-hold"),
     ("/expand",   "expand card [n]"),
+    ("/find",     "find text in the transcript (F3 next)"),
+    ("/copy",     "copy the selected block / last reply (OSC 52)"),
+    ("/export",   "write this transcript to a Markdown file [path]"),
     ("/status",   "status line into transcript"),
     ("/tools",    "tool list"),
+    ("/log",      "diagnostics + notice/error log"),
     ("/help",     "keys and commands"),
     ("/quit",     "leave the TUI"),
 ]
+ARG_COMMANDS = ("/session", "/expand", "/find")      # menu Enter inserts these with a space
 
 CTRL = {name: ord(ch) - 64 for name, ch in {"A": "A", "C": "C", "D": "D", "G": "G", "K": "K", "L": "L",
                                               "O": "O", "P": "P", "Q": "Q", "T": "T", "U": "U", "X": "X"}.items()}
@@ -65,7 +102,41 @@ _CSI_KEYS = {
     "F": curses.KEY_END, "4~": curses.KEY_END, "8~": curses.KEY_END,
     "A": curses.KEY_UP, "B": curses.KEY_DOWN, "C": curses.KEY_RIGHT, "D": curses.KEY_LEFT,
     "5~": curses.KEY_PPAGE, "6~": curses.KEY_NPAGE, "Z": curses.KEY_BTAB, "3~": curses.KEY_DC,
+    "11~": curses.KEY_F1, "13~": curses.KEY_F3,
 }
+
+NOTICE_S = 8.0              # an info notice fades after this long
+NOTICE_ERROR_S = 20.0       # an error lingers (it usually names the fix)
+FAULT_WINDOW_S = 5.0        # this many main-loop faults inside the window ...
+FAULT_LIMIT = 8             # ... stop the TUI cleanly instead of spinning
+JOIN_S = 1.0                # how long quit waits for in-flight background calls
+
+
+class Cancelled(ServeError):
+    """The operator pressed Esc while the TUI waited on the serve."""
+
+
+def version():
+    """The version of the code actually running. From a source tree
+    (src/hugpy_agent next to pyproject.toml: checkouts, the rig, dev runs) that
+    is the tree's pyproject version — the installed dist's metadata would name
+    a different build."""
+    import re
+    src = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    pyproject = os.path.join(os.path.dirname(src), "pyproject.toml")
+    if os.path.basename(src) == "src" and os.path.isfile(pyproject):
+        try:
+            with open(pyproject, encoding="utf-8") as fh:
+                found = re.search(r'^version\s*=\s*"([^"]+)"', fh.read(), re.M)
+            if found:
+                return found.group(1)
+        except OSError:
+            pass
+    try:
+        from importlib.metadata import version as _v
+        return _v("hugpy-agent")
+    except Exception:
+        return "dev"
 
 
 def toolserver_probe(explicit=None):
@@ -98,8 +169,25 @@ def tools_field(status):
     return "off"
 
 
+class _Keys:
+    """The screen as modals see it: type-ahead captured during a wait() is
+    replayed first, in order, as int key codes."""
+
+    def __init__(self, app):
+        self._app = app
+
+    def getch(self):
+        if self._app.typeahead:
+            key = self._app.typeahead.popleft()
+            return ord(key) if isinstance(key, str) and len(key) == 1 else key
+        return self._app.screen.getch()
+
+    def __getattr__(self, name):
+        return getattr(self._app.screen, name)
+
+
 class App:
-    def __init__(self, screen, client, session=None, toolserver_status=None, theme=None):
+    def __init__(self, screen, client, session=None, toolserver_status=None, theme=None, diag=None):
         self.screen, self.client = screen, client
         self.m = Model(kind=client.kind, base=client.base)
         self.prefer = session
@@ -112,6 +200,8 @@ class App:
         self.sse_active = set()
         self.roster_now = threading.Event()
         self.tools_status, self.tools_list = toolserver_probe(toolserver_status)
+        self.diag = diag or Diag()
+        self.version = version()
         self.poll_error = ""
         self.last_lines = (0, 0)
         self.hits = {}                  # screen row -> transcript target (mouse clicks)
@@ -119,6 +209,15 @@ class App:
         self.side_w = 0                 # sidebar width at last draw (0 when folded)
         self._sel_seen = -1             # last drawn selection: follow it only when it CHANGES
         self.now = time.monotonic
+        self.gen = 0                    # locus generation: tags every queued message
+        self.typeahead = collections.deque()
+        self.keys = _Keys(self)         # what modals read keys from
+        self.workers = []               # background threads joined (briefly) at quit
+        self.faults = collections.deque()
+        self.exit_message = ""
+        self._notice_seen = ("", 0.0)
+        self._waiting = ""
+        self.tty_write = self._tty_write
         # -- loci: named serves the operator can switch between (tui/loci.py)
         self.loci = loci_mod.load_loci()
         self.tunnels = loci_mod.Tunnels()
@@ -132,51 +231,172 @@ class App:
         self.pause_poll = threading.Event()
 
     # -- thread -> main loop ---------------------------------------------------
-    def send(self, kind, value):
+    def send(self, kind, value, gen=None):
+        """Thread-safe: queue a message for the main loop. `gen` is the locus
+        generation the producer started under (default: now)."""
         if not self.closed.is_set():
-            self.events.put((kind, value))
+            self.events.put((kind, value, self.gen if gen is None else gen))
 
     def dispatch(self, action):
         self.m = reduce(self.m, action)
 
+    def say(self, text, level="info"):
+        """Main-thread notice + log entry. Errors draw red, linger, count in
+        the status bar until /log is opened."""
+        self.dispatch({"type": "notice", "text": text, "level": level})
+        if level == "error":
+            self.diag.warn(text)
+            self.dispatch({"type": "alerts", "add": 1})
+        elif text:
+            self.diag.info(text)
+
     def drain(self):
         while True:
             try:
-                kind, value = self.events.get_nowait()
+                kind, value, gen = self.events.get_nowait()
             except queue.Empty:
                 break
+            if gen != self.gen:
+                continue                                    # produced for a locus we left
             if kind == "action":
                 self.dispatch(value)
             elif kind == "notice":
-                self.dispatch({"type": "notice", "text": value})
-        self.dispatch({"type": "tick", "now": self.now()})
+                self.say(value)
+            elif kind == "error":
+                self.say(value, "error")
+            elif kind == "call":
+                value()
+        now = self.now()
+        self.dispatch({"type": "tick", "now": now})
         for r in list(self.m.pending_receipts):
-            if r["unacked"]:
+            if r["unacked"] and not r.get("checking") and now >= r.get("retry_at", 0):
                 self._check_receipt(r)
+        self._fade_notice(now)
+
+    def _fade_notice(self, now):
+        text = self.m.notice
+        if text != self._notice_seen[0]:
+            self._notice_seen = (text, now)
+        elif text and not self._waiting:
+            ttl = NOTICE_ERROR_S if self.m.notice_level == "error" else NOTICE_S
+            if now - self._notice_seen[1] > ttl:
+                self.dispatch({"type": "notice", "text": ""})
 
     def _check_receipt(self, entry):
-        """Stale receipt (§2.4): queued -> say so; absent -> prompt lost."""
-        try:
-            q = self.client.queue(self.m.active_sid)
-        except ServeError:
-            return
-        self.dispatch({"type": "queue", "queue": q})
-        if q and q.items:
-            self.dispatch({"type": "receipt_lost", "receipt": entry["receipt"], "notice": "prompt queued — r retry"})
-        else:
-            self.dispatch({"type": "receipt_lost", "receipt": entry["receipt"]})
+        """Stale receipt (§2.4): queued -> say so; absent -> prompt lost. A
+        background task: with the serve down this used to block the main
+        loop for the HTTP timeout on every tick."""
+        entry["checking"] = True
+        sid = self.m.active_sid
+
+        def done(q):
+            entry["checking"] = False
+            self.dispatch({"type": "queue", "queue": q})
+            if q and q.items:
+                self.dispatch({"type": "receipt_lost", "receipt": entry["receipt"], "notice": "prompt queued — r retry"})
+            else:
+                self.dispatch({"type": "receipt_lost", "receipt": entry["receipt"]})
+
+        def failed(_exc):
+            entry["checking"] = False
+            entry["retry_at"] = self.now() + 10
+
+        self.bg(lambda: self.client.queue(sid), done, quiet=True, on_error=failed)
+
+    # -- background work ---------------------------------------------------------
+    def _track(self, thread):
+        self.workers = [t for t in self.workers if t.is_alive()] + [thread]
+
+    def bg(self, fn, then=None, label="", quiet=False, on_error=None):
+        """Run `fn()` off the main thread; `then(result)` runs ON the main
+        thread at the next drain (same locus only). Failures become an error
+        notice (`label: why`) and a log row, never a traceback."""
+        gen, client = self.gen, self.client
+
+        def work():
+            try:
+                result = fn()
+            except ServeError as exc:
+                if on_error is not None:
+                    self.send("call", lambda: on_error(exc), gen)
+                if not quiet:
+                    self.send("error", "%s%s" % (label + ": " if label else "", exc), gen)
+                return
+            except Exception as exc:                       # noqa: BLE001 — report, never die
+                self.diag.error("background task failed (%s)" % (label or getattr(fn, "__name__", "?")), exc)
+                if on_error is not None:
+                    self.send("call", lambda: on_error(exc), gen)
+                if not quiet:
+                    self.send("error", "%s%s: %s (logged)" % (label + ": " if label else "", type(exc).__name__, exc),
+                              gen)
+                return
+            if then is not None and client is self.client:
+                self.send("call", lambda: then(result), gen)
+        thread = threading.Thread(target=work, daemon=True, name="tui-bg")
+        thread.start()
+        self._track(thread)
+        return thread
+
+    def wait(self, label, fn):
+        """Run `fn()` while the screen stays live; return its value or raise
+        its exception. Esc / Ctrl-C cancel (raises Cancelled; the call itself
+        finishes in the background). Keys typed meanwhile are replayed."""
+        box = {}
+
+        def work():
+            try:
+                box["value"] = fn()
+            except BaseException as exc:                   # noqa: BLE001 — re-raised below
+                box["error"] = exc
+        thread = threading.Thread(target=work, daemon=True, name="tui-wait")
+        thread.start()
+        thread.join(0.05)
+        if thread.is_alive():
+            self._track(thread)
+            note = "⋯ %s — Esc cancels" % label
+            self.say(note)
+            self._waiting = label
+            try:
+                while thread.is_alive():
+                    self.drain()
+                    self.draw()
+                    key = self.getkey(raw=True)
+                    if key in (27, CTRL["C"]):
+                        self.say("%s: cancelled" % label)
+                        raise Cancelled("cancelled")
+                    if key not in (-1, None):
+                        self.typeahead.append(key)
+                    thread.join(0.0)
+            finally:
+                self._waiting = ""
+                if self.m.notice == note:
+                    self.dispatch({"type": "notice", "text": ""})
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def join_workers(self, timeout=JOIN_S):
+        deadline = time.monotonic() + timeout
+        for thread in list(self.workers):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            thread.join(left)
 
     # -- poller ------------------------------------------------------------------
     def start_poller(self):
-        threading.Thread(target=self._poll_loop, daemon=True).start()
+        threading.Thread(target=self._poll_loop, daemon=True, name="tui-poll").start()
+        if self.tools_status:
+            threading.Thread(target=self._tools_loop, daemon=True, name="tui-tools").start()
 
     def _poll_loop(self):
-        due = {"roster": 0.0, "state": 0.0, "rollover": 0.0, "tools": 0.0, "usage": 0.0}
+        due = {"roster": 0.0, "state": 0.0, "rollover": 0.0, "usage": 0.0}
+        faults = 0
         while not self.closed.is_set():
             if self.pause_poll.is_set():
                 self._sleep(0.1)
                 continue
-            m = self.m
+            gen, client, m = self.gen, self.client, self.m
             now = self.now()
             if m.net_retry_at and now < m.net_retry_at:
                 self._sleep(0.2)
@@ -184,47 +404,65 @@ class App:
             try:
                 if now >= due["roster"] or m.roster_stale or self.roster_now.is_set():
                     self.roster_now.clear()
-                    self.send("action", {"type": "roster", "roster": self.client.roster(), "prefer": self.prefer})
+                    self.send("action", {"type": "roster", "roster": client.roster(), "prefer": self.prefer}, gen)
                     due["roster"] = now + 10
                     m = self.m if self.m.active_sid else m
                 sid = m.active_sid
                 if sid and sid not in self.sse_active:
                     lane = m.lane(sid)
                     since = "0" if (lane.rebaseline or not lane.loaded) else lane.cursor
-                    page = self.client.events(sid, since)
+                    page = client.events(sid, since)
                     self.send("action", {"type": "events", "sid": sid, "page": page, "now": now,
-                                         "wall": time.time()})
+                                         "wall": time.time()}, gen)
                 if now >= due["state"]:
-                    self.client.state()
+                    client.state()
                     due["state"] = now + 5
-                if sid and not is_cs(sid) and now >= due["usage"] and hasattr(self.client, "usage"):
-                    usage = self.client.usage(sid)
+                if sid and not is_console_session(sid) and now >= due["usage"] and hasattr(client, "usage"):
+                    usage = client.usage(sid)
                     if usage is not None:
-                        self.send("action", {"type": "usage", "usage": usage})
+                        self.send("action", {"type": "usage", "usage": usage}, gen)
                     due["usage"] = now + 15
-                if sid and not is_cs(sid) and now >= due["rollover"]:
-                    self._follow_rollover(sid)
+                if sid and not is_console_session(sid) and now >= due["rollover"]:
+                    self._follow_rollover(client, sid, gen)
                     due["rollover"] = now + 30
-                self.send("action", {"type": "net", "ok": True, "now": now})
+                self.poll_error = ""
+                self.send("action", {"type": "net", "ok": True, "now": now}, gen)
+                faults = 0
             except ServeError as exc:
                 self.poll_error = str(exc)
-                self.send("action", {"type": "net", "ok": False, "now": now})
-                self.send("notice", "serve: " + str(exc))
-            if self.tools_status and now >= due["tools"]:
-                try:
-                    self.send("action", {"type": "tools", "text": tools_field(self.tools_status())})
-                except Exception as exc:
-                    self.send("action", {"type": "tools", "text": "off"})
-                due["tools"] = now + 15
+                self.send("action", {"type": "net", "ok": False, "now": now}, gen)
+                if m.net == "live" or m.net == "connecting":
+                    self.send("error", "serve: " + str(exc), gen)
+                self.diag.warn("poll %s: %s" % (client.base, exc))
+            except Exception as exc:                       # noqa: BLE001 — the poller must not die
+                faults += 1
+                self.poll_error = "%s: %s" % (type(exc).__name__, exc)
+                self.diag.error("poll failed (%s)" % client.base, exc)
+                if faults == 1 or faults % 30 == 0:
+                    self.send("error", "poll: %s — still polling (/log)" % self.poll_error, gen)
+                self._sleep(min(10.0, float(faults)))
+                continue
             self._sleep(1.0)
 
-    def _follow_rollover(self, sid):
-        doc = self.client.rollover() or {}
-        archived = (doc.get("archived") or {}).get(sid) or {}
-        successor = archived.get("successor")
+    def _tools_loop(self):
+        """Toolserver health on its own thread: a slow toolserver must never
+        stall the serve poll."""
+        while not self.closed.is_set():
+            try:
+                text = tools_field(self.tools_status())
+            except Exception as exc:                       # noqa: BLE001
+                self.diag.warn("toolserver probe: %s: %s" % (type(exc).__name__, exc))
+                text = "off"
+            self.send("action", {"type": "tools", "text": text})
+            self._sleep(15.0)
+
+    def _follow_rollover(self, client, sid, gen):
+        doc = client.rollover() or {}
+        archived = (doc.get("archived") or {}).get(sid) or {} if isinstance(doc, dict) else {}
+        successor = archived.get("successor") if isinstance(archived, dict) else None
         if successor and successor != sid:
-            self.send("action", {"type": "select", "sid": successor})
-            self.send("notice", "session rolled over → %s" % successor[:8])
+            self.send("action", {"type": "select", "sid": successor}, gen)
+            self.send("notice", "session rolled over → %s" % successor[:8], gen)
             self.roster_now.set()
 
     def _sleep(self, seconds):
@@ -242,61 +480,159 @@ class App:
             # no session yet: the serve mints one for sid "new"; the receipt
             # carries the real id and _sent adopts it as active.
             sid = "new"
-            self.dispatch({"type": "notice", "text": "starting a new session…"})
+            self.say("starting a new session…")
         self.dispatch({"type": "local_user", "sid": sid, "text": text, "now": self.now()})
-        threading.Thread(target=self._send, args=(sid, text), daemon=True).start()
+        self._track_send(sid, text)
 
-    def _send(self, sid, text):
-        native = self.client.kind == "abstract-claude" and not is_cs(sid)
+    def _track_send(self, sid, text):
+        thread = threading.Thread(target=self._send, args=(sid, text, self.gen, self.client),
+                                  daemon=True, name="tui-send")
+        thread.start()
+        self._track(thread)
+
+    def _send(self, sid, text, gen=None, client=None):
+        gen = self.gen if gen is None else gen
+        client = client or self.client
+        native = client.kind == "abstract-serve" and not is_console_session(sid)
         if native:
             self.sse_active.add(sid)
         try:
             had_sid = bool(self.m.active_sid)
-            receipt = self.client.send(sid, text, on_event=(lambda ev: self.send(
-                "action", {"type": "sse_event", "sid": sid, "event": ev, "now": self.now()})) if native else None)
-            self.send("action", {"type": "sent", "receipt": receipt, "now": self.now()})
+            receipt = client.send(sid, text, on_event=(lambda ev: self.send(
+                "action", {"type": "sse_event", "sid": sid, "event": ev, "now": self.now()}, gen)) if native else None)
+            self.send("action", {"type": "sent", "receipt": receipt, "now": self.now()}, gen)
             if not had_sid:
                 self.roster_now.set()      # the new session shows up in pickers at once
         except ServeError as exc:
-            self.send("notice", "send failed: %s" % exc)
+            self.send("error", "send failed: %s" % exc, gen)
         except (TimeoutError, OSError) as exc:
             # a dropped stream must surface as a notice, never a thread
             # traceback sprayed over the curses screen
-            self.send("notice", "stream lost (%s) — /retry or resend" % type(exc).__name__)
+            self.send("error", "stream lost (%s) — /retry or resend" % type(exc).__name__, gen)
+        except Exception as exc:                           # noqa: BLE001
+            self.diag.error("send thread failed", exc)
+            self.send("error", "send failed: %s: %s (logged)" % (type(exc).__name__, exc), gen)
         finally:
             if native:
                 self.sse_active.discard(sid)
-                self.send("action", {"type": "sse_done", "sid": sid})
+                self.send("action", {"type": "sse_done", "sid": sid}, gen)
 
     def interrupt(self):
         sid = self.m.active_sid
         if not sid:
             return
+        client = self.client
+        self.bg(lambda: client.interrupt(sid), lambda _r: self.say("interrupt sent"), label="interrupt")
+
+    def clear_context(self):
+        """/clear — wipe the model's context for the active session. The
+        transcript display is left intact; only what the model sees next turn
+        is reset."""
+        sid = self.m.active_sid
+        if not sid:
+            self.say("no session to clear")
+            return
+        client = self.client
+        self.bg(lambda: client.clear(sid),
+                lambda _r: self.say("context cleared — model starts fresh next turn (transcript kept)"),
+                label="clear failed")
+
+    def new_session(self, profile=None):
+        """/new — mint a fresh session and switch to it. Defaults to the active
+        session's model; serves that cannot mint one fall back to starting the
+        session on the next prompt."""
+        if not hasattr(self.client, "create"):
+            self.dispatch({"type": "select", "sid": ""})
+            self.say("new session — type a prompt to start it")
+            return
+        if profile is None:
+            row = self.m.session
+            profile = row.model if row else None
+        client = self.client
+
+        def adopt(view):
+            sid = view.get("id") if isinstance(view, dict) else None
+            if not sid:
+                self.say("new session failed: no id returned", "error")
+                return
+            self.roster_now.set()
+            self.dispatch({"type": "select", "sid": sid})
+            self.say("new session " + sid[:13])
+        self.bg(lambda: client.create(profile), adopt, label="new failed")
+
+    def emergency(self, arg=None):
+        """/emergency — break-glass: run a LOCAL GGUF as an agent, no hugpy
+        wrapper/central/toolserver in the path. No arg opens a picker over the
+        local models; an arg launches a name match, `auto` lets the serve pick."""
         try:
-            self.client.interrupt(sid)
-            self.dispatch({"type": "notice", "text": "interrupt sent"})
+            pf = self.wait("emergency preflight", self.client.emergency_preflight)
         except ServeError as exc:
-            self.dispatch({"type": "notice", "text": str(exc)})
+            self.say("emergency unavailable: %s" % exc, "error")
+            return
+        models = pf.get("models") or []
+        if not models:
+            lines = ["No local models available for emergency inference.", ""]
+            lines += ["- " + e for e in (pf.get("errors") or [])]
+            lines += ["", "Set HUGPY_EMERGENCY_MODEL_DIRS / HUGPY_EMERGENCY_LLAMA_BIN."]
+            modals.text_modal(self.keys, "EMERGENCY INFERENCE", lines, self.theme, self.drain)
+            return
+        chosen_path = None
+        if arg and arg.lower() != "auto":
+            al = arg.lower()
+            match = next((m for m in models if al in m["name"].lower()), None)
+            if not match:
+                self.say("no local model matching %r" % arg)
+                return
+            chosen_path = match["path"]
+        elif arg is None:
+            labels = ["%-40s %5d MB%s" % (m["name"][:40], (m["size_bytes"] or 0) >> 20,
+                                          "  +vision" if m["mmproj"] else "")
+                      for m in models]
+            title = "EMERGENCY · %s · %d threads" % (
+                os.path.basename(pf.get("llama_bin") or "?"), pf.get("threads") or 1)
+            pick = modals.choose(self.keys, title, labels, self.theme, self.drain)
+            if pick is None:
+                return
+            chosen_path = models[pick]["path"]
+        # arg == "auto": chosen_path stays None, the serve auto-picks
+        client = self.client
+
+        def launched(view):
+            sid = view.get("id") if isinstance(view, dict) else None
+            if not sid:
+                self.say("emergency launch returned no session", "error")
+                return
+            self.roster_now.set()
+            self.dispatch({"type": "select", "sid": sid})
+            self.say("emergency: launching — watch the transcript for 'ready'")
+        self.bg(lambda: client.launch_emergency(chosen_path), launched, label="emergency failed")
 
     def retry(self):
         sid = self.m.active_sid
         if not sid:
             return
-        try:
-            self.client.queue_action(sid, "retry")
-            self.dispatch({"type": "notice", "text": "retry sent"})
-            self.dispatch({"type": "queue", "queue": self.client.queue(sid)})
-        except ServeError as exc:
-            self.dispatch({"type": "notice", "text": str(exc)})
+        client = self.client
+
+        def work():
+            client.queue_action(sid, "retry")
+            return client.queue(sid)
+
+        def done(q):
+            self.say("retry sent")
+            self.dispatch({"type": "queue", "queue": q})
+        self.bg(work, done, label="retry")
 
     def answer(self, approval, decision):
+        sid = approval.session_id or self.m.active_sid
         try:
-            self.client.answer(approval.session_id or self.m.active_sid, approval.request_id, decision)
+            self.wait("sending %s" % decision, lambda: self.client.answer(sid, approval.request_id, decision))
+        except Cancelled:
+            return
         except ServeError as exc:
             if exc.code == 400:
-                self.dispatch({"type": "notice", "text": "approval already gone: %s" % exc})
+                self.say("approval already gone: %s" % exc)
             else:
-                self.dispatch({"type": "notice", "text": str(exc)})
+                self.say("approval: %s" % exc, "error")
                 return
         self.dispatch({"type": "approval_answered", "request_id": approval.request_id, "decision": decision})
 
@@ -307,13 +643,17 @@ class App:
         if cmd in ("/quit", "/exit"):
             return "quit"
         if cmd == "/help":
-            modals.text_modal(self.screen, "HELP", HELP, self.theme, self.drain)
+            self.show_help()
         elif cmd == "/model":
             self.pick_model()
         elif cmd == "/shell":
             self.open_shell()
         elif cmd == "/session":
             self.pick_session(args[0] if args else None)
+        elif cmd == "/clear":
+            self.clear_context()
+        elif cmd == "/new":
+            self.new_session(args[0] if args else None)
         elif cmd == "/locus":
             self.pick_locus(args[0] if args else None)
         elif cmd == "/queue":
@@ -329,32 +669,39 @@ class App:
                 return
             sid = self.m.active_sid
             if not sid:
-                self.dispatch({"type": "notice", "text": "no session"})
+                self.say("no session")
             else:
-                try:
-                    res = self.client.roll(sid)
-                    self.dispatch({"type": "notice",
-                                   "text": "rollover: " + (res.get("note") or
-                                           ("queued" if res.get("ok") else str(res.get("error"))))})
-                except ServeError as exc:
-                    self.dispatch({"type": "notice", "text": "rollover failed: %s" % exc})
+                client = self.client
+                self.bg(lambda: client.roll(sid), lambda res: self.say(
+                    "rollover: " + (res.get("note") or ("queued" if res.get("ok") else str(res.get("error"))))),
+                    label="rollover failed")
         elif cmd == "/context":
             self.show_context()
         elif cmd == "/status":
             self.status_note()
         elif cmd == "/tools":
             self.show_tools()
+        elif cmd == "/emergency":
+            self.emergency(args[0] if args else None)
+        elif cmd == "/find":
+            self.find(" ".join(args))
+        elif cmd == "/copy":
+            self.copy()
+        elif cmd == "/export":
+            self.export(" ".join(args) or None)
+        elif cmd in ("/log", "/diag"):
+            self.show_log()
         else:
             # not a TUI command: forward to the ENGINE (session-first commands
             # like /handoff /resume /rollover live there, not here)
-            sid = self.m.active_sid or "new"
-            threading.Thread(target=self._send, args=(sid, text), daemon=True).start()
+            self._track_send(self.m.active_sid or "new", text)
 
     def roller_switch(self, mode):
         """/rollover on|off|auto|manual|status — the serve's auto-roller switch."""
-        try:
-            if mode == "status":
-                doc = self.client.rollover() or {}
+        client = self.client
+        if mode == "status":
+            def status(doc):
+                doc = doc or {}
                 pol = doc.get("policy") or {}
                 pend = doc.get("pending") or {}
                 text = "roller: %s · %sk ctx · sweep %ss" % (
@@ -363,21 +710,22 @@ class App:
                     pol.get("rollover_sweep_s", "?"))
                 if pend:
                     text += " · PENDING %s" % str(pend.get("session_id", ""))[:8]
-                self.dispatch({"type": "notice", "text": text})
-                return
-            if not hasattr(self.client, "roll_mode"):
-                self.dispatch({"type": "notice", "text": "this serve has no roller switch"})
-                return
-            res = self.client.roll_mode(mode)
+                self.say(text)
+            self.bg(client.rollover, status, label="roller")
+            return
+        if not hasattr(client, "roll_mode"):
+            self.say("this serve has no roller switch")
+            return
+
+        def switched(res):
             if res.get("ok"):
                 text = "roller → %s" % res.get("mode")
                 if res.get("warning"):
                     text += " ⚠ %s" % res["warning"]
+                self.say(text)
             else:
-                text = "roller: %s" % res.get("error")
-            self.dispatch({"type": "notice", "text": text})
-        except ServeError as exc:
-            self.dispatch({"type": "notice", "text": "roller: %s" % exc})
+                self.say("roller: %s" % res.get("error"), "error")
+        self.bg(lambda: client.roll_mode(mode), switched, label="roller")
 
     def status_note(self):
         from .state import Block
@@ -388,16 +736,23 @@ class App:
         self.m = self.m.__class__(**dict(self.m.__dict__, lanes=dict(self.m.lanes, **{
             self.m.active_sid: lane.__class__(**dict(lane.__dict__, blocks=blocks))})))
 
+    def show_help(self):
+        lines = [line.replace("%s", self.diag.path or "the in-memory log (file logging off)")
+                 for line in HELP]
+        modals.text_modal(self.keys, "HELP · hugpy-agent %s" % self.version, lines, self.theme, self.drain)
+
     def show_context(self):
         """The whole session as the model sees it on the next call, with tokens."""
         sid = self.m.active_sid
         if not sid:
-            self.dispatch({"type": "notice", "text": "no session"})
+            self.say("no session")
             return
         lines = []
         try:
-            events = self.client.events(sid, "0").events   # EventPage(events, busy, queue, cursor, source, truncated)
-        except Exception as exc:
+            events = self.wait("loading context", lambda: self.client.events(sid, "0")).events
+        except Cancelled:
+            return
+        except Exception as exc:                           # noqa: BLE001 — shown in the modal
             events = []
             lines.append("events unavailable: %s" % exc)
         for ev in events or []:
@@ -408,7 +763,7 @@ class App:
             elif k in ("text", "assistant"):
                 lines.append("ASSISTANT: " + txt)
             elif k in ("tool", "tool_call"):
-                lines.append("TOOL: %s" % (getattr(ev, "meta", {}) or {}).get("name", txt[:80]))
+                lines.append("TOOL: %s" % (getattr(ev, "name", "") or txt[:80]))
             elif txt:
                 lines.append("%s: %s" % (k.upper() or "EVENT", txt[:200]))
         u = getattr(self.m, "usage", None)
@@ -418,11 +773,14 @@ class App:
                 "{:,}".format(getattr(u, "in_tokens", 0)),
                 "{:,}".format(getattr(u, "out_tokens", 0)),
                 "  $%.4f" % u.cost_usd if float(getattr(u, "cost_usd", 0) or 0) else ""))
+        elif self.m.lane().ctx_tokens:
+            lane = self.m.lane()
+            lines += ["", "context of the last call: %s tokens · output so far: %s tokens" % (
+                "{:,}".format(lane.ctx_tokens), "{:,}".format(lane.tok_out))]
         flat = []
         for ln in lines:
             flat.extend(ln.splitlines() or [""])
-        modals.text_modal(self.screen, "CONTEXT %s" % sid[:13], flat or ["(empty)"],
-                          self.theme, self.drain)
+        modals.text_modal(self.keys, "CONTEXT %s" % sid[:13], flat or ["(empty)"], self.theme, self.drain)
 
     def show_tools(self):
         """Name + first description line, grouped by category prefix — a wall
@@ -431,7 +789,7 @@ class App:
         try:
             if self.tools_list:
                 by_cat = {}
-                for t in self.tools_list() or []:
+                for t in self.wait("loading tools", self.tools_list) or []:
                     if isinstance(t, str):
                         name, desc = t, ""
                     else:
@@ -446,66 +804,149 @@ class App:
                     for name, desc in sorted(by_cat[cat]):
                         lines.append("  %-*s  %s" % (w, name, desc) if desc else "  " + name)
             elif self.tools_status:
-                lines.append(str(self.tools_status()))
-        except Exception as exc:
+                lines.append(str(self.wait("toolserver status", self.tools_status)))
+        except Cancelled:
+            return
+        except Exception as exc:                           # noqa: BLE001 — shown in the modal
             lines.append("toolserver error: %s" % exc)
         if not lines:
             lines = ["toolserver: off (no toolserver_client / TOOLSERVER_URL)"]
-        modals.text_modal(self.screen, "TOOLS · %s" % (self.m.tools or "off"), lines, self.theme, self.drain)
+        modals.text_modal(self.keys, "TOOLS · %s" % (self.m.tools or "off"), lines, self.theme, self.drain)
+
+    def show_log(self):
+        """/log — what the operator needs to file a fault: build, serve,
+        locus, session, terminal, log file, then every notice and error."""
+        h, w = self.screen.getmaxyx()
+        errors, warnings = self.diag.counts()
+        head = [
+            "hugpy-agent %s · python %s" % (self.version, sys.version.split()[0]),
+            "code    %s" % os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "serve   %s (%s) · locus %s · net %s%s" % (self.client.base, self.client.kind, self.active_locus,
+                                                       self.m.net, (" · last poll error: " + self.poll_error)
+                                                       if self.poll_error else ""),
+            "session %s" % (self.m.active_sid or "-"),
+            "term    %s %dx%d · mouse %s" % (os.environ.get("TERM", "?"), w, h,
+                                             "off" if os.environ.get("HUGPY_TUI_MOUSE") == "0" else "on"),
+            "log     %s%s" % (self.diag.path or "memory only (HUGPY_TUI_LOG=off or not attached)",
+                              " (%s)" % self.diag.file_error if self.diag.file_error else ""),
+            "errors  %d · warnings %d" % (errors, warnings),
+            "",
+        ]
+        self.dispatch({"type": "alerts", "clear": True})
+        modals.text_modal(self.keys, "LOG", head + (self.diag.lines() or ["(nothing logged yet)"]),
+                          self.theme, self.drain, at_end=True)
+
+    def find(self, query=""):
+        if not self.m.active_sid:
+            self.say("no session")
+            return
+        self.dispatch({"type": "find", "query": query, "current": self.last_lines[0]})
+
+    def _selected_block(self):
+        """The block `y`/`/copy` act on: the transcript selection, else the
+        last reply with text."""
+        lane, m = self.m.lane(), self.m
+        if m.focus == "transcript" and m.selected >= 0 and m.selected < len(lane.blocks):
+            return lane.blocks[m.selected]
+        if m.focus == "transcript" and m.selected <= -2:
+            from . import toolcalls as tc
+            start = tc.group_start(m.selected)
+            members = next((mem for s, mem in tc.runs(lane.blocks) if s == start), [])
+            if members:
+                from .state import Block
+                text = "\n\n".join(output.copy_text(lane.blocks[i]) for i in members)
+                return Block("note", text)
+        for b in reversed(lane.blocks):
+            if b.kind == "assistant" and (b.text or "").strip():
+                return b
+        return None
+
+    def copy(self):
+        block = self._selected_block()
+        if block is None:
+            self.say("nothing to copy")
+            return
+        text = output.copy_text(block)
+        seq = output.osc52(text)
+        if not seq:
+            self.say("nothing to copy (empty block)")
+            return
+        try:
+            self.tty_write(seq)
+        except OSError as exc:
+            self.say("copy failed: %s" % exc, "error")
+            return
+        cut = len(text) > output.OSC52_MAX
+        self.say("copied %s chars (OSC 52)%s" % ("{:,}".format(min(len(text), output.OSC52_MAX)),
+                                                 " — truncated" if cut else ""))
+
+    def export(self, path=None):
+        lane, sid = self.m.lane(), self.m.active_sid
+        if not sid or not lane.blocks:
+            self.say("nothing to export")
+            return
+        row = self.m.session
+        meta = {"serve": "%s (%s)" % (self.client.base, self.client.kind), "locus": self.active_locus,
+                "session": sid, "model": (row.model if row else "") or "",
+                "exported": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                "by": "hugpy-agent tui %s" % self.version}
+        text = output.to_markdown(lane.blocks, "Transcript · %s" % sid, meta)
+        target = path or output.export_path(self.active_locus, sid)
+        try:
+            written = output.write_private(target, text)
+        except OSError as exc:
+            self.say("export failed: %s" % exc, "error")
+            return
+        self.say("exported %d blocks → %s" % (len(lane.blocks), written))
+
+    @staticmethod
+    def _tty_write(data):
+        """Raw escape to the terminal (OSC 52); curses owns stdout but an OSC
+        moves no cursor, so it is safe between refreshes."""
+        stream = sys.__stdout__
+        stream.write(data)
+        stream.flush()
 
     def pick_model(self):
         row = self.m.session
         try:
-            options = self.client.models()
+            options = self.wait("loading models", self.client.models)
+        except Cancelled:
+            return
         except ServeError as exc:
-            self.dispatch({"type": "notice", "text": str(exc)})
+            self.say("models: %s" % exc, "error")
             return
         if not options:
-            self.dispatch({"type": "notice", "text": "no models offered"})
+            self.say("no models offered")
             return
         labels = ["%s  (%s)" % (o.label or o.model, o.backend) for o in options]
-        pick = modals.choose(self.screen, "MODEL · %s" % ((row.label or row.id) if row else (self.m.active_sid or "?")[:13]), labels, self.theme, self.drain)
+        pick = modals.choose(self.keys, "MODEL · %s" % ((row.label or row.id) if row else (self.m.active_sid or "?")[:13]),
+                             labels, self.theme, self.drain)
         if pick is None:
             return
         if row is None and not self.m.active_sid:
-            self.dispatch({"type": "notice", "text": "no session to set a model on — send a prompt first"})
+            self.say("no session to set a model on — send a prompt first")
             return
         chosen = options[pick]
         try:
-            if self.client.kind == "hugpy":
-                self.client.set_model((row.id if row else self.m.active_sid), chosen.model)
-                note = "model: " + chosen.model
-            else:
-                # abstract-claude roster set_provider/set_model key on a STANDING
-                # ROLE. A plain cs-* / native session has no role, so posting its
-                # id as a role silently no-ops — refuse with a factual notice
-                # rather than pretend it took (and avoid row.backend on None).
-                if not (row and row.role):
-                    self.dispatch({"type": "notice",
-                                   "text": "model is set per role — switch to a role (Tab) to change its model"})
-                    return
-                if chosen.backend and chosen.backend != row.backend:
-                    self.client.set_provider(row.role, chosen.backend, chosen.model)
-                    note = "provider → %s/%s" % (chosen.backend, chosen.model or "default")
-                else:
-                    doc = self.client.set_model(row.role, chosen.model)
-                    note = "model: %s%s" % (chosen.model or "default",
-                                            " (staged)" if staged_model(doc, row.role) else "")
-            self.dispatch({"type": "notice", "text": note})
+            note = self.wait("setting model", lambda: self.client.select_model(row, chosen))
+            self.say(note)
             self.roster_now.set()
+        except Cancelled:
+            return
         except ServeError as exc:
-            self.dispatch({"type": "notice", "text": str(exc)})
+            self.say(str(exc), "error")
 
     def pick_locus(self, wanted=None):
         """/locus [name] — picker over tui-loci.json; switches the whole serve."""
         if not self.loci:
-            self.dispatch({"type": "notice", "text": "no loci (write ~/.hugpy/tui-loci.json)"})
+            self.say("no loci (write ~/.hugpy/tui-loci.json)")
             return
         if wanted:
             entry = next((e for e in self.loci if e["locus"].lower() == wanted.lower()
                           or e["locus"].lower().startswith(wanted.lower())), None)
             if entry is None:
-                self.dispatch({"type": "notice", "text": "no locus %s" % wanted})
+                self.say("no locus %s" % wanted)
                 return
             self.switch_locus(entry)
             return
@@ -513,44 +954,53 @@ class App:
                                   " · current" if e["locus"] == self.active_locus else "")
                   for e in self.loci]
         current = next((i for i, e in enumerate(self.loci) if e["locus"] == self.active_locus), 0)
-        pick = modals.choose(self.screen, "LOCI", labels, self.theme, self.drain, selected=current)
+        pick = modals.choose(self.keys, "LOCI", labels, self.theme, self.drain, selected=current)
         if pick is not None:
             self.switch_locus(self.loci[pick])
 
     def switch_locus(self, entry):
         """Park the current (client, model), connect to the entry's serve
-        (opening its ssh tunnel when remote) and adopt or create its state."""
+        (opening its ssh tunnel when remote) and adopt or create its state.
+        The connect runs under wait() (Esc cancels); the swap bumps the
+        generation so the old serve's in-flight replies are dropped."""
         if entry["locus"] == self.active_locus:
             return
         from ..serve_client import connect
         from .discovery import identify, probe
-        self.dispatch({"type": "notice", "text": "locus %s: connecting…" % entry["locus"]})
-        self.draw()
-        self.pause_poll.set()           # the poller must not race the swap
-        try:
-            held = self._locus_held.pop(entry["locus"], None)
-            if held is None:
-                base = self.tunnels.base_for(entry)
+        held = self._locus_held.pop(entry["locus"], None)
+        if held is None:
+            def reach():
+                try:
+                    base = self.tunnels.base_for(entry)
+                except (RuntimeError, OSError) as exc:
+                    raise ServeError(str(exc))
                 kind = identify(probe(base, timeout=2.0))
                 if kind is None:
-                    raise RuntimeError("%s is not a serve" % base)
-                held = (connect(base, kind), Model(kind=kind, base=base))
+                    raise ServeError("%s is not a serve" % base)
+                return connect(base, kind), Model(kind=kind, base=base)
+            try:
+                held = self.wait("connecting to %s" % entry["locus"], reach)
+            except Cancelled:
+                return
+            except ServeError as exc:
+                self.say("locus %s: %s" % (entry["locus"], exc), "error")
+                return
+        self.pause_poll.set()           # the poller must not race the swap
+        try:
             self._locus_held[self.active_locus] = (self.client, self.m)
             self.client, self.m = held
+            self.gen += 1
             self.active_locus = entry["locus"]
             self.sse_active = set()
             self.roster_now.set()
-            self.dispatch({"type": "notice", "text": "locus %s" % entry["locus"]})
-        except (RuntimeError, ServeError, OSError) as exc:
-            self.dispatch({"type": "notice", "text": "locus %s: %s" % (entry["locus"], exc)})
+            self.say("locus %s" % entry["locus"])
         finally:
             self.pause_poll.clear()
 
     def pick_session(self, wanted=None):
         roster = self.m.roster
         if not roster or not (roster.roles or roster.sessions):
-            self.dispatch({"type": "notice",
-                           "text": "no sessions on this serve yet — type a prompt to start one"})
+            self.say("no sessions on this serve yet — type a prompt to start one")
             return
         rows = [r for r in roster.roles if r.id] + [s for s in roster.sessions if s.id not in {r.id for r in roster.roles}]
         if wanted:
@@ -560,13 +1010,13 @@ class App:
                         or r.id.startswith(wanted):
                     self.dispatch({"type": "select", "sid": r.id})
                     return
-            self.dispatch({"type": "notice", "text": "no session %s" % wanted})
+            self.say("no session %s" % wanted)
             return
         labels = ["%-8s %s · %s · %s%s" % ((r.label or r.role or "")[:8], panels.short_id(r.id), r.backend,
                                             (r.model or "").split(":")[-1] or "-", "  BUSY" if r.busy else "")
                   for r in rows]
         current = next((i for i, r in enumerate(rows) if r.id == self.m.active_sid), 0)
-        pick = modals.choose(self.screen, "SESSIONS", labels, self.theme, self.drain, selected=current)
+        pick = modals.choose(self.keys, "SESSIONS", labels, self.theme, self.drain, selected=current)
         if pick is not None:
             self.dispatch({"type": "select", "sid": rows[pick].id})
 
@@ -575,12 +1025,14 @@ class App:
         restore the TUI exactly as it was when the shell exits."""
         curses.def_prog_mode()
         curses.endwin()
+        self._paste_mode(False)
         try:
             print("hugpy-agent tui: shell — type `exit` to return", flush=True)
             subprocess.call([os.environ.get("SHELL") or "/bin/bash", "-l"])
         except OSError as exc:
             print("shell failed: %s" % exc, flush=True)
         finally:
+            self._paste_mode(True)
             curses.reset_prog_mode()
             self.screen.clear()
             self.screen.refresh()
@@ -595,54 +1047,66 @@ class App:
 
     def open_queue(self):
         sid = self.m.active_sid
+        client = self.client
         try:
-            q = self.client.queue(sid)
+            q = self.wait("loading queue", lambda: client.queue(sid))
+        except Cancelled:
+            return
         except ServeError as exc:
-            self.dispatch({"type": "notice", "text": str(exc)})
+            self.say("queue: %s" % exc, "error")
             return
         self.dispatch({"type": "queue", "queue": q})
         if q is None:
-            self.dispatch({"type": "notice", "text": "this serve has no queue"})
+            self.say("this serve has no queue")
             return
-        result = modals.queue_modal(self.screen, q, self.theme, self.drain)
+        result = modals.queue_modal(self.keys, q, self.theme, self.drain)
         if not result:
             return
         action, payload = result
         try:
             if action == "edit":
-                text = modals.line_edit(self.screen, "EDIT %s" % payload.id[:8], payload.text, self.theme, self.drain)
+                text = modals.line_edit(self.keys, "EDIT %s" % payload.id[:8], payload.text, self.theme, self.drain)
                 if text is not None:
-                    self.client.queue_action(sid, "update", id=payload.id, text=text)
+                    self.wait("updating queue", lambda: client.queue_action(sid, "update", id=payload.id, text=text))
             elif action == "remove":
-                self.client.queue_action(sid, "remove", id=payload.id)
+                self.wait("updating queue", lambda: client.queue_action(sid, "remove", id=payload.id))
             elif action == "auto":
-                self.client.queue_action(sid, "auto", auto=bool(payload))
+                self.wait("updating queue", lambda: client.queue_action(sid, "auto", auto=bool(payload)))
             else:
-                self.client.queue_action(sid, action)
-            self.dispatch({"type": "queue", "queue": self.client.queue(sid)})
-            self.dispatch({"type": "notice", "text": "queue %s ok" % action})
+                self.wait("updating queue", lambda: client.queue_action(sid, action))
+            self.dispatch({"type": "queue", "queue": self.wait("loading queue", lambda: client.queue(sid))})
+            self.say("queue %s ok" % action)
+        except Cancelled:
+            return
         except ServeError as exc:
-            self.dispatch({"type": "notice", "text": str(exc)})
+            self.say("queue %s: %s" % (action, exc), "error")
 
     def open_approval(self):
         approval = self.m.open_approval
         if approval is None:
             return
-        decision = modals.approval_modal(self.screen, approval, self.theme, self.drain)
+        rid = approval.request_id
+        decision = modals.approval_modal(self.keys, approval, self.theme, self.drain,
+                                         alive=lambda: any(a.request_id == rid for a in self.m.approvals))
         if decision is None:
-            self.dispatch({"type": "approval_shown", "open": False})
+            if any(a.request_id == rid for a in self.m.approvals):
+                self.dispatch({"type": "approval_shown", "open": False})
+            else:
+                self.say("approval answered elsewhere")
             return
         self.answer(approval, decision)
 
     def confirm_quit(self):
         if not self.m.busy:
             return True
-        pick = modals.choose(self.screen, "A turn is still running on the serve", ["Stay", "Quit (the turn keeps running)"],
+        pick = modals.choose(self.keys, "A turn is still running on the serve", ["Stay", "Quit (the turn keeps running)"],
                              self.theme, self.drain)
         return pick == 1
 
     # -- keys ------------------------------------------------------------------
-    def getkey(self):
+    def getkey(self, raw=False):
+        if self.typeahead and not raw:
+            return self.typeahead.popleft()
         get_wch = getattr(self.screen, "get_wch", None)
         if get_wch is None:
             return self.screen.getch()
@@ -707,6 +1171,21 @@ class App:
         if text and self.m.focus == "composer":
             self.composer.insert(text)
 
+    def _transcript_key(self, ch):
+        """Single-letter commands while the transcript has focus; False when
+        the key is not one (it then types into the composer)."""
+        if ch == " ":
+            self.dispatch({"type": "expand"})
+        elif ch == "a":
+            self.dispatch({"type": "expand_all"})
+        elif ch == "r":
+            self.retry()
+        elif ch == "y":
+            self.copy()
+        else:
+            return False
+        return True
+
     def handle_key(self, key):
         """Returns 'quit' to leave the loop."""
         m = self.m
@@ -720,13 +1199,7 @@ class App:
         if isinstance(key, str):
             if m.focus == "composer":
                 self.composer.insert(key)
-            elif key == " ":
-                self.dispatch({"type": "expand"})
-            elif key == "a":
-                self.dispatch({"type": "expand_all"})
-            elif key == "r":
-                self.retry()
-            else:
+            elif not self._transcript_key(key):
                 # typing always types: any other printable bounces focus back
                 self.dispatch({"type": "focus", "which": "composer"})
                 self.composer.insert(key)
@@ -746,6 +1219,16 @@ class App:
                         self.screen.timeout(100)           # restore before re-dispatch (finally also will)
                         return self.handle_key(mapped)
                     return None                            # other CSI: swallow quietly
+                if nxt in (ord("O"), "O"):                 # SS3: F1-F4 on some terminals
+                    tail = self.getkey()
+                    mapped = {"P": curses.KEY_F1, "R": curses.KEY_F3}.get(
+                        tail if isinstance(tail, str) else (chr(tail) if isinstance(tail, int) and 0 < tail < 256 else ""))
+                    if mapped is not None:
+                        self.screen.timeout(100)
+                        return self.handle_key(mapped)
+                    if m.focus == "composer":
+                        self.composer.insert("O")
+                    return None
             finally:
                 self.screen.timeout(100)                   # NEVER nodelay(False): keep the poll tick alive
             if nxt in (10, 13):
@@ -767,11 +1250,11 @@ class App:
         if menu_open and key == 9:
             pick = self._slash_hits[self.slash_sel]
             self.composer.clear()
-            self.composer.insert(pick + (" " if pick in ("/session", "/expand") else ""))
+            self.composer.insert(pick + (" " if pick in ARG_COMMANDS else ""))
             return None
         if menu_open and key in (10, 13, curses.KEY_ENTER):
             pick = self._slash_hits[self.slash_sel]
-            if pick in ("/session", "/expand"):
+            if pick in ARG_COMMANDS:
                 self.composer.clear()
                 self.composer.insert(pick + " ")
                 return None
@@ -824,8 +1307,12 @@ class App:
             self.cycle_role(1)
         elif key == curses.KEY_BTAB:
             self.cycle_role(-1)
+        elif key == curses.KEY_F1:
+            self.show_help()
         elif key == curses.KEY_F2:
             self.dispatch({"type": "focus"})
+        elif key == curses.KEY_F3:
+            self.find()
         elif key == curses.KEY_UP:
             if m.focus == "transcript":
                 if m.lane().scroll < 0:
@@ -875,12 +1362,8 @@ class App:
                 self.composer.insert(chr(key))
             except ValueError:
                 pass
-        elif m.focus == "transcript" and key == ord(" "):
-            self.dispatch({"type": "expand"})
-        elif m.focus == "transcript" and key == ord("a"):
-            self.dispatch({"type": "expand_all"})
-        elif m.focus == "transcript" and key == ord("r"):
-            self.retry()
+        elif m.focus == "transcript" and 32 <= key < 256 and self._transcript_key(chr(key)):
+            pass
         elif 32 <= key < 0x110000:
             # typing always types: printable in transcript focus returns to the composer
             self.dispatch({"type": "focus", "which": "composer"})
@@ -941,7 +1424,7 @@ class App:
         scr.erase()
         ever_loaded = any(l.loaded for l in m.lanes.values())
         if (m.roster is None or (m.active_sid and not m.lane().loaded)) and not ever_loaded and m.net != "down":
-            panels.draw_splash(scr, self.client.base, self.theme)
+            panels.draw_splash(scr, self.client.base, self.theme, self.version)
             if m.net in ("degraded", "down") and self.poll_error:
                 h, w = scr.getmaxyx()
                 panels.put(scr, h - 3, 0, "serve: " + self.poll_error, self.theme.TOOL_ERR)
@@ -969,7 +1452,7 @@ class App:
             panels.put(scr, rects.rule.y, 0, bar, self.theme.MUTED)
             panels.put(scr, rects.rule.y, 2, title, self.theme.MUTED)
             # focus cue: which pane keys drive, right-aligned on the rule row.
-            marker = "[transcript ↑↓ select]" if m.focus == "transcript" else "[composer]"
+            marker = "[transcript ↑↓ select · y copy]" if m.focus == "transcript" else "[composer]"
             panels.put(scr, rects.rule.y, max(0, rects.rule.w - len(marker) - 2), marker,
                        self.theme.ACCENT if m.focus == "transcript" else self.theme.MUTED)
         cy, cx = cv.draw_composer(scr, self.composer, rects.composer, self.theme)
@@ -1006,6 +1489,27 @@ class App:
                 pass
         scr.refresh()
 
+    def _fault(self, exc):
+        """Main-loop crash guard: log the traceback, tell the operator, keep
+        running — unless faults repeat so fast the loop is spinning, then stop
+        cleanly with the log path. True = stop."""
+        now = time.monotonic()
+        self.diag.error("main loop fault", exc)
+        self.faults.append(now)
+        while self.faults and now - self.faults[0] > FAULT_WINDOW_S:
+            self.faults.popleft()
+        if len(self.faults) >= FAULT_LIMIT:
+            self.exit_message = ("hugpy-agent tui: stopped after %d internal errors in %ds — last: %s: %s%s"
+                                 % (len(self.faults), FAULT_WINDOW_S, type(exc).__name__, exc,
+                                    " (traceback in %s)" % self.diag.path if self.diag.path else ""))
+            return True
+        try:
+            self.say("internal error: %s: %s — logged, still running (/log)" % (type(exc).__name__, exc), "error")
+            self.screen.clear()
+        except Exception:                                  # noqa: BLE001
+            pass
+        return False
+
     def run(self):
         os.environ.setdefault("ESCDELAY", "25")
         if self.theme is None:
@@ -1027,22 +1531,30 @@ class App:
         self._paste_mode(True)    # bracketed paste: multi-line pastes insert, never auto-submit
         h, w = self.screen.getmaxyx()
         self.dispatch({"type": "resize", "h": h, "w": w})
+        self.diag.info("tui %s start · serve %s (%s) · locus %s" % (self.version, self.client.base,
+                                                                     self.client.kind, self.active_locus))
         self.start_poller()
         try:
             while True:
-                self.drain()
-                if self.m.approval_open and self.m.approvals:
-                    self.open_approval()
-                    continue
-                self.draw()
-                if self.handle_key(self.getkey()) == "quit":
-                    return 0
-        except KeyboardInterrupt:
-            return 0              # SIGINT still lands if raw() was unavailable
+                try:
+                    self.drain()
+                    if self.m.approval_open and self.m.approvals:
+                        self.open_approval()
+                        continue
+                    self.draw()
+                    if self.handle_key(self.getkey()) == "quit":
+                        return 0
+                except KeyboardInterrupt:
+                    return 0          # SIGINT still lands if raw() was unavailable
+                except Exception as exc:                   # noqa: BLE001 — the crash guard
+                    if self._fault(exc):
+                        return 1
         finally:
             self.closed.set()
+            self.join_workers()
             self.tunnels.close()
             self._paste_mode(False)
+            self.diag.info("tui exit")
             try:
                 curses.noraw()
                 curses.curs_set(0)
@@ -1055,7 +1567,6 @@ class App:
         straight to the tty so pasted newlines arrive wrapped in ESC[200~/201~
         instead of as submitting Enters."""
         try:
-            import sys
             sys.stdout.write("\x1b[?2004h" if on else "\x1b[?2004l")
             sys.stdout.flush()
         except Exception:

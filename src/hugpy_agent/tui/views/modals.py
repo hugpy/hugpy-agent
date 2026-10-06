@@ -15,6 +15,22 @@ from .text import wrap
 ENTER = (10, 13, curses.KEY_ENTER)
 ESC = 27
 APPROVAL_KEYS = {"y": "accept", "a": "acceptForSession", "n": "decline", "c": "cancel"}
+# Key -> decision synonyms across the serve's two approval vocabularies:
+# provider approvals (accept/acceptForSession/decline/cancel) and serve
+# permission requests (allow_once/allow_session/deny).
+KEY_DECISIONS = {"y": ("accept", "allow_once"), "a": ("acceptForSession", "allow_session"),
+                 "n": ("decline", "deny"), "c": ("cancel",)}
+DECISION_LABELS = {"accept": "accept", "acceptForSession": "accept for this session",
+                   "decline": "decline", "cancel": "cancel", "allow_once": "allow once",
+                   "allow_session": "allow for this session", "deny": "deny"}
+
+
+def key_decision(key, options):
+    """The option a y/a/n/c key means for THIS approval, or None."""
+    for wanted in KEY_DECISIONS.get(key, ()):
+        if wanted in options:
+            return wanted
+    return None
 QUEUE_ACTIONS = (("e", "edit"), ("d", "remove"), ("a", "auto"), ("r", "retry"), ("x", "clear"))
 
 
@@ -34,26 +50,59 @@ def _tick(scr, drain):
 
 
 def choose(scr, title, options, theme, drain=None, selected=0):
-    """Up/Down + Enter -> index; Esc/q -> None. Long lists page."""
+    """Up/Down + Enter -> index into `options`; Esc/q -> None. Long lists
+    page. `/` filters (case-insensitive substring; Esc clears the filter)."""
+    flt, filtering = "", False
     while True:
-        h, w = _frame(scr, title, theme, "Up/Down select · Enter choose · Esc back")
+        shown = [i for i, label in enumerate(options) if flt.lower() in str(label).lower()]
+        if selected not in shown:
+            selected = shown[0] if shown else -1
+        pos = shown.index(selected) if selected in shown else 0
+        if filtering or flt:
+            footer = "filter: %s%s · %d/%d · Enter choose · Esc clear" % (flt, "_" if filtering else "",
+                                                                          len(shown), len(options))
+        else:
+            footer = "Up/Down select · Enter choose · / filter · Esc back"
+        h, w = _frame(scr, title, theme, footer)
         count = max(1, h - 5)
-        start = selected // count * count
-        for i, label in enumerate(options[start:start + count], start):
-            put(scr, 2 + i - start, 2, label, theme.SELECT if i == selected else 0, w - 2)
+        start = pos // count * count
+        for row, i in enumerate(shown[start:start + count]):
+            put(scr, 2 + row, 2, options[i], theme.SELECT if i == selected else 0, w - 2)
+        if len(shown) > count:
+            put(scr, 1, max(0, w - 12), "%d-%d/%d" % (start + 1, min(len(shown), start + count), len(shown)),
+                theme.MUTED)
+        if not shown:
+            put(scr, 2, 2, "(no match)", theme.MUTED, w - 2)
         scr.refresh()
         key = _tick(scr, drain)
-        if key in (ESC, ord("q")):
+        if key == ESC:
+            if filtering or flt:
+                flt, filtering = "", False
+                continue
             return None
-        if key in (curses.KEY_UP, ord("k")):
-            selected = max(0, selected - 1)
-        elif key in (curses.KEY_DOWN, ord("j")):
-            selected = min(len(options) - 1, selected + 1)
-        elif key in (curses.KEY_NPAGE,):
-            selected = min(len(options) - 1, selected + count)
-        elif key in (curses.KEY_PPAGE,):
-            selected = max(0, selected - count)
-        elif key in ENTER and options:
+        if filtering and key not in ENTER and key not in (curses.KEY_UP, curses.KEY_DOWN,
+                                                          curses.KEY_NPAGE, curses.KEY_PPAGE):
+            if key in (curses.KEY_BACKSPACE, 127, 8):
+                flt = flt[:-1]
+            elif 32 <= key < 0x110000 and key != curses.KEY_RESIZE:
+                try:
+                    flt += chr(key)
+                except ValueError:
+                    pass
+            continue
+        if key == ord("/"):
+            filtering = True
+        elif key == ord("q"):
+            return None
+        elif key in (curses.KEY_UP, ord("k")) and shown:
+            selected = shown[max(0, pos - 1)]
+        elif key in (curses.KEY_DOWN, ord("j")) and shown:
+            selected = shown[min(len(shown) - 1, pos + 1)]
+        elif key in (curses.KEY_NPAGE,) and shown:
+            selected = shown[min(len(shown) - 1, pos + count)]
+        elif key in (curses.KEY_PPAGE,) and shown:
+            selected = shown[max(0, pos - count)]
+        elif key in ENTER and shown:
             return selected
 
 
@@ -61,24 +110,34 @@ def approval_body(approval):
     params = approval.params
     if isinstance(params, dict):
         lines = []
-        for key in ("command", "cwd", "paths", "reason"):
-            if key in params:
-                lines.append("%s: %s" % (key, params[key]))
-        rest = {k: v for k, v in params.items() if k not in ("command", "cwd", "paths", "reason")}
-        if rest:
-            lines.append(json.dumps(rest, indent=1)[:2000])
+        first = ("command", "cwd", "paths", "description", "reason", "risk")
+        for key in first + tuple(k for k in params if k not in first):
+            if key not in params:
+                continue
+            value = params[key]
+            if isinstance(value, (dict, list)):          # nested: readable JSON under its key
+                lines.append("%s: %s" % (key, json.dumps(value, indent=1, ensure_ascii=False)[:2000]))
+            else:
+                lines.append("%s: %s" % (key, value))
         return "\n".join(lines) or "(no parameters)"
     return str(params or "")
 
 
-def approval_modal(scr, approval, theme, drain=None, now=None):
-    """Returns the decision string, or None when hidden with Esc (stays pending)."""
+def approval_modal(scr, approval, theme, drain=None, now=None, alive=None):
+    """Returns the decision string, or None when hidden with Esc (stays
+    pending) or when `alive()` turns False (answered elsewhere / expired)."""
     selected = 0
     options = list(approval.options) or ["accept", "decline"]
     while True:
+        if alive is not None and not alive():
+            return None
         now_s = time.time() if now is None else now
         title = ("? %s" % approval.title) if approval.kind == "approval" else "? question"
-        keys = "y accept · a session · n decline · c cancel" if approval.kind == "approval" else "1-9 choose"
+        if approval.kind == "approval":
+            keys = " · ".join("%s %s" % (k, DECISION_LABELS.get(key_decision(k, options), ""))
+                              for k in "yanc" if key_decision(k, options))
+        else:
+            keys = "1-9 choose"
         h, w = _frame(scr, title, theme, keys + " · Up/Down+Enter · Esc hide (Ctrl-A reopens)")
         body = approval.title if approval.kind == "question" else approval_body(approval)
         y = 2
@@ -88,7 +147,8 @@ def approval_modal(scr, approval, theme, drain=None, now=None):
         y += 1
         for i, label in enumerate(options):
             prefix = "%d " % (i + 1) if approval.kind == "question" else ""
-            put(scr, y + i, 2, prefix + label, theme.SELECT if i == selected else 0, w - 2)
+            shown = DECISION_LABELS.get(label, label) if approval.kind == "approval" else label
+            put(scr, y + i, 2, prefix + shown, theme.SELECT if i == selected else 0, w - 2)
         if approval.kind == "question" and approval.ts:
             left = int(approval.ts + 300 - now_s)
             put(scr, h - 3, 0, "expires in %ds" % max(0, left), theme.TOOL_ERR if left < 60 else theme.MUTED)
@@ -102,8 +162,8 @@ def approval_modal(scr, approval, theme, drain=None, now=None):
             selected = min(len(options) - 1, selected + 1)
         elif key in ENTER:
             return options[selected]
-        elif approval.kind == "approval" and 0 <= key < 256 and chr(key) in APPROVAL_KEYS:
-            return APPROVAL_KEYS[chr(key)]
+        elif approval.kind == "approval" and 0 <= key < 256 and key_decision(chr(key), options):
+            return key_decision(chr(key), options)
         elif approval.kind == "question" and ord("1") <= key <= ord("9") and key - ord("1") < len(options):
             return options[key - ord("1")]
 
@@ -140,16 +200,20 @@ def queue_modal(scr, queue, theme, drain=None):
             return ("edit" if key == ord("e") else "remove"), items[selected]
 
 
-def text_modal(scr, title, lines, theme, drain=None):
-    """Scrollable read-only viewer (help overlay, /tools list, queue edit view)."""
-    first = 0
+def text_modal(scr, title, lines, theme, drain=None, at_end=False):
+    """Scrollable read-only viewer (help overlay, /tools list, /log, queue
+    edit view). `at_end` opens at the bottom (newest log rows)."""
+    first = 10 ** 9 if at_end else 0
     while True:
-        h, w = _frame(scr, title, theme, "Up/Down/PgUp/PgDn scroll · Esc/q close")
+        h, w = _frame(scr, title, theme, "Up/Down/PgUp/PgDn/Home/End scroll · Esc/q close")
         rows = []
         for line in lines:
             rows.extend(wrap(line, w - 2))
         height = max(1, h - 4)
         first = max(0, min(first, len(rows) - height))
+        if len(rows) > height:
+            put(scr, 0, max(0, w - 16), "%d-%d/%d" % (first + 1, min(len(rows), first + height), len(rows)),
+                theme.MUTED)
         for i, row in enumerate(rows[first:first + height]):
             put(scr, 2 + i, 1, row, 0, w - 1)
         scr.refresh()
@@ -164,6 +228,10 @@ def text_modal(scr, title, lines, theme, drain=None):
             first -= height
         elif key in (curses.KEY_NPAGE, ord(" ")):
             first += height
+        elif key in (curses.KEY_HOME, ord("g")):
+            first = 0
+        elif key in (curses.KEY_END, ord("G")):
+            first = 10 ** 9
         elif key in ENTER:
             return None
 

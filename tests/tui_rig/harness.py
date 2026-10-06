@@ -9,14 +9,21 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.abspath(os.path.join(HERE, "..", "..", "src"))
 SESSION = "tuirig"
 WIDTH, HEIGHT = 180, 45
+# The rig never reads the operator's loci list or writes their log.
+SCRATCH = tempfile.mkdtemp(prefix="tuirig-")
+LOG = os.path.join(SCRATCH, "tui.log")
+EXPORTS = os.path.join(SCRATCH, "exports")
 
 _RESULTS = []
 
@@ -25,8 +32,8 @@ def sh(*args, **kw):
     return subprocess.run(args, capture_output=True, text=True, **kw)
 
 
-def start_stub():
-    proc = subprocess.Popen([sys.executable, os.path.join(HERE, "stub_serve.py"), "0"],
+def start_stub(port=0):
+    proc = subprocess.Popen([sys.executable, os.path.join(HERE, "stub_serve.py"), str(port)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     line = proc.stdout.readline().strip()
     m = re.match(r"PORT (\d+)", line)
@@ -48,8 +55,9 @@ def start_tui(port):
     # env prefix guarantees PYTHONPATH/TERM in the tmux-spawned shell regardless
     # of the tmux server's own environment.
     cmd = ("env PYTHONPATH=%s TERM=xterm-256color HUGPY_TUI_MOUSE=1 ESCDELAY=25 "
+           "HUGPY_TUI_LOCI=%s HUGPY_TUI_LOG=%s HUGPY_TUI_EXPORTS=%s "
            "%s -m hugpy_agent.cli tui --serve http://127.0.0.1:%d"
-           % (SRC, sys.executable, port))
+           % (SRC, os.path.join(SCRATCH, "no-loci.json"), LOG, EXPORTS, sys.executable, port))
     r = tmux("new-session", "-d", "-s", SESSION, "-x", str(WIDTH), "-y", str(HEIGHT), cmd)
     if r.returncode != 0:
         raise SystemExit("tmux new-session failed: %s" % r.stderr)
@@ -115,6 +123,14 @@ def busy_seconds(screen):
 def resize(w, h):
     tmux("resize-window", "-t", SESSION, "-x", str(w), "-y", str(h))
     time.sleep(0.6)
+
+
+def stub_control(port, **body):
+    """POST /__control on the stub (chaos mode, permission injection)."""
+    req = urllib.request.Request("http://127.0.0.1:%d/__control" % port, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=3) as resp:
+        return json.loads(resp.read() or b"{}")
 
 
 def check(name, cond, screen=None):

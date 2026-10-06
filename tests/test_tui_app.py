@@ -34,7 +34,7 @@ class Screen:
 
 
 class FakeClient:
-    kind = "abstract-claude"
+    kind = "abstract-serve"
     base = "http://127.0.0.1:9124"
 
     def __init__(self):
@@ -116,7 +116,7 @@ class AppTests(unittest.TestCase):
         client.fail_send = True
         self.run_app(ui)
         self.assertTrue(wait_for(lambda: "send failed: boom" in ui.m.notice or any(
-            k == "notice" for k, v in list(ui.events.queue))))
+            item[0] in ("notice", "error") and "boom" in str(item[1]) for item in list(ui.events.queue))))
         self.assertEqual(ui.composer.history[-1], "a\nb")
 
     def test_slash_commands_status_retry_tools(self):
@@ -128,7 +128,7 @@ class AppTests(unittest.TestCase):
         ui, client = make(keys, toolserver_status=Tools())
         self.run_app(ui)
         self.assertEqual(ui.m.blocks[-1].kind, "note")
-        self.assertTrue(ui.m.blocks[-1].text.startswith("status: [ac 9124]"))
+        self.assertTrue(ui.m.blocks[-1].text.startswith("status: [abstract-serve 9124]"))
         self.assertEqual(client.actions, [(KEEPER, "retry", {})])
         self.assertTrue(any("fs_read" in t for t in ui.screen.text))
         self.assertTrue(any("sys_run" in t for t in ui.screen.text))
@@ -188,7 +188,7 @@ class AppTests(unittest.TestCase):
         ui.screen.size = (15, 40)
         self.run_app(ui)
         self.assertEqual(ui.m.size, (15, 40))
-        self.assertTrue(any("HUGPY" in t for t in ui.screen.text))
+        self.assertTrue(any("hugpy" in t for t in ui.screen.text))
 
 
 if __name__ == "__main__":

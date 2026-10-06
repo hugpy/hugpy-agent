@@ -78,6 +78,21 @@ EVENTS.append({"kind": "assistant", "body": "TAIL reply at the very end.", "msg_
 # them once the SSE preview is dropped (mirrors a real serve writing the turn).
 EXTRA = []
 
+# Rig control (POST /__control): chaos = "" | "garbage" (wrong JSON shapes) |
+# "error" (HTTP 500 everywhere); permission = true queues a serve permission
+# request + a usage `call` row on the cs- worker session.
+CONTROL = {"chaos": "", "approvals": [], "busy": None, "roster_delay": 0.0, "tool_count": 259}
+WORKER_EVENTS = [
+    {"type": "user", "text": "worker task: clean the build dir", "seq": 1, "ts": 1791300000.0,
+     "session_id": WORKER},
+    {"type": "call", "usage": {"in": 4, "cr": 30000, "cw": 1200, "out": 250}, "seq": 2, "ts": 1791300001.0,
+     "session_id": WORKER},
+]
+
+
+def worker_events():
+    return list(WORKER_EVENTS)
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -91,11 +106,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _chaos(self, path):
+        """True when chaos answered the request."""
+        if not path.startswith("/api/") or path == "/api/state" and CONTROL["chaos"] == "garbage":
+            return False
+        if CONTROL["chaos"] == "error":
+            body = json.dumps({"error": "stub chaos"}).encode()
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return True
+        if CONTROL["chaos"] == "garbage":
+            self._send([1, 2, 3])                   # a list where every client expects an object
+            return True
+        return False
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/__control":
+            return self._send(CONTROL)
+        if self._chaos(path):
+            return
         if path == "/api/state":
             return self._send({"version": "1.0.0", "busy": False, "root": "/tmp", "oauth": True})
         if path == "/api/session/roster":
+            time.sleep(CONTROL["roster_delay"])         # holds the splash for a screenshot
             return self._send({"roles": ROLES, "provider_options": PROVIDER_OPTIONS, "defaults": {}})
         if path == "/api/console/sessions":
             return self._send({"sessions": CONSOLE_SESSIONS, "cwd": "/tmp/project"})
@@ -106,7 +143,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"events": EVENTS + EXTRA, "busy": True,
                                "cursor": "%d:%d" % (9 + len(EXTRA), 9 + len(EXTRA)), "source": "transcript"})
         if path == "/api/console/events":
-            return self._send({"events": [], "busy": False, "cursor": "0", "queue": None})
+            since = int((self.path.split("since=", 1)[1:] or ["0"])[0].split("&")[0] or 0)
+            rows = [e for e in worker_events() if e["seq"] > since]
+            busy = CONTROL["busy"] if CONTROL["busy"] is not None else any(
+                e["type"] == "permission" for e in worker_events()
+                if not any(r.get("request_id") == e.get("request_id") and r["type"] == "permission_resolved"
+                           for r in worker_events()))
+            return self._send({"events": rows, "busy": busy,
+                               "queue": {"auto": True, "busy": False, "paused": False, "items": []}})
         if path == "/api/console/models":
             return self._send({"models": MODELS})
         if path == "/api/usage/session":
@@ -125,6 +169,41 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")
         except ValueError:
             body = {}
+        if path == "/__control":
+            if "chaos" in body:
+                CONTROL["chaos"] = body["chaos"] or ""
+            for key in ("roster_delay", "busy", "tool_count"):
+                if key in body:
+                    CONTROL[key] = body[key]
+            if body.get("permission"):
+                seq = WORKER_EVENTS[-1]["seq"] + 1
+                row = {"type": "permission", "request_id": "perm-rig", "tool": "Bash",
+                       "input": {"command": "rm -rf build", "description": "clean build"},
+                       "summary": "rm -rf build", "decisions": ["allow_once", "allow_session", "deny"]}
+                if isinstance(body["permission"], dict):
+                    row.update(body["permission"])
+                WORKER_EVENTS.append(dict(row, session_id=WORKER, seq=seq, ts=time.time()))
+            return self._send(CONTROL)
+        if path == "/mcp":
+            # just enough toolserver MCP for the TUI's `tools: N ✓` probe
+            rid = body.get("id")
+            if body.get("method") == "initialize":
+                result = {"serverInfo": {"name": "toolserver", "version": "stub"}, "capabilities": {}}
+            elif body.get("method") == "tools/list":
+                result = {"tools": [{"name": "tool_%03d" % i, "description": "stub tool", "inputSchema": {}}
+                                    for i in range(int(CONTROL["tool_count"]))]}
+            else:
+                result = {}
+            return self._send({"jsonrpc": "2.0", "id": rid, "result": result})
+        if self._chaos(path):
+            return
+        if path == "/api/console/approval":
+            CONTROL["approvals"].append(body)
+            seq = WORKER_EVENTS[-1]["seq"] + 1
+            WORKER_EVENTS.append({"type": "permission_resolved", "request_id": body.get("request_id"),
+                                  "tool": "Bash", "decision": body.get("decision"), "by": "operator",
+                                  "session_id": WORKER, "seq": seq, "ts": time.time()})
+            return self._send({"ok": True})
         if path == "/api/session/chat":
             return self._sse(body)
         if path == "/api/session/rollover":
@@ -132,8 +211,6 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/session/queue", "/api/console/queue"):
             return self._send({"auto": True, "busy": False, "paused": False, "items": []})
         if path in ("/api/session/interrupt", "/api/console/interrupt"):
-            return self._send({"ok": True})
-        if path == "/api/console/approval":
             return self._send({"ok": True})
         if path == "/api/session/roster":
             return self._send({"roles": ROLES})
@@ -162,7 +239,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    """stub_serve.py [port] [--demo]   (--demo: README screenshot data, demo_data.py)"""
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    port = int(args[0]) if args else 0
+    if "--demo" in sys.argv:
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import demo_data
+        demo_data.apply(sys.modules[__name__])
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print("PORT %d" % srv.server_address[1], flush=True)
     srv.serve_forever()

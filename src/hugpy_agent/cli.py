@@ -1093,12 +1093,12 @@ def main(argv=None) -> int:
     p.add_argument("--once", action="store_true")
     p.set_defaults(fn=cmd_seat_report)
 
-    p = sub.add_parser("tui", help="terminal client for abstract-claude serve / hugpy-agent serve")
+    p = sub.add_parser("tui", help="provider-neutral terminal client for shared Serve / hugpy-agent serve")
     p.add_argument("--serve", help="serve URL (default: $HUGPY_AGENT_SERVE, then 127.0.0.1:9124/9125/9126)")
     p.add_argument("--token", help="serve bearer token (default HUGPY_SERVE_TOKEN)")
     p.add_argument("--session", help="session to open: cs-id, native uuid, or role (keeper/chat/worker/local)")
-    p.add_argument("--kind", choices=("auto", "abstract-claude", "hugpy"), default="auto",
-                   help="serve kind; auto detects from GET /api/state (default auto)")
+    p.add_argument("--kind", choices=("auto", "abstract-serve", "abstract-claude", "hugpy"), default="auto",
+                   help="Serve API kind (abstract-claude is a compatibility alias; default auto-detect)")
     p.set_defaults(fn=cmd_tui)
 
     p = sub.add_parser("tools", help="toolserver client: list | call NAME | health | ensure "

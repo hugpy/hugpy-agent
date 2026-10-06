@@ -68,7 +68,7 @@ STATE_NAME = "node_state.json"
 # AgentNodeSource cadence / resilience knobs.
 HEARTBEAT_INTERVAL = 30.0      # seconds between liveness heartbeats (~30s spec)
 BACKOFF_START = 15.0           # first defer after central goes unreachable
-BACKOFF_MAX = 300.0            # cap: never idle a node longer than 5 min
+BACKOFF_MAX = 60.0             # cap: never idle a node longer than 1 min
 
 
 def default_state_path(workspace: str) -> str:
