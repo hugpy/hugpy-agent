@@ -732,6 +732,7 @@ is narrow, counters drop before session/state/connection. Notices fade (info
 | Enter · `\`+Enter / Alt+Enter | send · newline |
 | Ctrl-C | clear composer → interrupt (busy) → quit |
 | Ctrl-X · Ctrl-K · Ctrl-P · Ctrl-G | interrupt · queue modal · model picker · session picker |
+| Shift + / (`?` on an empty prompt) · `/cli` | open the active role's own CLI (claude / codex) with all its native `/` options: **fork** the role's session into a throwaway copy captured to the toolserver, or a **fresh** session resumed from the locus ledger (`/resume <locus>` for Claude, the toolserver ledger prompt for GPT). Runs as the serve's user (over `ssh -t` when that is another user or host); exiting returns to the TUI. |
 | Tab / Shift-Tab · F2 | next/previous role · focus transcript ↔ composer |
 | PgUp/PgDn, Ctrl-U/Ctrl-D · End · Ctrl-T | scroll · follow tail · expand latest tool card |
 | Up/Down (transcript) · Enter/Space | select block · expand/collapse card |

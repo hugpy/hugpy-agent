@@ -37,6 +37,9 @@ class Session:
     paused: bool = False
     native_id: str = ""
     updated: float = 0.0
+    cwd: str = ""                 # the dir the serve runs this session's CLI in (resume needs it)
+    effort: str = ""
+    permission_mode: str = ""
 
 
 @dataclass

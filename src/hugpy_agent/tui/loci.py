@@ -100,7 +100,10 @@ def registry_loci(rows, is_local=_is_local):
         target, ssh_port, host = _ssh_of(row)
         loopback = parts.hostname == "localhost" or parts.hostname.startswith("127.")
         if not loopback or (host and is_local(host)):
-            out.append({"locus": row["locus"], "serve": url, "source": "registry"})
+            entry = {"locus": row["locus"], "serve": url, "source": "registry"}
+            if target:
+                entry["login"] = target          # the serve's user@host: the CLI opener runs as it
+            out.append(entry)
         elif target and parts.port:
             entry = {"locus": row["locus"], "ssh": target, "port": parts.port, "source": "registry"}
             if ssh_port != 22:
@@ -173,3 +176,80 @@ class Tunnels:
             if proc.poll() is None:
                 proc.terminate()
         self.procs.clear()
+
+
+
+# the same words abstract-gpt's rollover watcher types into a fresh Codex seat
+# (abstract_gpt.rollover: "Resume from toolserver ledger …. Read ledger_get, …")
+RESUME_PROMPT = ("Resume from toolserver ledger {locus} (ledger_get locus={locus}: its active ledger). "
+                 "Read ledger_get, state the next actions, the constraints and what is unverified, "
+                 "then wait for the operator.")
+
+
+def cli_argv(backend, locus="", model="", cwd="", login="", me="", local_host=_is_local, ssh_port=None,
+             mode="ledger", native_id=""):
+    """The command behind the TUI's CLI opener (Shift + / or /cli): a FRESH
+    session of the role's own CLI that resumes the way hugpy resumes — from the
+    locus's handoff ledger, not the CLI's own transcript (operator 2026-10-06:
+    "no claude resume. resume the way we do here"). Claude: `abstract-claude
+    launch --model M "/resume <locus>"` (the /resume command); GPT: `abstract-gpt
+    launch -m M "<resume prompt>"` (Codex has no /resume command: the prompt does
+    the same ledger_get + state-back). EXCHANGE_LOCUS / HUGPY_LOCUS are exported
+    so the launchers' hooks bind the seat to the locus. Falls back to plain
+    claude / codex when the abstract launcher is absent. Runs in the session's
+    cwd as the serve's user (over `ssh -t` when that is another user or host).
+    mode="native" (operator: "sounds like both ways work, claude way and
+    toolserver way") instead FORKS the role's own CLI session into a throwaway
+    one: `claude --resume <native_id> --fork-session` / `codex fork <native_id>`
+    through the abstract launchers (their hooks capture the fork into toolserver
+    rows), run in the directory the conversation actually ran in (read from its
+    session file; the serve's cwd can differ and the CLI resumes only from the
+    original dir). The role's session itself is never written.
+    Returns (argv, None) or (None, reason)."""
+    import shlex
+    backend = (backend or "").lower()
+    if backend not in ("claude", "gpt", "codex"):
+        return None, "no CLI to open for backend %r" % (backend or "?")
+    q = shlex.quote
+    if mode == "native":
+        if not native_id:
+            return None, "this session has no CLI session yet (no turn has run on it)"
+        # a THROWAWAY fork (operator: "it would be nice to have it --resume to a
+        # throwaway session that captures it into a row"): the role's own session
+        # is never written; the fork runs under the abstract launcher so its
+        # hooks capture it into toolserver rows (exchanges / comms binding)
+        qid = q(native_id)
+        if backend == "claude":
+            store = '"${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/%s.jsonl' % qid
+            args = "--resume %s --fork-session" % qid
+            tool = ("if command -v abstract-claude >/dev/null 2>&1; then exec abstract-claude launch %s; "
+                    "else exec claude %s; fi") % (args, args)
+        else:
+            store = '"${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-%s.jsonl' % qid
+            tool = ("if command -v abstract-gpt >/dev/null 2>&1; then exec abstract-gpt launch fork %s; "
+                    "else exec codex fork %s; fi") % (qid, qid)
+        env = ("export EXCHANGE_LOCUS=%s HUGPY_LOCUS=%s; " % (q(locus), q(locus))) if locus else ""
+        cmd = (env + 'f=$(ls %s 2>/dev/null | head -1); '
+               'd=$([ -n "$f" ] && grep -m1 -o \'"cwd":"[^"]*"\' "$f" | cut -d\'"\' -f4); '
+               'cd "${d:-%s}" 2>/dev/null || cd ~; %s') % (store, cwd or "$HOME", tool)
+    elif backend == "claude":
+        prompt = ("/resume %s" % locus) if locus else ""
+        tail = ((" --model %s" % q(model)) if model else "") + ((" " + q(prompt)) if prompt else "")
+        # --new: a brand-new ~/.claude-sessions/<stamp> for this seat. WITHOUT it
+        # `abstract-claude launch` WIPES and rebuilds ~/.claude (its default, no
+        # --resume in argv) — the serve user's ~/.claude holds the serve's own
+        # conversations (the keeper's among them)
+        run = ("if command -v abstract-claude >/dev/null 2>&1; then exec abstract-claude launch --new%s; "
+               "else exec claude%s; fi") % (tail, tail)
+    else:
+        prompt = RESUME_PROMPT.format(locus=locus) if locus else ""
+        tail = ((" -m %s" % q(model)) if model else "") + ((" " + q(prompt)) if prompt else "")
+        run = ("if command -v abstract-gpt >/dev/null 2>&1; then exec abstract-gpt launch%s; "
+               "else exec codex%s; fi") % (tail, tail)
+    if mode != "native":
+        env = ("export EXCHANGE_LOCUS=%s HUGPY_LOCUS=%s; " % (q(locus), q(locus))) if locus else ""
+        cmd = "%scd %s 2>/dev/null || cd ~; %s" % (env, q(cwd) if cwd else "~", run)
+    user, _, host = (login or "").rpartition("@")
+    if login and ((user and user != me) or (host and not local_host(host))):
+        return ["ssh", "-t"] + (["-p", str(int(ssh_port))] if ssh_port else []) + [login, cmd], None
+    return ["bash", "-lc", cmd], None

@@ -59,7 +59,10 @@ HELP = [
     "Approvals: y allow/accept · a for this session · n deny/decline · c cancel · Esc hide",
     "Waiting on the serve (⋯ in the status bar): Esc cancels, keys typed meanwhile are kept",
     "",
-    "Slash: /handoff /resume /rollover /context /session <id> /clear /new /locus /model",
+    "Shift + / (? on an empty prompt) or /cli: open this role's own CLI (claude / codex), fresh,",
+    "       resumed from the locus ledger — every native / option (/model /effort /login …); exit returns",
+    "",
+    "Slash: /handoff /resume /rollover /context /session <id> /clear /new /locus /model /cli",
     "       /emergency /shell /queue /retry /expand [n] /status /tools",
     "       /find <text> /copy /export [path] /log /help /quit",
     "",
@@ -76,6 +79,7 @@ SLASH_MENU = [
     ("/emergency", "break-glass: run a local GGUF as an agent (picker; [name]|auto)"),
     ("/locus",    "switch locus (named serve, ssh-tunnelled when remote)"),
     ("/model",    "model picker"),
+    ("/cli",      "open this role's own CLI, resumed from the ledger — all its / options (Shift + /)"),
     ("/shell",    "open a login shell (exit returns here)"),
     ("/queue",    "queue view"),
     ("/retry",    "retry / un-hold"),
@@ -677,6 +681,8 @@ class App:
             self.pick_model()
         elif cmd == "/shell":
             self.open_shell()
+        elif cmd == "/cli":
+            self.open_cli()
         elif cmd == "/session":
             self.pick_session(args[0] if args else None)
         elif cmd == "/clear":
@@ -1068,6 +1074,58 @@ class App:
             self.screen.clear()
             self.screen.refresh()
 
+    def open_cli(self):
+        """The CLI opener (operator 2026-10-06: "there should be a cli opener, at
+        least replicate the / options when in the client and holding down shift
+        and pressing slash"; "no claude resume. resume the way we do here"):
+        hand the terminal to a FRESH session of the active role's own CLI
+        (claude / codex via the abstract launchers, the role's model, as the
+        serve's user) that resumes from the locus's handoff ledger — so every
+        native / option works there; restore the TUI when it exits. Refused
+        while a turn runs on the role (two keepers on one ledger)."""
+        import getpass
+        row = self.m.session
+        if row is None:
+            self.say("no session — pick one first (Ctrl-G)", "error")
+            return
+        if row.busy:
+            self.say("a turn is running on this session — wait or Esc it, then Shift + /", "error")
+            return
+        entry = next((e for e in self.loci if e.get("locus") == self.active_locus), {}) or {}
+        login = entry.get("ssh") or entry.get("login") or ""
+        locus = "" if self.active_locus in (None, "here") else self.active_locus
+        mode = "ledger"
+        if row.native_id:
+            # both ways (operator 2026-10-06): the CLI's own session, or fresh from the ledger
+            pick = modals.choose(self.keys, "OPEN %s CLI · %s" % ((row.backend or "?").upper(), row.label or row.role or row.id),
+                                 ["fork this session — a throwaway copy, captured to the toolserver",
+                                  "fresh session, resumed from the %s ledger (toolserver)" % (locus or "locus")],
+                                 self.theme, self.drain)
+            if pick is None:
+                return
+            mode = "native" if pick == 0 else "ledger"
+        argv, why = loci_mod.cli_argv(row.backend, locus, row.model, row.cwd, login, getpass.getuser(),
+                                      ssh_port=entry.get("ssh_port"), mode=mode, native_id=row.native_id)
+        if argv is None:
+            self.say(why, "error")
+            return
+        curses.def_prog_mode()
+        curses.endwin()
+        self._paste_mode(False)
+        try:
+            print("hugpy-agent tui: %s CLI for %s (%s) — exit it to return here" % (
+                row.backend, row.label or row.role or row.id, " ".join(argv[:-1] + ["…"]) if argv[0] == "ssh" else argv[-1]),
+                flush=True)
+            subprocess.call(argv)
+        except OSError as exc:
+            print("CLI failed: %s" % exc, flush=True)
+        finally:
+            self._paste_mode(True)
+            curses.reset_prog_mode()
+            self.screen.clear()
+            self.screen.refresh()
+            self.roster_now.set()        # model / settings changed in the CLI show up at once
+
     def cycle_role(self, delta):
         roles = [r for r in panels.role_rows(self.m) if r.id]
         if not roles:
@@ -1228,6 +1286,10 @@ class App:
             self.screen.clear()
             return None
         if isinstance(key, str):
+            # Shift + / on an EMPTY prompt opens the role's own CLI ("?" mid-text still types)
+            if key == "?" and m.focus == "composer" and not self.composer.buffer:
+                self.open_cli()
+                return None
             if m.focus == "composer":
                 self.composer.insert(key)
             elif not self._transcript_key(key):

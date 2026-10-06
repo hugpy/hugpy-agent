@@ -290,10 +290,13 @@ class AbstractServeClient(Client):
                                  backend=r.get("backend", ""), model=r.get("model", ""),
                                  pending_model=r.get("pending_model") or None, busy=bool(row.get("busy")),
                                  paused=bool(row.get("paused")), native_id=row.get("native_id") or "",
-                                 updated=float(row.get("updated", 0) or 0)))
+                                 updated=float(row.get("updated", 0) or 0), cwd=row.get("cwd") or "",
+                                 effort=row.get("effort") or "", permission_mode=row.get("permission_mode") or ""))
         sessions = [Session(id=r.get("id", ""), label=r.get("label") or "", backend=r.get("backend", ""),
                             model=r.get("model", ""), busy=bool(r.get("busy")), paused=bool(r.get("paused")),
-                            native_id=r.get("native_id") or "", updated=float(r.get("updated", 0) or 0))
+                            native_id=r.get("native_id") or "", updated=float(r.get("updated", 0) or 0),
+                            cwd=r.get("cwd") or "", effort=r.get("effort") or "",
+                            permission_mode=r.get("permission_mode") or "")
                     for r in live.values()]
         options = [ProviderOption(o.get("backend", ""), o.get("model", ""), o.get("label", ""))
                    for o in doc.get("provider_options") or [] if isinstance(o, dict)]

@@ -24,7 +24,8 @@ REMOTE = {"locus": "hs-fresh", "kind": "station", "status": "active", "endpoint"
 class RegistryLociTests(unittest.TestCase):
     def test_serve_on_this_host_is_used_as_is(self):
         self.assertEqual(loci.registry_loci([KEEPER], HERE),
-                         [{"locus": "keeper", "serve": "http://127.0.0.1:9124", "source": "registry"}])
+                         [{"locus": "keeper", "serve": "http://127.0.0.1:9124", "source": "registry",
+                           "login": "vm_mgr@192.168.1.100"}])   # the CLI opener runs as the serve's user
 
     def test_serve_on_another_host_is_its_port_behind_the_ssh_endpoint(self):
         self.assertEqual(loci.registry_loci([REMOTE], HERE),
@@ -47,7 +48,8 @@ class RegistryLociTests(unittest.TestCase):
         row = {"locus": "lan", "status": "active", "endpoint": "a@10.0.0.9",
                "pointer": {"serve_url": "https://serve.example:9443/"}}
         self.assertEqual(loci.registry_loci([row], HERE),
-                         [{"locus": "lan", "serve": "https://serve.example:9443", "source": "registry"}])
+                         [{"locus": "lan", "serve": "https://serve.example:9443", "source": "registry",
+                           "login": "a@10.0.0.9"}])     # the CLI opener runs as the serve's user@host
 
     def test_merge_keeps_file_loci_the_registry_does_not_name(self):
         registry = loci.registry_loci([KEEPER], HERE)
