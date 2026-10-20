@@ -78,7 +78,8 @@ def handler(runtime, token):
                     return self.reply(202, runtime.launch_emergency(
                         data.get("model_path") or None, data.get("gpu_layers", "auto")))
                 if post and path == "/api/sessions":
-                    return self.reply(201, runtime.create(self.body().get("profile")))
+                    data = self.body()
+                    return self.reply(201, runtime.create(data.get("profile"), session_name=data.get("name")))
                 parts = path.strip("/").split("/")
                 if len(parts) in (3, 4) and parts[:2] == ["api", "sessions"]:
                     sid = parts[2]
@@ -88,6 +89,8 @@ def handler(runtime, token):
                     if post and len(parts) == 4:
                         data = self.body()
                         action = parts[3]
+                        if action == "name":
+                            return self.reply(200, runtime.rename(sid, data.get("name")))
                         if action == "profile":
                             return self.reply(200, runtime.select_profile(sid, data.get("profile")))
                         if action == "messages":

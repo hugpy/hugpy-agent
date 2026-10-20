@@ -5,8 +5,10 @@ Call shapes lifted from the field-tested hugpyTab client
 enqueue_scene, poll_job, cancel_job, fetch_media, output_uris, job_error,
 _TASK_AMENITY) — the one proven implementation of the §2b wire contracts:
 
-  * sync JSON amenities   POST /api/ml/<name>  {text|texts, model_key?}
-  * sync file amenities   POST /api/ml/<name>  multipart (file + model_key)
+  * sync JSON amenities   POST /api/media/<name>  {text|texts, model_key?}
+  * sync file amenities   POST /api/media/<name>  multipart (file + model_key)
+    (the media arm's toolset, reached through core at the same origin; success
+     is a {"result": ...} envelope, failure {"error": ...} — both unwrapped)
   * async generation      POST /api/video/jobs/generate_image|generate_scene
                           -> {job_id}; poll GET /api/video/jobs/<id>;
                           bytes via GET /api/video/media?handle=<uri>
@@ -186,35 +188,47 @@ class FleetTools:
                     % (list(tasks), tool))
 
     # ── shared HTTP with errors-as-data ──────────────────────────────────
+    @staticmethod
+    def _media_envelope(res):
+        """Unwrap the media arm's {"result"}/{"error"} envelope to
+        (inner_dict, error_str). Core proxies /api/media/<route> at the same
+        origin and wraps success as {"result": ...}, failure as {"error": ...}.
+        The pre-envelope {"ok": false, ...} shape is still honoured so a
+        capacity refusal (local_serving_disabled) surfaces verbatim."""
+        if isinstance(res, dict):
+            if res.get("error"):
+                return None, str(res.get("error"))
+            if res.get("ok") is False:
+                return None, str(res.get("reason") or res)
+            if "result" in res:
+                res = res["result"]
+        return (res if isinstance(res, dict) else {"result": res}), ""
+
     def _ml_json(self, amenity: str, payload: dict, timeout: int | None = None):
-        """POST /api/ml/<amenity>; returns (response_dict, error_str).
+        """POST /api/media/<amenity> through core; returns (inner_dict,
+        error_str) after unwrapping the media {"result"}/{"error"} envelope.
         `timeout` overrides the gateway default — the RAG embed path (P2.6)
         needs a tight bound so a dead endpoint degrades, never stalls."""
         try:
-            res = self.gw.api_json("/api/ml/%s" % amenity, method="POST",
+            res = self.gw.api_json("/api/media/%s" % amenity, method="POST",
                                    payload=payload, timeout=timeout)
         except urllib.error.HTTPError as exc:
             return None, "%s HTTP %s: %s" % (amenity, exc.code,
                                              _http_error_body(exc))
         except Exception as exc:
             return None, "%s request failed: %s" % (amenity, exc)
-        if isinstance(res, dict) and res.get("ok") is False:
-            # e.g. local_serving_disabled — the fleet's own words, verbatim.
-            return None, str(res.get("error") or res.get("reason") or res)
-        return res if isinstance(res, dict) else {"result": res}, ""
+        return self._media_envelope(res)
 
     def _ml_file(self, amenity: str, real_path: str, model_key: str):
         try:
-            res = self.gw.api_multipart("/api/ml/%s" % amenity, real_path,
+            res = self.gw.api_multipart("/api/media/%s" % amenity, real_path,
                                         {"model_key": model_key})
         except urllib.error.HTTPError as exc:
             return None, "%s HTTP %s: %s" % (amenity, exc.code,
                                              _http_error_body(exc))
         except Exception as exc:
             return None, "%s request failed: %s" % (amenity, exc)
-        if isinstance(res, dict) and res.get("ok") is False:
-            return None, str(res.get("error") or res.get("reason") or res)
-        return res if isinstance(res, dict) else {"result": res}, ""
+        return self._media_envelope(res)
 
     def _save_artifact(self, name: str, data: bytes) -> str:
         """Write bytes under <workspace>/artifacts/, return the relative path
@@ -524,18 +538,19 @@ class FleetTools:
         if model_key:
             fields["model_key"] = model_key
         try:
-            res = self.gw.api_multipart("/api/ml/vision", real, fields)
+            res = self.gw.api_multipart("/api/media/vision", real, fields)
         except urllib.error.HTTPError as exc:
             return _err("vision HTTP %s: %s" % (exc.code, _http_error_body(exc)))
         except Exception as exc:
             return _err("vision request failed: %s" % exc)
-        if isinstance(res, dict):
-            if res.get("ok") is False:
-                return _err(res.get("error") or res)
-            text = res.get("text") or res.get("answer") or res.get("result")
+        inner, verr = self._media_envelope(res)
+        if verr:
+            return _err(verr)
+        if isinstance(inner, dict):
+            text = inner.get("text") or inner.get("answer") or inner.get("result")
             if isinstance(text, str) and text.strip():
                 return text
-        return json.dumps(res)[:4000]
+        return json.dumps(inner)[:4000]
 
     def models_list(self) -> str:
         entries = self.gw.models(refresh=True)

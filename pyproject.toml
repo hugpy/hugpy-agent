@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hugpy-agent"
-version = "0.1.114"
+version = "0.1.131"
 description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,7 +25,7 @@ classifiers = [
 # abstract-toolserver is the CENTRAL toolserver client (stdlib-only core, no
 # server stack): the one shared client/discovery every consumer pins
 # (abstract-toolserver CENTRALIZATION.md, 2026-09-30).
-dependencies = ["hugpy-tools", "abstract-toolserver>=0.0.54"]
+dependencies = ["hugpy-tools", "abstract-toolserver>=0.0.106", "hugpy-harness>=0.1.15,<0.2"]
 
 # Optional extras. No extra pins a vendor SDK (anthropic / openai / google …);
 # the only abstract-* base dependency is the stdlib-only toolserver client above.
@@ -41,8 +41,17 @@ dependencies = ["hugpy-tools", "abstract-toolserver>=0.0.54"]
 # validate the control-plane envelopes. mct code ships in the wheel but this dep
 # installs only on request, so `import hugpy_agent.mct` requires the extra.
 [project.optional-dependencies]
-serve = ["abstract-serve-core>=0.1.12"]
+# `serve` is kept as an empty extra so existing installs of hugpy-agent[serve]
+# keep resolving: the session server is hugpy-harness's (a base dependency);
+# abstract-serve-core is no longer used by this package.
+serve = []
 mct = ["jsonschema>=4.0"]
+# `pip install hugpy-agent[console]` adds the standalone console server and its
+# Flask route blueprint (hugpy_agent.routes / hugpy_agent.serve_fleet). The base
+# package stays near dependency-free for remote boxes: get_toolset() and the
+# toolset itself import NONE of these; only routes.py/serve_fleet.py do. The
+# hugpy-agent .deb bundles this extra.
+console = ["abstract-flask>=0.0.0.1052", "flask", "flask-cors"]
 
 [project.urls]
 Homepage = "https://hugpy.ai"
@@ -52,18 +61,32 @@ Issues = "https://github.com/hugpy/hugpy-agent/issues"
 [project.scripts]
 hugpy-agent = "hugpy_agent.cli:main"
 hugpy-agent-serve = "hugpy_agent.service.http:main"
+# The standalone console server (UI at /fleet/ + /api/agent/* toolset API) is a
+# subcommand, `hugpy-agent console-serve` (needs the [console] extra), not a
+# separate script — see hugpy_agent.cli.cmd_console_serve.
 
-# The console `hugpy-agent serve` opens (and `serve --console`) IS
-# abstract-serve-core's one Serve console. This registers Hugpy among its
-# providers: serve discovers it from this metadata and loads it only when the
-# picker or a session needs it; Hugpy's sessions are this package's session
-# service (`hugpy-agent serve`, 127.0.0.1:9126).
+# Transitional: a still-installed abstract-serve-core console can list Hugpy
+# among its providers (its adapter is an HTTP front end to the :9126 session
+# server, which `hugpy-agent serve` still provides). Removed with serve-core.
 [project.entry-points."abstract_serve_core.providers"]
 hugpy = "abstract_serve_core.providers:hugpy"
+
+# Agent arm discovery. A host (hugpy-core, or the standalone server) loads the
+# arm by these entry points: `hugpy.toolsets` gives the dependency-light
+# {category:{route:callable}} dict; `hugpy.arms` gives the ready Flask blueprint
+# (importing it needs the [console] extra). Categories live under `agent`, so the
+# UI's /api/agent/* is clear of core's own routes. (Core PROXIES to the running
+# service via /usr/share/hugpy/arms.d/agent.json; these are for an in-process host.)
+[project.entry-points."hugpy.toolsets"]
+agent = "hugpy_agent.toolset:get_toolset"
+
+[project.entry-points."hugpy.arms"]
+agent = "hugpy_agent.routes:fleet_bp"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
+"hugpy_agent" = ["ui_dist/**/*"]
 "hugpy_agent.service" = ["index.html"]
 "hugpy_agent.mct" = ["schemas/*.json"]

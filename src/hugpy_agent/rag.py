@@ -2,8 +2,8 @@
 design §3.4).
 
 The markdown fact store (memory.py) stays the SOURCE OF TRUTH; this module
-is only an INDEX over it: on `remember` the fact is also embedded (fleet
-`/api/ml/embed`) and stored as `(id, text, vector_blob)` in
+is only an INDEX over it: on `remember` the fact is also embedded (core's
+OpenAI-compatible `POST /v1/embeddings`) and stored as `(id, text, vector_blob)` in
 `<workspace>/.hugpy_agent/memory_vectors.db`, and `recall(query, k)` ranks
 stored facts by cosine similarity. Losing or corrupting the vector DB loses
 nothing but speed — the facts themselves live in `memory/*.md`.
@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import struct
+import urllib.error
 
 # Bound on any single embed round-trip. Matches the gateway's metadata-call
 # discipline (the /api/models catalog load uses the same 30s): run-start
@@ -163,12 +164,13 @@ class RagIndex:
 
 # ── the live embedder (fleet transport) ─────────────────────────────────────
 def fleet_embedder(gateway, workspace: str):
-    """Embedder over the Phase-1.5 fleet transport: model_key resolved from
-    the /api/models catalog by the `embed` task set (feature-extraction /
-    sentence-similarity — all-minilm on the live fleet), vector via
-    POST /api/ml/embed {text, model_key}. Every failure raises
-    EmbedUnavailable with the fleet's own words; RagIndex turns that into
-    errors-as-data. Bounded by EMBED_TIMEOUT, not the 300s chat timeout."""
+    """Embedder over core's OpenAI-compatible embeddings endpoint: the `embed`
+    model id is resolved from the /api/models catalog by task set (feature-
+    extraction / sentence-similarity — all-minilm on the live fleet), the vector
+    comes from POST /v1/embeddings {model, input} (core's PROXY_ROUTES — the most
+    direct path, not the legacy /api/ml/*). Every failure raises EmbedUnavailable
+    with the endpoint's own words; RagIndex turns that into errors-as-data.
+    Bounded by EMBED_TIMEOUT, not the 300s chat timeout."""
     from .tools.fleet import FleetTools
     ft = FleetTools(gateway, workspace)   # own catalog cache, one GET per run
 
@@ -176,14 +178,24 @@ def fleet_embedder(gateway, workspace: str):
         mk, err = ft.resolve_model_key("embed", "")
         if err:
             raise EmbedUnavailable(err)
-        res, err = ft._ml_json("embed", {"text": text, "model_key": mk},
-                               timeout=EMBED_TIMEOUT)
-        if err:
-            raise EmbedUnavailable(err)
-        embs = res.get("embeddings") or []
-        vec = embs[0] if embs and isinstance(embs[0], list) else embs
+        try:
+            res = gateway.api_json("/v1/embeddings", method="POST",
+                                   payload={"model": mk, "input": text},
+                                   timeout=EMBED_TIMEOUT)
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode(errors="replace")[:200]
+            except Exception:
+                pass
+            raise EmbedUnavailable("embeddings HTTP %s: %s" % (exc.code, body))
+        except Exception as exc:
+            raise EmbedUnavailable("embeddings request failed: %s" % exc)
+        data = res.get("data") if isinstance(res, dict) else None
+        vec = (data[0].get("embedding")
+               if data and isinstance(data[0], dict) else None)
         if not isinstance(vec, list) or not vec:
-            raise EmbedUnavailable("embed returned no vector")
+            raise EmbedUnavailable("embeddings returned no vector")
         return [float(x) for x in vec]
 
     return embed

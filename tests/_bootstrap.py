@@ -12,6 +12,13 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if os.path.isdir(_SRC) and _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+# hugpy_agent now builds on the hugpy_harness core. When running from the
+# source tree (no `pip install`), make the sibling harness package importable
+# too; a pip-installed hugpy-harness is already on the path and wins.
+_HARNESS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "hugpy_harness", "src"))
+if os.path.isdir(os.path.join(_HARNESS, "hugpy_harness")) and _HARNESS not in sys.path:
+    sys.path.insert(0, _HARNESS)
+
 # The TUI's loci come from the toolserver registry and ~/.hugpy/tui-loci.json;
 # an explicit file turns the registry off, so no unit test reads the operator's
 # loci or calls a live toolserver.

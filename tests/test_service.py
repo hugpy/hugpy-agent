@@ -170,3 +170,17 @@ def test_conversation_can_answer_without_unnecessary_tools(tmp_path):
             assert view['status'] == 'done', view
             assert view['report']['answer'] == 'violet-orchid-729'
             assert not view.get('pending')
+
+
+def test_named_sessions_survive_store_reopen_without_fixed_roles(tmp_path):
+    rt = runtime(tmp_path)
+    first = rt.create(session_name='Research desk')['id']
+    second = rt.create(session_name='Drafts and reviews')['id']
+    rt.rename(first, 'My research desk')
+    from hugpy_agent.service.runtime import Store
+    reopened = Store(rt.root)
+    assert reopened.session(first)['name'] == 'My research desk'
+    assert reopened.session(second)['name'] == 'Drafts and reviews'
+    assert {r['name'] for r in rt.state()['sessions']} == {'My research desk', 'Drafts and reviews'}
+    with pytest.raises(ValueError, match='contain text'):
+        rt.create(session_name='  ')

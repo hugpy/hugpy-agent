@@ -202,10 +202,10 @@ def main(argv=None, home: str | None = None, runner=None) -> int:
         prog="hugpy-agent-install",
         description="Install hugpy-agent as a systemd user service "
                     "(unit + 0600 env file + linger + enable).")
-    p.add_argument("--central", default=os.environ.get("HUGPY_BASE"),
-                   help="fleet base URL (HUGPY_BASE; default from "
-                        "~/.hugpy/.env, else http://127.0.0.1:7002), e.g. "
-                        "https://dev.hugpy.ai")
+    p.add_argument("--central",
+                   default=os.environ.get("HUGPY_BASE") or os.environ.get("HUGPY_URL"),
+                   help="fleet base URL to enrol with (default env HUGPY_BASE, "
+                        "else HUGPY_URL), e.g. https://dev.hugpy.ai")
     # Secrets prefer the ENVIRONMENT over argv: bootstrap.sh exports them so
     # they never appear in `ps` / shell history on the target box.
     p.add_argument("--key", default=os.environ.get("HUGPY_API_KEY"),
@@ -232,7 +232,7 @@ def main(argv=None, home: str | None = None, runner=None) -> int:
     opts = p.parse_args(list(sys.argv[1:] if argv is None else argv))
 
     if not opts.central:
-        p.error("--central is required (or set HUGPY_BASE)")
+        p.error("--central is required (or set HUGPY_BASE / HUGPY_URL)")
     if not opts.key:
         p.error("--key is required (or export HUGPY_API_KEY)")
 

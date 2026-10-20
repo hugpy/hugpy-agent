@@ -11,12 +11,10 @@ import argparse
 import json
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
 import urllib.request
-import webbrowser
 from pathlib import Path
 
 from ._paths import mct_repl_workspace, console_workspace
@@ -47,11 +45,14 @@ def _add_common(p: argparse.ArgumentParser, model: bool = True) -> None:
                    help="store truncated plaintext args/results in the audit "
                         "log (default: sha256 hashes only; see "
                         "HUGPY_AUDIT_LOG)")
-    # Think suppression is ON by default (Qwen3-family brains are unusable for
-    # tool-calling otherwise). --think turns it OFF for a reasoning-heavy model.
+    # Think suppression is OFF by default since the 2026-07-17 coder-brain
+    # switch (omitting the /no_think suffix measured ~10% faster per task).
+    # --think is the explicit spelling of that default and also overrides a
+    # HUGPY_NO_THINK=true left in the env/.env for a THINKING-family brain.
     p.add_argument("--think", dest="no_think", action="store_false",
                    default=None,
-                   help="let the model think (disables /no_think suffix)")
+                   help="let the model think — no /no_think suffix (already the "
+                        "default; set HUGPY_NO_THINK=true to suppress thinking)")
     p.add_argument("-q", "--quiet", action="store_true",
                    help="only print the final report JSON")
     # Toolserver bridge is default-ON (TOOLSERVER_URL + TOOLSERVER_OPERATOR_TOKEN
@@ -60,7 +61,7 @@ def _add_common(p: argparse.ArgumentParser, model: bool = True) -> None:
     p.add_argument("--no-toolserver", dest="toolserver", action="store_false",
                    default=None,
                    help="do not attach the toolserver's tools "
-                        "(ts_categories/ts_list/ts_call) to this run")
+                        "(toolserver_list_categories/toolserver_list_tools/toolserver_call_tool) to this run")
 
 
 def _cfg(args) -> "Config":
@@ -240,7 +241,11 @@ def cmd_resume(args) -> int:
 
 def cmd_chat(args) -> int:
     cfg = _cfg(args)
-    loop = AgentLoop(cfg, on_event=_printer(quiet=False))
+    # Conversation mode (like hugpy-chat): the harness chat-mode fixes — abort
+    # on an empty/failed reply with no re-injection, per-user-message step
+    # budget, answer-less final_answer repair, <tool_response> markup gating —
+    # are all gated on conversation=True. Without it `chat` ran the task loop.
+    loop = AgentLoop(cfg, on_event=_printer(quiet=False), conversation=True)
     run_id = loop.start_chat()
     print("hugpy-agent chat — model %s @ %s (run %s). Ctrl-D or 'exit' to quit."
           % (cfg.model, cfg.base, run_id), file=sys.stderr)
@@ -286,27 +291,10 @@ def _ensure_toolserver_async():
     threading.Thread(target=_run, name="ensure-toolserver", daemon=True).start()
 
 
-def _serve_wants_console(args) -> bool:
-    """`hugpy-agent serve [--host H] [--port P] [--no-browser]` IS the shared
-    Serve console — the same contract as `abstract-claude serve` and
-    `abstract-gpt serve`, so any of the three can lead a station's serve
-    (operator 2026-10-03). The Hugpy session service (:9126) is chosen
-    explicitly (--sessions) or by its own flags (--profiles/--workspace/--state
-    or anything daemon/node-shaped), so existing units keep their meaning."""
-    if getattr(args, "console", False):
-        return True
-    if getattr(args, "sessions", False) or getattr(args, "daemon", False):
-        return False
-    if args.profiles or getattr(args, "workspace", None) or args.state is not None:
-        return False
-    if args.task_source or args.agent_node or args.max_cycles is not None or args.task_queue:
-        return False
-    return True
-
-
 def cmd_seat_report(args) -> int:
     """Same `seat-report` as abstract-claude's, so a station runner can watch a
-    serve led by any of the three CLIs. The reporter lives in abstract-claude."""
+    serve led by either CLI. The reporter is Claude-seat tooling and lives in
+    abstract-claude; the retired abstract-serve-core copy is no longer tried."""
     try:
         from abstract_claude.seat_report import run
     except ImportError as exc:
@@ -317,94 +305,122 @@ def cmd_seat_report(args) -> int:
                session_id=args.session_id or "", interval=args.interval, once=args.once)
 
 
-def cmd_serve(args) -> int:
-    """Run Hugpy's session serve by default, or its task daemon explicitly.
+def _session_server_is_live(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url + "/api/state", timeout=0.8) as reply:
+            return 200 <= reply.status < 300
+    except Exception:
+        return False
 
-    hugpy-agent serve is the peer of abstract-claude serve and abstract-gpt
-    serve: it owns durable Hugpy sessions over the local HTTP surface used by
-    the Station's Claude / GPT / Hugpy selector. The older task-polling daemon
-    remains available as serve --daemon.
+
+def _serve_sessions(args) -> int:
+    """`hugpy-agent serve` = `hugpy-harness serve` with the agent's loop and
+    gateway swapped in (hugpy_agent.serve_client.wrapper.WrapperClient): the
+    harness owns the session store, named sessions, per-session settings and
+    the HTTP face; the agent adds RAG, Discord comms, the fleet toolset and the
+    X-Hugpy-* identity + lease on every fleet call. One session runtime, one
+    journal, reachable by the agent TUI (`tui --serve`), the station's seats and
+    any client that spoke to the old :9126 service."""
+    import hugpy_harness.serve as harness_serve
+    from hugpy_harness.cli.chat import harness_endpoint, harness_key, harness_kind
+    from hugpy_harness.serve_client.base import ServeError
+    from .serve_client.wrapper import WrapperClient
+
+    cfg = _cfg(args)
+    base = getattr(args, "base", None) or ""
+    kind = harness_kind(base) if base else None
+    if not base:
+        base, kind = harness_endpoint()
+    if not base:
+        print("hugpy-agent serve: no endpoint found: no local wrapper and no fleet configured; "
+              "use --base URL or set HUGPY_FLEET_URL", file=sys.stderr)
+        return 1
+    serve_token = os.environ.get("HUGPY_SERVE_TOKEN", "")
+    try:
+        client = WrapperClient(base, cfg.workspace, cfg.model or "", harness_key(kind, base),
+                               cfg.policy_mode, endpoint_kind=kind)
+        server = harness_serve.SessionServer(client, args.host, args.port, serve_token)
+    except (ServeError, OSError, ValueError) as exc:
+        print("hugpy-agent serve: " + str(exc), file=sys.stderr)
+        return 1
+
+    # The inbound half: tell central about this box's sessions so each has a
+    # route from the fleet (/api/sessions/<sid>/* proxied here). Only when a
+    # central is named — never implicitly to the dev default.
+    registrar = None
+    central = (getattr(args, "agent_central", None) or os.environ.get("HUGPY_AGENT_CENTRAL") or "").strip()
+    if central:
+        from .runtime.session_registrar import SessionRegistrar, advertised_url
+        import socket as _socket
+        port = server.server.server_address[1]
+        registrar = SessionRegistrar(server.service, central, api_key=cfg.api_key,
+                                     serve_url=advertised_url(args.host, port), serve_token=serve_token,
+                                     locus=os.environ.get("STATION_LOCUS") or _socket.gethostname())
+        print("hugpy-agent serve: registering sessions with %s as %s%s" % (
+            central, registrar.locus,
+            " (loopback-only or no HUGPY_SERVE_TOKEN: routable from central only when central is this box)"
+            if registrar.local_only else ""),
+            flush=True)
+        registrar.start()
+
+    def stop(*_):
+        threading.Thread(target=server.server.shutdown, daemon=True).start()
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    print("hugpy-agent serve: %s (workspace %s, endpoint %s %s)" % (
+        server.url, cfg.workspace, kind, base), flush=True)
+    try:
+        server.serve_forever()
+    finally:
+        if registrar is not None:
+            registrar.stop()
+    return 0
+
+
+def cmd_serve(args) -> int:
+    """Run the Hugpy session server by default, or the task daemon explicitly.
+
+    Default: the harness session server (`_serve_sessions`), on :9126. With
+    `--profiles PATH`: the older provider-neutral session service
+    (`hugpy_agent.service`, third-party API and native-CLI profiles), kept
+    while the station's loci still run it. `--daemon`: the task-polling
+    daemon. `--console` (the shared abstract-serve-core console) is retired:
+    the TUI is the console (`hugpy-agent tui --serve URL`).
 
     Daemon mode's first SIGTERM/SIGINT lets the current task finish (the
-    FIRST SIGTERM/SIGINT lets the current task finish (the journal stays
-    consistent, the outcome still gets reported), then run() returns and we
-    exit 0 — under Restart=on-failure the unit stays stopped. A second
-    signal falls through to the default handler for a hard exit (every
-    journal write is committed, so this is still safe)."""
-    if _serve_wants_console(args):
-        try:
-            from abstract_serve_core.serve_cli import main as serve_main
-        except ImportError as exc:
-            print("hugpy-agent serve --console requires `pip install hugpy-agent[serve]` (" + str(exc) + ")", file=sys.stderr)
-            return 2
-        port = args.console_port if args.console_port is not None else (args.port or 9124)
-        argv = ["--host", args.host, "--port", str(port)]
-        if args.no_browser:
-            argv.append("--no-browser")
-        os.environ["AC_SERVE_BACKEND"] = "hugpy"
-        return serve_main(argv)
+    journal stays consistent, the outcome still gets reported), then run()
+    returns and we exit 0 — under Restart=on-failure the unit stays stopped.
+    A second signal falls through to the default handler for a hard exit
+    (every journal write is committed, so this is still safe)."""
+    if getattr(args, "console", False) or getattr(args, "console_port", None) is not None:
+        print("hugpy-agent serve --console was retired with abstract-serve-core: the session "
+              "server is `hugpy-agent serve` and the console is the TUI — "
+              "`hugpy-agent tui --serve http://127.0.0.1:9126`", file=sys.stderr)
+        return 2
     _ensure_toolserver_async()
     session_service = not getattr(args, "daemon", False)
     if args.port is None:
         args.port = 9126
-    if args.console_port is None:
-        args.console_port = 9124
     if session_service:
         url = f"http://{args.host}:{args.port}"
-        def session_server_is_live():
-            try:
-                with urllib.request.urlopen(url + "/", timeout=0.8) as reply:
-                    return 200 <= reply.status < 300
-            except Exception:
-                return False
-
-        def surface_console():
-            print(f"Hugpy Serve console: {url}", flush=True)
-            # Open the SAME shared console as `serve --console` (serve_cli reuses a
-            # live one); this session service stays up as the console's hugpy backend.
-            try:
-                import abstract_serve_core.serve_cli  # noqa: F401  (hugpy-agent[serve])
-            except ImportError:
-                try:
-                    webbrowser.open(url, new=2)
-                except Exception:
-                    pass
-                return
-            subprocess.Popen([sys.executable, "-m", "abstract_serve_core.serve_cli",
-                              "--host", args.host, "--port", str(args.console_port)],
-                             env=dict(os.environ, AC_SERVE_BACKEND="hugpy"),
-                             start_new_session=True)
-
-        # A second `serve` means "take me to the service", not "fail trying
-        # to bind the same port".  Probe before requiring local profiles so a
-        # lightweight client install can join the already-running service.
-        if session_server_is_live():
-            if not getattr(args, "no_browser", False):
-                surface_console()
-            else:
-                print(f"Hugpy Serve console: {url}", flush=True)
-            return 0
-        from .service.http import main as serve_http
-        profiles = Path(args.profiles).expanduser() if args.profiles else (
-            Path("~/.config/hugpy-agent/profiles.json").expanduser())
-        if not profiles.is_file():
-            raise SystemExit("hugpy-agent serve needs --profiles PATH (or "
-                             "~/.config/hugpy-agent/profiles.json)")
         if args.task_source or args.agent_node or args.max_cycles is not None:
             raise SystemExit("Hugpy sessions and task polling must run as separate processes; "
                              "use hugpy-agent serve --daemon for polling")
-        cfg = _cfg(args)
-        if not getattr(args, "no_browser", False):
-            def open_when_ready():
-                for _ in range(50):
-                    if session_server_is_live():
-                        surface_console()
-                        return
-                    time.sleep(0.1)
-            threading.Thread(target=open_when_ready, daemon=True).start()
-        return serve_http(["--profiles", str(profiles), "--state", args.state or "~/.local/state/hugpy-agent-serve",
-                           "--host", args.host, "--port", str(args.port),
-                           "--workspace", cfg.workspace, "--policy", cfg.policy_mode]) or 0
+        # A second `serve` means "take me to the service", not "fail trying
+        # to bind the same port".
+        if _session_server_is_live(url):
+            print(f"hugpy-agent serve: already running at {url}", flush=True)
+            return 0
+        if args.profiles:
+            from .service.http import main as serve_http
+            profiles = Path(args.profiles).expanduser()
+            if not profiles.is_file():
+                raise SystemExit("hugpy-agent serve --profiles: no such file " + str(profiles))
+            cfg = _cfg(args)
+            return serve_http(["--profiles", str(profiles), "--state", args.state or "~/.local/state/hugpy-agent-serve",
+                               "--host", args.host, "--port", str(args.port),
+                               "--workspace", cfg.workspace, "--policy", cfg.policy_mode]) or 0
+        return _serve_sessions(args)
     from .serve import Daemon
     cfg = _cfg(args)
     daemon = Daemon(cfg, on_event=_printer(args.quiet))
@@ -440,7 +456,12 @@ def cmd_harness(args) -> int:
 
 def cmd_tui(args) -> int:
     from .tui import run
-    return run(args.serve, args.token, session=args.session, kind=args.kind)
+    workspace = (getattr(args, "workspace", None)
+                 or os.environ.get("HUGPY_WORKSPACE") or os.getcwd())
+    return run(args.serve, args.token, session=args.session, kind=args.kind,
+               local=getattr(args, "local", False), workspace=workspace,
+               model=getattr(args, "model", None) or "",
+               policy=getattr(args, "policy", None) or "ask")
 
 
 def cmd_eval(args) -> int:
@@ -776,7 +797,11 @@ def cmd_models(args) -> int:
 
 def cmd_runs(args) -> int:
     cfg = _cfg(args)
-    journal = Journal(default_journal_path(cfg.workspace))
+    # The agent keeps its runs in cfg.state_dir (.hugpy_agent); without it the
+    # harness default (.hugpy_wrapper/chat) would be read and no agent run would
+    # ever list. resume/run build the journal through the loop, which already
+    # passes cfg.state_dir — this standalone listing must match.
+    journal = Journal(default_journal_path(cfg.workspace, cfg.state_dir))
     for r in journal.list_runs():
         # subagent children (P2.5) name their spawning run
         link = ("  [child of %s]" % r["parent_run_id"]
@@ -786,8 +811,32 @@ def cmd_runs(args) -> int:
     return 0
 
 
+def cmd_console_serve(args) -> int:
+    """Serve the agent CONSOLE: the /fleet UI + the /api/agent/* toolset API
+    (install links, console artifacts, health, manifest). This is the arm a
+    PROXY host (hugpy-core) forwards /fleet and /api/agent/* to — distinct from
+    `hugpy-agent serve`, the durable Hugpy SESSION service on :9126.
+
+    Binds HUGPY_AGENT_CONSOLE_HOST:HUGPY_AGENT_CONSOLE_PORT (127.0.0.1:7342).
+    Needs the `hugpy-agent[console]` extra (abstract_flask + flask)."""
+    if getattr(args, "host", None):
+        os.environ["HUGPY_AGENT_CONSOLE_HOST"] = args.host
+    if getattr(args, "port", None):
+        os.environ["HUGPY_AGENT_CONSOLE_PORT"] = str(args.port)
+    try:
+        from .serve_fleet import main as _console_main
+    except ImportError as exc:
+        print("hugpy-agent console-serve requires `pip install hugpy-agent[console]` ("
+              + str(exc) + ")", file=sys.stderr)
+        return 2
+    return _console_main()
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'sessions':
+        from hugpy_harness.cli.sessions import main as sessions_main
+        return sessions_main(argv[1:])
     argv = _direct_harness_argv(argv)
     # ~/.hugpy/.env ($HUGPY_HOME) fills settings the shell didn't export
     # (HUGPY_AGENT_SERVE, HUGPY_SERVE_TOKEN, ...); the environment still wins.
@@ -856,7 +905,8 @@ def main(argv=None) -> int:
                    choices=["auto", "native", "prompted", "constrained"])
     p.add_argument("--think", dest="no_think", action="store_false",
                    default=None,
-                   help="let the model think (disables /no_think suffix)")
+                   help="let the model think — no /no_think suffix (already the "
+                        "default; set HUGPY_NO_THINK=true to suppress thinking)")
     p.add_argument("-q", "--quiet", action="store_true",
                    help="only print the final report JSON")
     p.set_defaults(fn=cmd_case)
@@ -1034,28 +1084,23 @@ def main(argv=None) -> int:
                    help="revoke a granted directory by name (repeatable)")
     p.set_defaults(fn=cmd_mct_fs)
 
-    p = sub.add_parser("serve", help="serve durable Hugpy sessions for the Station "
-                                     "(peer of abstract-claude/gpt serve)")
+    p = sub.add_parser("serve", help="serve the harness's named Hugpy sessions over loopback HTTP "
+                                     "(127.0.0.1:9126; the agent's loop, gateway and fleet signals)")
     _add_common(p)
     p.add_argument("--daemon", action="store_true",
-                   help="run the legacy task-polling daemon instead of the session service")
+                   help="run the legacy task-polling daemon instead of the session server")
     p.add_argument("--http", action="store_true",
-                   help=argparse.SUPPRESS)  # accepted for compatibility; sessions are now default
-    p.add_argument("--profiles", help="JSON model profile configuration "
-                   "(default: ~/.config/hugpy-agent/profiles.json)")
+                   help=argparse.SUPPRESS)  # accepted for compatibility; sessions are the default
+    p.add_argument("--profiles", help="run the older provider-neutral session service with this "
+                                      "JSON profile configuration (third-party API / native CLI profiles)")
     p.add_argument("--state", default=None,
-                   help="session-service state dir (default ~/.local/state/hugpy-agent-serve)")
+                   help="state dir for --profiles (default ~/.local/state/hugpy-agent-serve)")
     p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=None,
-                   help="console port (default 9124); session service: default 9126")
-    p.add_argument("--sessions", action="store_true",
-                   help="run the Hugpy session service (:9126) instead of the console")
-    p.add_argument("--no-browser", action="store_true",
-                   help="do not open the session-service URL when joining or starting it")
-    p.add_argument("--console", action="store_true",
-                   help="run the shared provider-neutral Serve console")
-    p.add_argument("--console-port", type=int, default=None,
-                   help="port for the shared Serve console (with --console)")
+    p.add_argument("--port", type=int, default=None, help="session server port (default 9126)")
+    p.add_argument("--sessions", action="store_true", help=argparse.SUPPRESS)      # the default now
+    p.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)    # nothing opens a browser
+    p.add_argument("--console", action="store_true", help=argparse.SUPPRESS)       # retired (serve-core)
+    p.add_argument("--console-port", type=int, default=None, help=argparse.SUPPRESS)
     p.add_argument("--task-source", dest="task_source",
                    choices=["discord-inbox", "queue"],
                    help="task source (default env HUGPY_TASK_SOURCE; none "
@@ -1080,6 +1125,16 @@ def main(argv=None) -> int:
                         "run until stopped)")
     p.set_defaults(fn=cmd_serve)
 
+    p = sub.add_parser("console-serve",
+                       help="serve the /fleet console UI + /api/agent/* toolset "
+                            "API (the arm a proxy host forwards to; needs the "
+                            "hugpy-agent[console] extra)")
+    p.add_argument("--host", help="bind address (default env "
+                                  "HUGPY_AGENT_CONSOLE_HOST or 127.0.0.1)")
+    p.add_argument("--port", type=int, help="bind port (default env "
+                                            "HUGPY_AGENT_CONSOLE_PORT or 7342)")
+    p.set_defaults(fn=cmd_console_serve)
+
     p = sub.add_parser("seat-report", help="report this seat's state to the toolserver (same as abstract-claude seat-report)")
     p.add_argument("--seat", required=True, choices=["mct", "claude-code", "local", "shell", "keeper"])
     p.add_argument("--watch-pid", type=int, required=True)
@@ -1093,12 +1148,23 @@ def main(argv=None) -> int:
     p.add_argument("--once", action="store_true")
     p.set_defaults(fn=cmd_seat_report)
 
-    p = sub.add_parser("tui", help="provider-neutral terminal client for shared Serve / hugpy-agent serve")
-    p.add_argument("--serve", help="serve URL (default: $HUGPY_AGENT_SERVE, then 127.0.0.1:9124/9125/9126)")
+    p = sub.add_parser("tui", help="provider-neutral terminal client for shared Serve / hugpy-agent serve "
+                                   "(falls back to an in-process local wrapper when no serve is found)")
+    p.add_argument("--serve", help="serve URL (default: $HUGPY_AGENT_SERVE, then 127.0.0.1:9124/9125/9126; "
+                                   "'local' forces the in-process wrapper)")
     p.add_argument("--token", help="serve bearer token (default HUGPY_SERVE_TOKEN)")
     p.add_argument("--session", help="session to open: cs-id, native uuid, or role (keeper/chat/worker/local)")
     p.add_argument("--kind", choices=("auto", "abstract-serve", "abstract-claude", "hugpy"), default="auto",
                    help="Serve API kind (abstract-claude is a compatibility alias; default auto-detect)")
+    p.add_argument("--local", action="store_true",
+                   help="skip serve discovery and talk to a local wrapper (else the "
+                        "fleet endpoint) in-process; the automatic fallback when no "
+                        "serve is found. Also HUGPY_AGENT_SERVE=local")
+    p.add_argument("--workspace", help="workspace for the in-process wrapper "
+                                       "(default $HUGPY_WORKSPACE or cwd)")
+    p.add_argument("--model", help="model for the in-process wrapper (default: pick in the TUI)")
+    p.add_argument("--policy", choices=("ask", "readonly", "auto"), default="ask",
+                   help="permission policy for the in-process wrapper (default ask)")
     p.set_defaults(fn=cmd_tui)
 
     p = sub.add_parser("tools", help="toolserver client: list | call NAME | health | ensure "

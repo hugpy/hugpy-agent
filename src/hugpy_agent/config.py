@@ -1,7 +1,7 @@
 """Configuration resolution for hugpy_agent.
 
 Precedence (highest wins): process environment > `.env` in the workspace >
-`agent.toml` in the workspace > built-in defaults.
+installed per-user credential file > `agent.toml` in the workspace > defaults.
 
 WHY this order: env vars are the deployment seam (systemd units, CI, one-off
 overrides); `.env` is per-workspace operator config that must never be
@@ -17,159 +17,61 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from abstract_toolserver import hugpy_home
-
-# The fleet pointer is resolved centrally (abstract_toolserver.hugpy_home.base:
-# env → ~/.hugpy/.env → http://127.0.0.1:7002); no hugpy arm keeps its own.
-DEFAULT_BASE = hugpy_home.DEFAULT_BASE
-# Operator-chosen agent brain — BRAIN SWITCH 2026-07-17 (operator call on the
-# P3.4 scorecard): Qwen3-Coder-Next replaces flux2-klein. Reliability over
-# speed — coder passed 4/4 eval tasks vs klein's 3/4 (klein looped on
-# glob_count); ~26s/task accepted. Tilde form = the fleet catalog key the
-# workers serve under. Overridable by env/flag (HUGPY_AGENT_BRAIN, canonical;
-# HUGPY_MODEL accepted as the legacy generic name).
-#
-# NAMED FOR WHAT IT IS (operator, 2026-07-17): the bare name DEFAULT_MODEL
-# exists with OTHER meanings in other hugpy packages (central's chat default,
-# the todo-keeper's model, the bot's DEFAULT_MODEL_KEY). Same-named keys
-# resolve odd the moment a user gets specific in a shared .env — so the
-# agent's constant says AGENT_BRAIN, unambiguously, everywhere.
-DEFAULT_AGENT_BRAIN = "Qwen~Qwen3-Coder-Next-GGUF"
-# Legacy alias — import site back-compat only (external clones may import the
-# old name). New code must use DEFAULT_AGENT_BRAIN.
-DEFAULT_MODEL = DEFAULT_AGENT_BRAIN
-# Second-in-line agent brain (HUGPY_AGENT_BRAIN_2). Default EMPTY = feature
-# off. When set, the loop checks at RUN START (never per step) which of the
-# two brains a fleet worker actually has seated (/llm/workers) and starts on
-# the resident one; a capacity-class refusal mid-run falls back to it once
-# and sticks. Same knob family as the BRAIN switch above — an operator names
-# a specific standby, nothing is ever auto-discovered.
-DEFAULT_AGENT_BRAIN_2 = ""
-# Ordered brain LADDER (HUGPY_AGENT_BRAINS, csv, best-first) — k96, operator
-# ruling 2026-08-06 ("a priority brain list would be ideal, taking the path of
-# least resistance"). Default EMPTY = ladder is derived from model/model_2
-# exactly as before (full back-compat). When set, the run starts on the FIRST
-# entry that is warm on a fleet worker, and walks DOWN one entry per
-# capacity-class/permanent-verdict refusal mid-run (forward-only, never back).
-# CONVENTION (documented, not enforced): the LAST entry is the PILOT LIGHT —
-# a model small enough that a cold load is cheap, so a fleet with nothing warm
-# still answers at reduced depth instead of aborting.
-DEFAULT_AGENT_BRAINS: list = []
-DEFAULT_MAX_STEPS = 25
-DEFAULT_TIMEOUT = 300          # per-read socket timeout; cold model loads are slow by design
-DEFAULT_MAX_TOKENS = 1024      # per agent step
-DEFAULT_CTX_FALLBACK = 8192    # when /v1/models reports no context_length
-DEFAULT_MAX_GENERATIONS = 2    # async GPU generations per run (remote_compute cap)
-DEFAULT_ASK_TIMEOUT = 300      # seconds an escalation waits for the operator
-DEFAULT_LOOP_GUARD_N = 3       # identical calls before the loop-guard nudge
-DEFAULT_SUB_MAX_STEPS = 12     # step cap for a spawned subagent (P2.5)
-DEFAULT_MAX_DEPTH = 2          # deepest subagent nesting level (root = 0)
-DEFAULT_RAG_K = 5              # facts returned by recall / run-start auto-recall
-DEFAULT_POLL_INTERVAL = 10     # seconds between serve task-source polls (P2.7)
-
-# env-var name -> Config attribute
-#
-# NB `model` has TWO env names. HUGPY_MODEL is the original, generic-sounding
-# knob; HUGPY_AGENT_BRAIN is the DEDICATED agent-brain variable (operator ask,
-# 2026-07-17): other hugpy components have their own model knobs (the Discord
-# bot's DEFAULT_MODEL_KEY predates this package), so the agent deserves a name
-# that can't be confused or cross-configured on a box running several of them.
-# Dict order is precedence within a layer (later wins): BRAIN beats MODEL when
-# both are set in the same source; either alone works.
-_ENV_KEYS = {
-    "HUGPY_BASE": "base",
-    "HUGPY_API_KEY": "api_key",
-    "HUGPY_MODEL": "model",
-    "HUGPY_AGENT_BRAIN": "model",
-    "HUGPY_AGENT_BRAIN_2": "model_2",
-    "HUGPY_AGENT_BRAINS": "brains",
-    "HUGPY_MAX_STEPS": "max_steps",
-    "HUGPY_TIMEOUT": "timeout",
-    "HUGPY_MAX_TOKENS": "max_tokens",
-    "HUGPY_TOOLS_MODE": "tools_mode",
-    "HUGPY_MAX_GENERATIONS": "max_generations",
-    "HUGPY_NO_THINK": "no_think",
-    "HUGPY_POLICY": "policy_mode",
-    "HUGPY_TOOL_ALLOW": "tool_allow",
-    "HUGPY_TOOL_DENY": "tool_deny",
-    "HUGPY_AUDIT_LOG": "audit_log",
-    "HUGPY_AUDIT_VERBOSE": "audit_verbose",
-    "HUGPY_DISCORD_SESSION": "discord_session",
-    "HUGPY_DISCORD_MINT": "discord_mint",
-    "HUGPY_DISCORD_CHANNEL": "discord_channel",
-    "HUGPY_ASK_TIMEOUT": "ask_timeout",
-    "HUGPY_LOOP_GUARD_N": "loop_guard_n",
-    "HUGPY_OBS_CAP_CHARS": "observation_cap_chars",
-    "HUGPY_SUB_MAX_STEPS": "sub_max_steps",
-    "HUGPY_MAX_DEPTH": "max_depth",
-    "HUGPY_RAG": "rag_enabled",
-    "HUGPY_RAG_K": "rag_k",
-    "HUGPY_TASK_SOURCE": "task_source",
-    "HUGPY_TASK_QUEUE": "task_queue",
-    "HUGPY_POLL_INTERVAL": "poll_interval",
-    "HUGPY_AGENT_CENTRAL": "agent_central",
-    "HUGPY_AGENT_NODE": "agent_node",
-    "HUGPY_AGENT_NAME": "agent_name",
-    "HUGPY_AGENT_CAPABILITIES": "agent_capabilities",
-    "HUGPY_AGENT_STATE": "agent_state",
-    # Toolserver bridge (2026-09-25): the running abstract_toolserver's whole
-    # tool surface behind three category meta-tools, default ON.
-    "HUGPY_AGENT_TOOLSERVER": "toolserver",
-    "HUGPY_AGENT_TOOLSERVER_URL": "toolserver_url",
-    "HUGPY_AGENT_TOOLSERVER_TOKEN": "toolserver_token",
-    "HUGPY_AGENT_LOCUS": "toolserver_locus",
-    # Allowlist + registration mode for the shared toolserver client
-    # (hugpy_agent.toolserver_client): comma lists of tool names ('*' and
-    # 'vm_*' globs accepted); tools = meta (three ts_* tools) | flat.
-    "HUGPY_AGENT_TOOLSERVER_ALLOW": "toolserver_allow",
-    "HUGPY_AGENT_TOOLSERVER_DENY": "toolserver_deny",
-    "HUGPY_AGENT_TOOLSERVER_TOOLS": "toolserver_tools",
-}
-_INT_FIELDS = {"max_steps", "timeout", "max_tokens", "max_generations",
-               "ask_timeout", "loop_guard_n", "observation_cap_chars",
-               "sub_max_steps", "max_depth",
-               "rag_k", "poll_interval"}
-_BOOL_FIELDS = {"no_think", "audit_verbose", "discord_mint", "rag_enabled",
-                "agent_node", "toolserver"}
-_LIST_FIELDS = {"tool_allow", "tool_deny",   # comma-separated in env/.env
-                "agent_capabilities", "brains",
-                "toolserver_allow", "toolserver_deny"}
-# Attributes where an EXPLICIT empty value is meaningful (it disables the
-# feature) rather than "unset". Everywhere else an empty value is skipped.
-_EMPTY_DISABLES = {"audit_log"}
-# All settable attributes, in precedence-application order (shared by the
-# agent.toml and CLI-override passes so a new knob is wired in one place).
-_SETTABLE = ("base", "api_key", "model", "model_2", "brains",
-             "max_steps", "timeout",
-             "max_tokens", "tools_mode", "max_generations", "no_think",
-             "policy_mode", "tool_allow", "tool_deny",
-             "audit_log", "audit_verbose",
-             "discord_session", "discord_mint", "discord_channel",
-             "ask_timeout", "loop_guard_n", "observation_cap_chars",
-               "sub_max_steps", "max_depth",
-             "rag_enabled", "rag_k",
-             "task_source", "task_queue", "poll_interval",
-             "agent_central", "agent_node", "agent_name",
-             "agent_capabilities", "agent_state",
-             "toolserver", "toolserver_url", "toolserver_token",
-             "toolserver_locus", "toolserver_allow", "toolserver_deny",
-             "toolserver_tools")
+def _resolve_default_base() -> str:
+    """Base for an UNCONFIGURED agent, resolved exactly like the harness
+    (hugpy_harness.cli.chat.local_endpoint): a local wrapper endpoint
+    (HUGPY_WRAPPER_URL / wrapper.endpoint.json), else the fleet endpoint
+    (HUGPY_FLEET_URL / fleet.endpoint.json), else hugpy-core on this box
+    (127.0.0.1:7020, where basic core listens — not the dead :7002). HUGPY_BASE
+    and HUGPY_URL are applied by load_config's env layer, which outranks this
+    default, so explicit config always wins."""
+    try:
+        from hugpy_harness.cli.chat import local_endpoint
+        endpoint = local_endpoint()
+        if endpoint:
+            return endpoint
+    except Exception:
+        pass
+    return "http://127.0.0.1:7020"
 
 
-def _as_bool(value) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    s = str(value).strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return True
-    if s in ("0", "false", "no", "off"):
-        return False
-    return None
+# Resolved at import so ``from hugpy_agent.config import DEFAULT_BASE`` keeps a
+# concrete value; the Config field below re-resolves per construction so a
+# wrapper/fleet endpoint written after import is still picked up.
+DEFAULT_BASE = _resolve_default_base()
+
+# Static defaults and the env-key tables now live in the shared imports layer
+# (re-exported here so ``from hugpy_agent.config import DEFAULT_*`` keeps working).
+from .imports.constants import (  # noqa: F401
+    DEFAULT_AGENT_BRAIN,
+    DEFAULT_MODEL,
+    DEFAULT_AGENT_BRAIN_2,
+    DEFAULT_AGENT_BRAINS,
+    DEFAULT_MAX_STEPS,
+    DEFAULT_TIMEOUT,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_CTX_FALLBACK,
+    DEFAULT_MAX_GENERATIONS,
+    DEFAULT_ASK_TIMEOUT,
+    DEFAULT_LOOP_GUARD_N,
+    DEFAULT_SUB_MAX_STEPS,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_RAG_K,
+    DEFAULT_POLL_INTERVAL,
+    _ENV_KEYS,
+    _INT_FIELDS,
+    _BOOL_FIELDS,
+    _LIST_FIELDS,
+    _EMPTY_DISABLES,
+    _SETTABLE,
+)
+from .imports.functions import as_bool as _as_bool  # noqa: F401
+from .imports.functions import parse_env_file as _parse_env_file  # noqa: F401
 
 
 @dataclass
 class Config:
-    base: str = field(default_factory=hugpy_home.base)
+    base: str = field(default_factory=_resolve_default_base)
     api_key: str = ""
     model: str = DEFAULT_AGENT_BRAIN
     # Second-in-line brain (HUGPY_AGENT_BRAIN_2). Empty (the default) turns
@@ -295,7 +197,7 @@ class Config:
     # Toolserver bridge (2026-09-25). Default ON: when this runs and a base url
     # resolves (the default always does) and a bounded probe of POST
     # /ts/categories succeeds, the agent gains three category meta-tools
-    # (ts_categories/ts_list/ts_call) that reach the running abstract_toolserver
+    # (toolserver_list_categories/toolserver_list_tools/toolserver_call_tool) that reach the running abstract_toolserver
     # — the messaging lane (comms_*, channel_*) plus everything else. An
     # unreachable/unauthorized toolserver is stated once and the agent runs
     # normally without them (errors-as-data). `toolserver` (HUGPY_AGENT_TOOLSERVER
@@ -313,35 +215,18 @@ class Config:
     # by default; PRIVILEGED ones (vm_*, vmpool_*, sys_*, browser_*,
     # fs_write_file, db_query writes, oauth/session control) need an explicit
     # entry here ('*' opens all). deny wins over allow. `toolserver_tools`:
-    # meta (default; ts_categories/ts_list/ts_call) | flat (every allowed tool
+    # meta (default; toolserver_list_categories/toolserver_list_tools/toolserver_call_tool) | flat (every allowed tool
     # registered as its own ToolSpec — native tool-calling models).
     toolserver_allow: list = field(default_factory=list)
     toolserver_deny: list = field(default_factory=list)
     toolserver_tools: str = "meta"
     ctx_fallback: int = DEFAULT_CTX_FALLBACK
+    # Per-workspace state directory (journal, audit, RAG vectors), relative to
+    # the workspace. hugpy-agent keeps its own ``.hugpy_agent`` (the portable
+    # harness core defaults to ``.hugpy_wrapper/chat``); the harness loop reads
+    # this to place default_journal_path / default_audit_path.
+    state_dir: str = ".hugpy_agent"
     sources: dict = field(default_factory=dict)  # attr -> where it came from (audit aid)
-
-
-def _parse_env_file(path: str) -> dict:
-    """Minimal .env parser: KEY=VALUE lines, '#' comments, optional quotes.
-    Deliberately no interpolation/escapes — predictability over features."""
-    out: dict[str, str] = {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            lines = fh.readlines()
-    except OSError:
-        return out
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        k, v = k.strip(), v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-            v = v[1:-1]
-        if k:
-            out[k] = v
-    return out
 
 
 def _parse_toml(path: str) -> dict:
@@ -426,7 +311,16 @@ def load_config(workspace: str | None = None, overrides: dict | None = None,
                                   or attr in _EMPTY_DISABLES):
             _set(cfg, attr, toml_vals[attr], "agent.toml")
 
-    # 3. .env in the workspace (HUGPY_* names, same as the environment).
+    # 3. A downloaded install link writes this private per-user file. Keep it
+    # below workspace and process settings so explicit choices still win.
+    installed = _parse_env_file(os.path.join(env.get("HOME") or os.path.expanduser("~"),
+                                             ".config", "hugpy-agent", "agent.env"))
+    for env_key, attr in _ENV_KEYS.items():
+        val = installed.get(env_key)
+        if val or (val == "" and attr in _EMPTY_DISABLES):
+            _set(cfg, attr, val, "installed")
+
+    # 4. .env in the workspace (HUGPY_* names, same as the environment).
     # An empty value normally means "unset" (skip); for _EMPTY_DISABLES
     # attrs an explicit empty is an off-switch and must be applied.
     env_file = _parse_env_file(os.path.join(cfg.workspace, ".env"))
@@ -435,13 +329,13 @@ def load_config(workspace: str | None = None, overrides: dict | None = None,
         if val or (val == "" and attr in _EMPTY_DISABLES):
             _set(cfg, attr, val, ".env")
 
-    # 4. process environment.
+    # 5. process environment.
     for env_key, attr in _ENV_KEYS.items():
         val = env.get(env_key)
         if val or (val == "" and attr in _EMPTY_DISABLES):
             _set(cfg, attr, val, "env")
 
-    # 5. CLI overrides.
+    # 6. CLI overrides.
     for attr in _SETTABLE:
         if attr in overrides:
             _set(cfg, attr, overrides[attr], "cli")

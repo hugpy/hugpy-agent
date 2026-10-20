@@ -70,4 +70,4 @@ def public_profile(name, p):
     return {"id": name, "label": p["label"], "protocol": p["protocol"],
             "model": p.get("model", ""), "available": available,
             "reason": "" if available else ("Client is not installed" if p["protocol"] in CLIENTS else "Credential is not configured"),
-            "tools": "client configuration" if p["protocol"] in CLIENTS else "Hugpy Agent + Toolserver"}
+            "tools": "client configuration" if p["protocol"] in CLIENTS else "HugPy Agent + Fleet + Toolserver"}

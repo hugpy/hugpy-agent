@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hugpy Fleet — The Agent Fleet</title>
+    <meta
+      name="description"
+      content="hugpy-agent: a portable agent runtime that uses your hugpy fleet as its inference brain — tools, memory, a crash-safe journal, and policy gates with operator approval on Discord. Install on any box, no GPU required."
+    />
+    <meta name="theme-color" content="#050505" />
+    <link rel="canonical" href="https://hugpy.ai/fleet/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Hugpy" />
+    <meta property="og:title" content="Hugpy Fleet — A Portable Agent on Your Hardware" />
+    <meta
+      property="og:description"
+      content="hugpy-agent: a portable agent runtime for your hugpy fleet. It reasons, calls tools, remembers, and asks before doing anything irreversible. Runs on any box — no local GPU required."
+    />
+    <meta property="og:url" content="https://hugpy.ai/fleet/" />
+    <meta property="og:image" content="https://hugpy.ai/demo-media/og/fleet-thumb.png" />
+    <meta property="og:image:width" content="2880" />
+    <meta property="og:image:height" content="1512" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Hugpy Fleet — A Portable Agent on Your Hardware" />
+    <meta name="twitter:image" content="https://hugpy.ai/demo-media/og/fleet-thumb.png" />
+
+    <!-- Same type system as the other arms: Newsreader serif + IBM Plex Mono. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,wght@0,400;0,500;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* Standalone shell paint — served alone at /fleet, so painting the page
+         chrome here cannot bleed into another site. Keeps the dark theme over
+         the entire viewport before the bundle loads. */
+      html,
+      body {
+        margin: 0;
+        background: #050505;
+      }
+      #root {
+        /* #root is the bounded scroll container (fixed viewport height, scrolls
+           internally) so the sticky nav inside it pins to #root's top and rides
+           along as content scrolls — a min-height box would instead grow and
+           carry the "sticky" nav off with the window (operator directive
+           2026-07-21). overflow-x clip lives here too, on the same scroll box, so
+           it can't create a SEPARATE containing block that breaks the sticky. */
+        height: 100dvh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #050505;
+      }
+    </style>
+    <script type="module" crossorigin src="/fleet/assets/index-B5o-gWCu.js"></script>
+    <link rel="stylesheet" crossorigin href="/fleet/assets/index-B4s_iGJ2.css">
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <main style="color:#ddd;max-width:42rem;margin:2rem auto;padding:0 1rem;font-family:system-ui,sans-serif">
+        <h1>hugpy — the agent fleet</h1>
+        <p>A portable agent runtime that uses your hugpy fleet as its inference brain. This page needs JavaScript — see <a style="color:#8ab4ff" href="/docs#agents">the docs</a> in the meantime.</p>
+        <p><a style="color:#8ab4ff" href="/">Hugpy — Inference You Own</a></p>
+      </main>
+    </noscript>
+  </body>
+</html>

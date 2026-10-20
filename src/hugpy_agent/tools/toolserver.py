@@ -5,8 +5,8 @@ Transport, token/url resolution, the catalog cache and the allowlist all live
 in the SHARED client (``hugpy_agent.toolserver_client``); this module is the
 registry-facing skin the agent loop (chat / run / serve / subagents) uses:
 
-  meta mode (default)   three static ToolSpecs — ts_categories / ts_list /
-                        ts_call — whose handlers POST to /ts/*. The standing
+  meta mode (default)   three static ToolSpecs — toolserver_list_categories / toolserver_list_tools /
+                        toolserver_call_tool — whose handlers POST to /ts/*. The standing
                         prompt cost is those three schemas, whatever the
                         server's tool count.
   flat mode (opt-in)    HUGPY_AGENT_TOOLSERVER_TOOLS=flat registers every
@@ -43,9 +43,9 @@ _TOKEN_KEYS = tsc.TOKEN_ENV_KEYS
 _ENV_FILES = tsc.ENV_FILES
 _DEFAULT_BASE = tsc.DEFAULT_URL
 PROBE_TIMEOUT = tsc.PROBE_TIMEOUT
-CALL_TIMEOUT_CAP = None      # ts_call inherits cfg.timeout (cold GPU tools slow)
+CALL_TIMEOUT_CAP = None      # toolserver_call_tool inherits cfg.timeout (cold GPU tools slow)
 
-# result governor caps (a huge ts_call result must not blow the context)
+# result governor caps (a huge toolserver_call_tool result must not blow the context)
 GOV_MAX_LINES = int(os.environ.get("HUGPY_AGENT_TOOLSERVER_MAX_LINES", "200") or 200)
 GOV_MAX_BYTES = int(os.environ.get("HUGPY_AGENT_TOOLSERVER_MAX_BYTES", "16384") or 16384)
 GOV_ENABLED = os.environ.get("HUGPY_AGENT_TOOLSERVER_GOVERNOR", "1").strip().lower() \
@@ -164,7 +164,7 @@ def govern_result(text, tool=""):
             return text
         marker = ("[truncated: %d more lines / %d more bytes not shown; narrow "
                   "the %s arguments to fetch less]"
-                  % (stats["lines_dropped"], stats["bytes_dropped"], tool or "ts_call"))
+                  % (stats["lines_dropped"], stats["bytes_dropped"], tool or "toolserver_call_tool"))
         return kept.rstrip("\n") + "\n" + marker
     except Exception:
         return text
@@ -201,14 +201,14 @@ class ToolserverClient:
             return False, str(out["error"])
         return True, out
 
-    # -- ts_categories --
+    # -- toolserver_list_categories --
     def categories(self) -> str:
         out, err = self._post("/ts/categories", {}, PROBE_TIMEOUT)
         if err is not None:
             return json.dumps({"error": "toolserver /ts/categories failed: %s" % err})
-        return govern_result(json.dumps(out, default=str), "ts_categories")
+        return govern_result(json.dumps(out, default=str), "toolserver_list_categories")
 
-    # -- ts_list --
+    # -- toolserver_list_tools --
     def list_category(self, category: str) -> str:
         out, err = self._post("/ts/list", {"category": str(category or "")},
                               PROBE_TIMEOUT)
@@ -218,57 +218,57 @@ class ToolserverClient:
             for t in out["tools"]:
                 if isinstance(t, dict) and t.get("name"):
                     t["allowed"] = self.shared.allowed(t["name"])
-        return govern_result(json.dumps(out, default=str), "ts_list")
+        return govern_result(json.dumps(out, default=str), "toolserver_list_tools")
 
-    # -- ts_call --
+    # -- toolserver_call_tool --
     def call(self, name: str, arguments=None) -> str:
         target = str(name or "").strip()
         if not target:
-            return json.dumps({"error": "ts_call requires a tool name (use "
-                               "ts_categories then ts_list to find one)"})
+            return json.dumps({"error": "toolserver_call_tool requires a tool name (use "
+                               "toolserver_list_categories then toolserver_list_tools to find one)"})
         call_args = _autofill(target, _coerce(arguments or {}), self.locus)
         text = self.shared.call_json(target, call_args, self.call_timeout)
         return govern_result(text, target)
 
     def risk_of_call(self, args) -> str:
         args = args or {}
-        return classify_target(args.get("name"), args.get("arguments") or {})
+        return classify_target(args.get("tool_name"), args.get("tool_arguments") or {})
 
 
 # Exact descriptions (operator-specified — do not paraphrase).
 _META_DESCRIPTIONS = {
-    "ts_categories": "List toolserver tool categories with counts. Call first, "
-                     "then ts_list.",
-    "ts_list": "List the tools in one category with their parameters. Args: "
+    "toolserver_list_categories": "List toolserver tool categories with counts. Call first, "
+                     "then toolserver_list_tools.",
+    "toolserver_list_tools": "List the tools in one category with their parameters. Args: "
                "category.",
-    "ts_call": "Invoke a toolserver tool by full name. Args: name, arguments "
-               "(object, from ts_list).",
+    "toolserver_call_tool": "Invoke a toolserver tool by full name. Args: tool_name, tool_arguments "
+               "(object, from toolserver_list_tools).",
 }
 
 
 def build_specs(client: ToolserverClient) -> list:
     """The three static meta-tool ToolSpecs bound to `client`."""
     return [
-        ToolSpec(name="ts_categories",
-                 description=_META_DESCRIPTIONS["ts_categories"],
+        ToolSpec(name="toolserver_list_categories",
+                 description=_META_DESCRIPTIONS["toolserver_list_categories"],
                  parameters={"type": "object", "properties": {}},
                  handler=lambda: client.categories(),
                  risk_class=RISK_READONLY),
-        ToolSpec(name="ts_list",
-                 description=_META_DESCRIPTIONS["ts_list"],
+        ToolSpec(name="toolserver_list_tools",
+                 description=_META_DESCRIPTIONS["toolserver_list_tools"],
                  parameters={"type": "object",
                              "properties": {"category": {"type": "string"}},
                              "required": ["category"]},
                  handler=lambda category: client.list_category(category),
                  risk_class=RISK_READONLY),
-        ToolSpec(name="ts_call",
-                 description=_META_DESCRIPTIONS["ts_call"],
+        ToolSpec(name="toolserver_call_tool",
+                 description=_META_DESCRIPTIONS["toolserver_call_tool"],
                  parameters={"type": "object",
                              "properties": {
-                                 "name": {"type": "string"},
-                                 "arguments": {"type": "object"}},
-                             "required": ["name"]},
-                 handler=lambda name, arguments=None: client.call(name, arguments),
+                                 "tool_name": {"type": "string"},
+                                 "tool_arguments": {"type": "object"}},
+                             "required": ["tool_name"]},
+                 handler=lambda tool_name, tool_arguments=None: client.call(tool_name, tool_arguments),
                  # static class is fail-closed side-effecting; the real per-call
                  # risk is the TARGET tool's, resolved via dynamic_risk.
                  risk_class=RISK_NETWORK,
@@ -349,7 +349,7 @@ def specs(cfg, on_event=None, environ=None, client=None, taken=()) -> list:
                 return []
             _CLIENT_MEMO[key] = client
             emit("toolserver", "ready",
-                 "%s (token %s); ts_categories/ts_list/ts_call available"
+                 "%s (token %s); toolserver_list_categories/toolserver_list_tools/toolserver_call_tool available"
                  % (base, tok_src))
 
     out = build_specs(client)

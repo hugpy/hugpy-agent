@@ -29,11 +29,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .config import Config
-from .gateway import Gateway
-from .journal import Journal
-from .loop import AgentLoop, default_journal_path
-from .memory import Memory
+from ..config import Config
+from ..gateway import Gateway
+from ..journal import Journal
+from ..loop import AgentLoop, default_journal_path
+from ..memory import Memory
 
 # A distinctive token the readiness ping asks the model to echo VERBATIM. It
 # is deliberately not a real English word: the false-200 error body
@@ -379,7 +379,7 @@ def run_task(task: EvalTask, cfg: Config, *, gateway: Gateway | None = None,
         run_cfg.policy_mode = "auto"
         run_cfg.rag_enabled = False
         gw = gateway or Gateway.from_config(run_cfg)
-        journal = Journal(default_journal_path(ws))
+        journal = Journal(default_journal_path(ws, run_cfg.state_dir))
         loop = AgentLoop(run_cfg, gateway=gw, journal=journal,
                          memory=Memory(ws), on_event=on_event)
         for _spec in (extra_tools or ()):   # e.g. the steward eval's gated vm.* surface

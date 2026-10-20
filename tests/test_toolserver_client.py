@@ -29,7 +29,7 @@ def tc(name, **arguments):
 def ts(name, arguments=None):
     """A ts_call round-trip block targeting toolserver tool `name`."""
     return "<tool_call>\n%s\n</tool_call>" % json.dumps(
-        {"name": "ts_call", "arguments": {"name": name, "arguments": arguments or {}}})
+        {"name": "toolserver_call_tool", "arguments": {"tool_name": name, "tool_arguments": arguments or {}}})
 
 TOKEN = "secret-token"
 TOOLS = [
@@ -95,7 +95,7 @@ class FakeToolserver:
                             "serverInfo": {"name": "abstract-toolserver", "version": "9.9.9"},
                             "capabilities": {"tools": {}}}})
                     if m == "tools/list":
-                        tools = TOOLS if flat else [{"name": "ts_call", "description": "",
+                        tools = TOOLS if flat else [{"name": "toolserver_call_tool", "description": "",
                                                      "inputSchema": {"type": "object", "properties": {}}}]
                         return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {"tools": tools}})
                     return self._send(200, {"jsonrpc": "2.0", "id": rid,
@@ -372,15 +372,15 @@ class ChatHarnessTests(unittest.TestCase):
             loop, gw, events = self.make_loop(fake, [
                 ts("fs_glob", {"path": "/srv/vm_mgr/docs", "pattern": "*.md"}),
                 tc("final_answer", answer="ok")])
-            self.assertIn("ts_call", loop.registry.names())
+            self.assertIn("toolserver_call_tool", loop.registry.names())
             ready = [a for k, a in events if k == "toolserver"]
             self.assertEqual(ready[0][0], "ready", ready)
             report = loop.run("glob the docs")
             self.assertEqual(report["outcome"], "done", report)
             # definitions reached the model: prompted tier puts the schema in the system prompt
             system = gw.calls[0][0][0]["content"]
-            self.assertIn('"ts_call"', system)
-            self.assertIn("ts_categories", system)
+            self.assertIn('"toolserver_call_tool"', system)
+            self.assertIn("toolserver_list_categories", system)
             # the call left with the token, and its result came back to the model
             path, body, headers = fake.called("/ts/call")[0]
             self.assertEqual(body["name"], "fs_glob")
@@ -411,18 +411,18 @@ class ChatHarnessTests(unittest.TestCase):
         from hugpy_agent.tools import RISK_DESTRUCTIVE, RISK_NETWORK, RISK_READONLY
         with FakeToolserver() as fake:
             loop, _, _ = self.make_loop(fake, [])
-            spec = loop.registry.get("ts_call")
-            self.assertEqual(effective_risk(spec, {"name": "fs_glob"}), RISK_READONLY)
-            self.assertEqual(effective_risk(spec, {"name": "todo_add"}), RISK_NETWORK)
-            self.assertEqual(effective_risk(spec, {"name": "vm_stop"}), RISK_DESTRUCTIVE)
-            self.assertEqual(decide("readonly", spec, {"name": "fs_glob"}), "allow")
-            self.assertEqual(decide("readonly", spec, {"name": "todo_add"}), "deny")
-            self.assertEqual(decide("ask", spec, {"name": "todo_add"}), "ask")
+            spec = loop.registry.get("toolserver_call_tool")
+            self.assertEqual(effective_risk(spec, {"tool_name": "fs_glob"}), RISK_READONLY)
+            self.assertEqual(effective_risk(spec, {"tool_name": "todo_add"}), RISK_NETWORK)
+            self.assertEqual(effective_risk(spec, {"tool_name": "vm_stop"}), RISK_DESTRUCTIVE)
+            self.assertEqual(decide("readonly", spec, {"tool_name": "fs_glob"}), "allow")
+            self.assertEqual(decide("readonly", spec, {"tool_name": "todo_add"}), "deny")
+            self.assertEqual(decide("ask", spec, {"tool_name": "todo_add"}), "ask")
 
     def test_disabled_and_unreachable_register_nothing(self):
         with FakeToolserver() as fake:
             loop, _, events = self.make_loop(fake, [], toolserver=False)
-            self.assertNotIn("ts_call", loop.registry.names())
+            self.assertNotIn("toolserver_call_tool", loop.registry.names())
             self.assertEqual(fake.calls, [])                      # no probe when switched off
             from hugpy_agent.tools import toolserver as bridge
             self.assertEqual(bridge.specs(loop.cfg, on_event=lambda k, *a: events.append((k, a))), [])
@@ -439,7 +439,7 @@ class ChatHarnessTests(unittest.TestCase):
                      audit_log="", toolserver_url="http://127.0.0.1:1", toolserver_token=TOKEN)
         events = []
         loop = AgentLoop(cfg, gateway=FakeGateway([]), on_event=lambda k, *a: events.append((k, a)))
-        self.assertNotIn("ts_call", loop.registry.names())
+        self.assertNotIn("toolserver_call_tool", loop.registry.names())
         self.assertEqual([a[0] for k, a in events if k == "toolserver"], ["unavailable"])
 
     def test_flat_mode_registers_allowed_tools_without_shadowing_local(self):
@@ -482,7 +482,7 @@ class ServeHarnessTests(unittest.TestCase):
             st = rt.state()["toolserver"]
             self.assertEqual((st["ok"], st["tool_count"], st["auth"], st["url"]), (True, 4, "ok", fake.url))
             cat = rt.tools()
-            self.assertEqual(cat["meta_tools"], ["ts_categories", "ts_list", "ts_call"])
+            self.assertEqual(cat["meta_tools"], ["toolserver_list_categories", "toolserver_list_tools", "toolserver_call_tool"])
             by = {t["name"]: t for t in cat["tools"]}
             self.assertEqual((by["fs_glob"]["allowed"], by["fs_glob"]["risk"]), (True, "readonly"))
             self.assertEqual((by["vm_stop"]["allowed"], by["vm_stop"]["risk"]), (False, "destructive"))

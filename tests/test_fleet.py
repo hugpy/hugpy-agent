@@ -80,7 +80,7 @@ class SyncJsonAmenityTests(FleetHarness):
         out = json.loads(self.ft.summarize("long text here"))
         self.assertEqual(out["summary"], "short.")
         path, method, payload = self.gw.json_calls[-1]
-        self.assertEqual((path, method), ("/api/ml/summarize", "POST"))
+        self.assertEqual((path, method), ("/api/media/summarize", "POST"))
         self.assertEqual(payload["text"], "long text here")
         self.assertEqual(payload["model_key"], "flan-t5-large")  # resolved
 
@@ -169,7 +169,7 @@ class FileAmenityTests(FleetHarness):
         out = json.loads(self.ft.transcribe("a.mp3"))
         self.assertEqual(out["text"], "hi there")
         path, filepath, fields = self.gw.multipart_calls[-1]
-        self.assertEqual(path, "/api/ml/transcribe")
+        self.assertEqual(path, "/api/media/transcribe")
         self.assertTrue(filepath.endswith("a.mp3"))
         self.assertEqual(fields["model_key"], "whisper-large-v3-turbo")
 

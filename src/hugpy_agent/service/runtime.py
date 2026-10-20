@@ -25,6 +25,9 @@ class Store:
                 CREATE INDEX IF NOT EXISTS events_session ON events(session,id);
                 UPDATE sessions SET status='interrupted' WHERE status IN ('running','waiting','stopping');
             ''')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(sessions)')}
+            if 'name' not in columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         db.close()
         os.chmod(self.path, 0o600)
 
@@ -160,7 +163,7 @@ class Runtime:
                 "config": {"default_profile": default, "default_model": profiles[default].get("model", "")},
                 "profiles": [public_profile(n, p) for n, p in profiles.items()],
                 "toolserver": self.toolserver_status(),
-                "sessions": self.store.query("SELECT id,profile,status,created,updated FROM sessions ORDER BY updated DESC LIMIT 100")}
+                "sessions": self.store.query("SELECT id,name,profile,status,created,updated FROM sessions ORDER BY updated DESC")}
 
     def toolserver_client(self):
         """The shared toolserver client for this service's config (None when
@@ -205,12 +208,14 @@ class Runtime:
             except Exception as exc:  # noqa: BLE001
                 status = dict(status, ok=False, error=str(exc))
         return {"toolserver": status, "mode": getattr(self.cfg, "toolserver_tools", "meta") or "meta",
-                "meta_tools": ["ts_categories", "ts_list", "ts_call"] if status.get("ok") else [],
+                "meta_tools": ["toolserver_list_categories", "toolserver_list_tools", "toolserver_call_tool"] if status.get("ok") else [],
                 "allow": list(getattr(self.cfg, "toolserver_allow", []) or []),
                 "deny": list(getattr(self.cfg, "toolserver_deny", []) or []),
                 "tools": tools}
 
-    def create(self, profile=None):
+    def create(self, profile=None, session_name=None):
+        if session_name is not None and (not isinstance(session_name, str) or not session_name.strip()):
+            raise ValueError('A session name must contain text')
         default, profiles = self.profiles()
         name = profile or default
         if name not in profiles:
@@ -219,7 +224,16 @@ class Runtime:
         if not public["available"]:
             raise ValueError(public["reason"])
         sid, now = uuid.uuid4().hex, time.time()
-        self.store.query("INSERT INTO sessions(id,profile,status,created,updated) VALUES(?,?,'idle',?,?)", (sid, name, now, now))
+        self.store.query("INSERT INTO sessions(id,name,profile,status,created,updated) VALUES(?,?,?,'idle',?,?)",
+                         (sid, (session_name or '').strip(), name, now, now))
+        return self.view(sid)
+
+    def rename(self, sid, name):
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError('A session name must contain text')
+        with self.lock:
+            self.store.session(sid)
+            self.store.query('UPDATE sessions SET name=?, updated=? WHERE id=?', (name.strip(), time.time(), sid))
         return self.view(sid)
 
     def view(self, sid, after=0):
@@ -408,15 +422,21 @@ class Runtime:
                 from ..loop import AgentLoop
                 from ..journal import Journal
                 from ..adapter import Adapter
-                from ..tools import Registry, ToolSpec, RISK_READONLY, fs, http, shell, toolserver
+                from ..tools import Registry, ToolSpec, RISK_READONLY, fs, http, shell, toolserver, fleet
                 cfg = replace(self.cfg, model=profile["model"], base=profile["base_url"],
                               api_key=os.environ.get(profile.get("api_key_env", ""), ""),
                               max_tokens=profile["max_tokens"], ctx_fallback=profile["context_length"],
                               model_2="", brains=[], tools_mode="prompted", rag_enabled=False)
                 comms = OperatorComms(self, sid, control)
+                chat_gateway = gateway(profile, cfg)
+                fleet_profile = (profile if profile["protocol"] == "hugpy" else
+                                 {"protocol": "hugpy", "model": profile["model"],
+                                  "allow_eviction": True, "parameters": {}})
+                fleet_gateway = gateway(fleet_profile, cfg if profile["protocol"] == "hugpy" else self.cfg)
                 registry = Registry()
                 for spec in [*fs.specs(cfg.workspace), shell.spec(cfg.workspace), http.spec(),
-                             *toolserver.specs(cfg, on_event=emit)]:
+                             *toolserver.specs(cfg, on_event=emit),
+                             *fleet.specs(fleet_gateway, cfg.workspace)]:
                     registry.register(spec)
                 registry.register(ToolSpec("final_answer", "Finish the task with your complete answer.",
                     {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]},
@@ -426,7 +446,7 @@ class Runtime:
                     lambda question, options: json.dumps(comms.ask(question, options, stop=control["stop"].is_set)), RISK_READONLY))
                 run_dir = self.root / "runs" / sid
                 run_dir.mkdir(parents=True, exist_ok=True)
-                loop = AgentLoop(cfg, gateway=gateway(profile, cfg), registry=registry,
+                loop = AgentLoop(cfg, gateway=chat_gateway, registry=registry,
                                  journal=Journal(str(run_dir / "journal.db")), adapter=Adapter("prompted"),
                                  on_event=emit, comms=comms, conversation=True)
                 control["loop"] = loop
