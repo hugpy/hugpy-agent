@@ -6,8 +6,8 @@ import re
 import time
 from urllib.parse import quote
 
-from .. import fleet_benchmark as legacy
-from ..fleet_console import eligible
+from ..fleet import fleet_benchmark as legacy
+from ..fleet.fleet_console import eligible
 
 
 def _ints(s): return [int(x) for x in re.findall(r"-?\d+", s or "")]

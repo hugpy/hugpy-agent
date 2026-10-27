@@ -1,4 +1,4 @@
-"""hugpy_agent agent loop — the hugpy_harness agent loop core with the fleet
+"""hugpy_agent agent loop — the hugpy_terminal agent loop core with the fleet
 extras wired through the harness's hooks:
 
   * RAG memory      — rag_factory builds a RagIndex when cfg.rag_enabled;
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import contextlib
 
-from hugpy_harness.loop import (  # noqa: F401  (re-exported surface)
+from hugpy_terminal.loop import (  # noqa: F401  (re-exported surface)
     APPROVE,
     APPROVE_ALL_FMT,
     DENY_LABEL,

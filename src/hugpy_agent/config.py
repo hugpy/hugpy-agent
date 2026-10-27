@@ -19,14 +19,14 @@ from dataclasses import dataclass, field
 
 def _resolve_default_base() -> str:
     """Base for an UNCONFIGURED agent, resolved exactly like the harness
-    (hugpy_harness.cli.chat.local_endpoint): a local wrapper endpoint
+    (hugpy_terminal.cli.chat.local_endpoint): a local wrapper endpoint
     (HUGPY_WRAPPER_URL / wrapper.endpoint.json), else the fleet endpoint
     (HUGPY_FLEET_URL / fleet.endpoint.json), else hugpy-core on this box
     (127.0.0.1:7020, where basic core listens — not the dead :7002). HUGPY_BASE
     and HUGPY_URL are applied by load_config's env layer, which outranks this
     default, so explicit config always wins."""
     try:
-        from hugpy_harness.cli.chat import local_endpoint
+        from hugpy_terminal.cli.chat import local_endpoint
         endpoint = local_endpoint()
         if endpoint:
             return endpoint

@@ -21,8 +21,8 @@ from ._paths import mct_repl_workspace, console_workspace
 
 from .config import load_config
 from .gateway import Gateway
-from .journal import Journal
-from .loop import AgentLoop, default_journal_path
+from hugpy_terminal.journal import Journal
+from .runtime.loop import AgentLoop, default_journal_path
 
 
 def _add_common(p: argparse.ArgumentParser, model: bool = True) -> None:
@@ -296,7 +296,7 @@ def cmd_seat_report(args) -> int:
     serve led by either CLI. The reporter is Claude-seat tooling and lives in
     abstract-claude; the retired abstract-serve-core copy is no longer tried."""
     try:
-        from abstract_claude.seat_report import run
+        from abstract_claude.processes.seat_report import run
     except ImportError as exc:
         print("hugpy-agent seat-report needs abstract-claude (" + str(exc) + ")", file=sys.stderr)
         return 2
@@ -321,9 +321,9 @@ def _serve_sessions(args) -> int:
     X-Hugpy-* identity + lease on every fleet call. One session runtime, one
     journal, reachable by the agent TUI (`tui --serve`), the station's seats and
     any client that spoke to the old :9126 service."""
-    import hugpy_harness.serve as harness_serve
-    from hugpy_harness.cli.chat import harness_endpoint, harness_key, harness_kind
-    from hugpy_harness.serve_client.base import ServeError
+    import hugpy_terminal.serve as harness_serve
+    from hugpy_terminal.cli.chat import harness_endpoint, harness_key, harness_kind
+    from hugpy_terminal.serve_client.base import ServeError
     from .serve_client.wrapper import WrapperClient
 
     cfg = _cfg(args)
@@ -521,7 +521,7 @@ def cmd_console(args) -> int:
     else:
         frontend = getattr(args, "frontend", None)
     if not frontend:
-        from .fleet_console import main as fleet_main
+        from .fleet.fleet_console import main as fleet_main
         return fleet_main(getattr(args, "fleet_args", []), cfg=cfg)
     try:
         return consolemod.run_console(
@@ -542,7 +542,7 @@ def cmd_console(args) -> int:
 def cmd_frontend(args) -> int:
     """Launch one fleet harness directly, without entering the cockpit first."""
     from . import frontends
-    from .fleet_console import Client, FleetError
+    from .fleet.fleet_console import Client, FleetError
 
     cfg = _cfg(args)
     spec = next((item for item in frontends.REGISTRY
@@ -555,7 +555,7 @@ def cmd_frontend(args) -> int:
     try:
         argv, env = frontends.prepare(spec, client, cfg.model)
         # exec keeps this pid: the lease keeper watches it for the harness.
-        from . import session_signals
+        from .runtime import session_signals
         env[session_signals.ENV_PID] = str(os.getpid())
         frontends.configure(spec, env, cfg.model)
         session_signals.start_lease_sidecar(cfg.base, cfg.api_key, spec["id"], env)
@@ -835,12 +835,12 @@ def cmd_console_serve(args) -> int:
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == 'sessions':
-        from hugpy_harness.cli.sessions import main as sessions_main
+        from hugpy_terminal.cli.sessions import main as sessions_main
         return sessions_main(argv[1:])
     argv = _direct_harness_argv(argv)
     # ~/.hugpy/.env ($HUGPY_HOME) fills settings the shell didn't export
     # (HUGPY_AGENT_SERVE, HUGPY_SERVE_TOKEN, ...); the environment still wins.
-    from abstract_toolserver import hugpy_home
+    from abstract_toolserver.support import hugpy_home
     hugpy_home.load()
     ap = argparse.ArgumentParser(
         prog="hugpy-agent",
@@ -1165,6 +1165,9 @@ def main(argv=None) -> int:
     p.add_argument("--model", help="model for the in-process wrapper (default: pick in the TUI)")
     p.add_argument("--policy", choices=("ask", "readonly", "auto"), default="ask",
                    help="permission policy for the in-process wrapper (default ask)")
+    p.add_argument("--yolo", "--allow-all", "--dangerously-skip-permissions", dest="policy",
+                   action="store_const", const="auto",
+                   help="run every tool call without asking (= --policy auto)")
     p.set_defaults(fn=cmd_tui)
 
     p = sub.add_parser("tools", help="toolserver client: list | call NAME | health | ensure "

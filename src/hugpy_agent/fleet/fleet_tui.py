@@ -56,7 +56,7 @@ class BenchmarkControl:
                     (worker_id, model, quant) in self._cancelled["quant"] or
                     (worker_id, model, quant, call) in self._cancelled["call"])
 from .. import frontends
-from ..branding import logo_lines
+from hugpy_terminal.branding import logo_lines
 
 TABS = ("Models", "Workers", "Queue", "Metrics", "Results", "Frontends")
 CHAT_TASKS = {"text-generation", "image-text-to-text"}
@@ -701,12 +701,12 @@ class Console:
         # with no timer and no swallowed keystroke.
         if (self.refreshing and not self.state.get("workers")
                 and not self.state.get("catalog") and not self.results):
-            lines = logo_lines()
+            lines = logo_lines('hugpy-fleet')
             top = max(1, (h - len(lines) - 5) // 2)
             for offset, line in enumerate(lines):
                 self.put(top + offset, max(0, (w - len(line)) // 2), line,
                          curses.A_BOLD)
-            title = "HUGPY AGENT"
+            title = "Hugpy-Fleet"
             subtitle = "Your models. Your workers. One fleet."
             self.put(top + len(lines) + 1, max(0, (w - len(title)) // 2),
                      title, curses.A_BOLD)
@@ -996,7 +996,7 @@ class Console:
         curses.def_prog_mode()
         curses.endwin()
         try:
-            from .. import session_signals
+            from ..runtime import session_signals
             with session_signals.harness_lease(self.client.base, self.client.key, env,
                                                frontend["id"]):
                 result = subprocess.call(argv, env=env)

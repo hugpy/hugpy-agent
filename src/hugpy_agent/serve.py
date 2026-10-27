@@ -245,7 +245,7 @@ class Daemon:
         self.stop_requested = False
 
     def _default_loop_factory(self):
-        from .loop import AgentLoop         # deferred: idle serve stays cheap
+        from .runtime.loop import AgentLoop         # deferred: idle serve stays cheap
         return AgentLoop(self.cfg, on_event=self.on_event)
 
     # ── the daemon loop ──────────────────────────────────────────────────

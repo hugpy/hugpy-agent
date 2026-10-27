@@ -44,7 +44,7 @@ import json
 import os
 from dataclasses import replace
 
-from ..adapter import Adapter
+from hugpy_terminal.adapter import Adapter
 from .loop import AgentLoop
 from ..tools import (RISK_READONLY, Registry, ToolContext, ToolInterrupted,
                     ToolSpec)

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-# Local content search is the built-in hugpy_tools.search (see _local_search).
+# Local content search is the built-in hugpy_resources.imports.functions.search (see _local_search).
 from . import ids
 from .a_adapter import AAdapterClient
 from .cache_epochs import EpochManager, seal_receipt_bytes
@@ -95,17 +95,17 @@ def _parse_when(value):
 
 
 def _local_search():
-    """The steward's built-in local content search — ``hugpy_tools.search``.
+    """The steward's built-in local content search — ``hugpy_resources.imports.functions.search``.
 
-    hugpy-tools is a stdlib-only core dependency of hugpy-agent; this replaces
+    hugpy-resources provides the standard-library search engine for hugpy-agent; this replaces
     the old ``hugpy_agent.adapters`` ``local_search`` entry-point seam (which
     returned ``None`` and degraded to the central HTTP finder when no provider
-    was installed). If hugpy-tools is somehow unavailable the search rungs still
+    was installed). If Resources is unavailable the search rungs still
     degrade explicitly (return ``[]``) rather than crash a turn. Its
     ``find_content`` is case-INSENSITIVE, so the both-case retries below are now
     belt-and-suspenders, not a correctness requirement."""
     try:
-        from hugpy_tools import search as _s
+        from hugpy_resources.imports.functions import search as _s
     except Exception:
         return None
     return _s.provider()
@@ -326,7 +326,7 @@ class MctSession:
         search for ``forYou`` unless both are tried."""
         prov = _local_search()
         if prov is None:
-            return []  # hugpy_tools.search unavailable: degrade to HTTP finder (§17)
+            return []  # hugpy_resources.imports.functions.search unavailable: degrade to HTTP finder (§17)
         findContent = prov.find_content
         terms = [t for t in (query or "").replace("/", " ").split() if len(t) > 1]
         if not terms:
@@ -470,7 +470,7 @@ class MctSession:
         reason over."""
         prov = _local_search()
         if prov is None:
-            return []  # hugpy_tools.search unavailable: degrade to other rungs
+            return []  # hugpy_resources.imports.functions.search unavailable: degrade to other rungs
         findContent = prov.find_content
 
         turn, _ = getattr(self, "_active_turn", ("", ""))

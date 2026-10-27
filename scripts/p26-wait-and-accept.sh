@@ -57,7 +57,7 @@ import json, os, sys, time, sqlite3, urllib.request
 sys.path.insert(0, os.path.join(os.environ["PYTHONPATH"].split(":")[0]))
 from hugpy_agent.config import load_config
 from hugpy_agent.gateway import Gateway
-from hugpy_agent.loop import AgentLoop
+from hugpy_agent.runtime.loop import AgentLoop
 from hugpy_agent.rag import fleet_embedder, default_vectors_path
 
 WS = os.environ["HUGPY_WORKSPACE"]

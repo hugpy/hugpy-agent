@@ -180,7 +180,7 @@ class LeanTools:
         if not path and not text:
             return "error: give path or text"
         if path:
-            from .fs import _confine
+            from hugpy_terminal.tools.fs import _confine
             try:
                 real = _confine(self.workspace, path)
                 text = open(real, errors="replace").read()
@@ -232,7 +232,7 @@ class LeanTools:
         return "\n".join(lines)
 
     def deliver(self, path: str) -> str:
-        from .fs import _confine
+        from hugpy_terminal.tools.fs import _confine
         try:
             real = _confine(self.workspace, path)
             os.makedirs(DELIVER_DIR, exist_ok=True)

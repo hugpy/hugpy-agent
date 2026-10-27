@@ -11,8 +11,4 @@ import re
 import sys
 import time
 
-from . import *  # noqa: F401,F403
-from . import __all__ as _shared_exports
-from . import constants as C
-
-__all__ = ["json", "logging", "os", "re", "sys", "time", "C", *_shared_exports]
+__all__ = ["json", "logging", "os", "re", "sys", "time"]

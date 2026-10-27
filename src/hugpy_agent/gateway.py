@@ -1,9 +1,9 @@
-"""hugpy_agent gateway — the hugpy_harness Gateway core with session signals
+"""hugpy_agent gateway — the hugpy_terminal Gateway core with session signals
 ON for every model call.
 
 The whole request/response surface (route resolution, payload build, SSE
 streaming, error-as-data, the brain-ladder helpers) lives in
-hugpy_harness.gateway and is re-exported here unchanged. The one hugpy-fleet
+hugpy_terminal.gateway and is re-exported here unchanged. The one hugpy-fleet
 addition is session_signals: identity headers + a renewed lease on every chat,
 and cancel-on-abort — wired through the harness's Gateway.request_ctx hook so
 the harness core never has to import this package.
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import contextlib
 
-from hugpy_harness.gateway import (  # noqa: F401  (re-exported surface)
+from hugpy_terminal.gateway import (  # noqa: F401  (re-exported surface)
     CONTINUATION_LEAK,
     ChatResult,
     Gateway as _BaseGateway,
@@ -45,7 +45,7 @@ class Gateway(_BaseGateway):
         central. Disabled -> the harness's no-op request."""
         if not self.session_signals:
             return super().request_ctx(chat_url, key)
-        from . import session_signals as _ss
+        from .runtime import session_signals as _ss
         sig = _ss.signals()
         if sig is None:
             return super().request_ctx(chat_url, key)

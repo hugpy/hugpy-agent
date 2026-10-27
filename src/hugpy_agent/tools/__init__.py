@@ -1,8 +1,8 @@
-"""Agent toolset — the hugpy_harness tool registry core (byte-identical
+"""Agent toolset — the hugpy_terminal tool registry core (byte-identical
 primitives: Registry/ToolSpec/ToolContext/RISK_*/ToolInterrupted) plus the
 agent's fleet-coupled tools layered on through the harness's provider hooks.
 
-build_registry delegates to hugpy_harness.tools.build_registry, replacing the
+build_registry delegates to hugpy_terminal.tools.build_registry, replacing the
 default portable catalog with the curated toolset_tools catalog and adding the
 http / fleet / lean / toolserver / remember / recall / spawn tools as
 providers. ask_operator and final_answer are harness built-ins.
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from hugpy_harness.tools import (  # noqa: F401  (primitives re-exported)
+from hugpy_terminal.tools import (  # noqa: F401  (primitives re-exported)
     RISK_DESTRUCTIVE,
     RISK_NETWORK,
     RISK_READONLY,
@@ -156,7 +156,7 @@ def _memory_provider(ctx: ToolProviderContext):
 def _spawn_provider(ctx: ToolProviderContext):
     if ctx.agent_loop is None:
         return []
-    from ..subagent import make_spawn_spec
+    from ..runtime.subagent import make_spawn_spec
     spec = make_spawn_spec(ctx.agent_loop)
     return [spec] if spec is not None else []
 

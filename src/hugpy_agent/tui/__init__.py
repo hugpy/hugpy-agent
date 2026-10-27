@@ -1,8 +1,7 @@
-"""hugpy-agent TUI — the hugpy_harness terminal harness, branded "hugpy-agent".
+"""hugpy-agent TUI — the hugpy_terminal terminal harness, branded "hugpy-agent".
 
-Discovery, the pure reducer, the views and the curses app are all the harness
-TUI (one source of truth; the sibling modules in this package are thin
-re-export shims). This package only:
+Discovery, the pure reducer, the views and the curses app are imported directly
+from hugpy_terminal.tui. This package:
 
   1. overrides the harness service name to "hugpy-agent" (the SERVICE_NAME
      knob) so every discovery/branding string reads it, and
@@ -17,17 +16,16 @@ errors on the local path.
 """
 from __future__ import annotations
 
-from hugpy_harness.imports.constants import service_name, set_service_name
+from hugpy_terminal.imports.constants import service_name, set_service_name
 
-# Rebrand the shared harness TUI as the agent before anything reads service_name
-# (importing any hugpy_agent.tui.* submodule runs this first).
+# Rebrand the shared harness TUI before importing its discovery and app modules.
 set_service_name("hugpy-agent")
 
-from .discovery import discover, identify  # noqa: E402,F401
+from hugpy_terminal.tui.discovery import discover, identify  # noqa: E402,F401
 
 # Interactive sessions are owned by the shared Harness. Existing batch-agent
 # journals stay in .hugpy_agent; HUGPY_SESSION_STATE_DIR can reopen those too.
-from hugpy_harness.sessions import session_state_dir
+from hugpy_terminal.sessions import session_state_dir
 AGENT_STATE_DIR = session_state_dir()
 
 
@@ -48,7 +46,7 @@ def run(base=None, token=None, session=None, kind="auto", toolserver_status=None
     import curses
 
     from ..serve_client import ServeError, connect
-    from .diag import Diag
+    from hugpy_terminal.tui.diag import Diag
 
     client = None
     if not _wants_local(base, local):
@@ -59,7 +57,7 @@ def run(base=None, token=None, session=None, kind="auto", toolserver_status=None
             client = None          # serve optional: fall through to the wrapper
 
     if client is None:
-        from hugpy_harness.cli.chat import local_endpoint, endpoint_key
+        from hugpy_terminal.cli.chat import local_endpoint, endpoint_key
         endpoint = local_endpoint()
         if not endpoint:
             print("%s tui: no serve found and no local wrapper/fleet endpoint "
@@ -74,7 +72,7 @@ def run(base=None, token=None, session=None, kind="auto", toolserver_status=None
             print("%s tui: %s" % (service_name(), exc))
             return 1
 
-    from .app import App
+    from hugpy_terminal.tui.app import App
     diag = Diag(file=True)
     undo = diag.install_hooks()            # thread tracebacks / stderr -> the log, not the screen
     ui = None

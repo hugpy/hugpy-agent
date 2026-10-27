@@ -76,7 +76,7 @@ the sealed response objects. State is shared through the durable store, not memo
 
 ## Deliberately deferred
 
-- **`hugpy_agent.policy.decide(…, args, …)` wiring** — confinement is currently
+- **`hugpy_terminal.policy.decide(…, args, …)` wiring** — confinement is currently
   enforced by `confined_io` + name-only catalog + size caps (which fully cover the
   threat model). Folding in the installed policy engine's argument-level rules
   (registry row 12) is a clean addition on the same seam, now that coexistence is

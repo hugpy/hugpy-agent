@@ -23,7 +23,7 @@ from .protocol import parse_pointer
 from .session import BrokerConfig, BrokerServer, _ABinding
 
 try:
-    from hugpy_agent.gateway import estimate_tokens as _gw_tokens
+    from ..gateway import estimate_tokens as _gw_tokens
 except Exception:  # pragma: no cover
     _gw_tokens = None
 

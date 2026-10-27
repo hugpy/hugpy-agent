@@ -31,9 +31,9 @@ from typing import Callable
 
 from ..config import Config
 from ..gateway import Gateway
-from ..journal import Journal
-from ..loop import AgentLoop, default_journal_path
-from ..memory import Memory
+from hugpy_terminal.journal import Journal
+from ..runtime.loop import AgentLoop, default_journal_path
+from hugpy_terminal.memory import Memory
 
 # A distinctive token the readiness ping asks the model to echo VERBATIM. It
 # is deliberately not a real English word: the false-200 error body

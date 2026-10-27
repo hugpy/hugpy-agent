@@ -1,5 +1,4 @@
-"""Agent run lifecycle: loop, journal, memory, policy, subagent, trace, signals, audit, emergency.
+"""Agent run lifecycle: loop, subagent, trace, session signals, audit, emergency.
 
-Submodules keep working under their old top-level paths via re-export
-shims in the package root.
+Journal, memory, and policy primitives live in hugpy_terminal.
 """

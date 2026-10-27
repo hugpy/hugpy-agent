@@ -10,7 +10,7 @@ only the fixed values and the env-key tables live here, in one place.
 # Operator-chosen agent brain — BRAIN SWITCH 2026-07-17. Tilde form = the fleet
 # catalog key workers serve under. Overridable by HUGPY_AGENT_BRAIN (canonical)
 # or HUGPY_MODEL (legacy generic name).
-DEFAULT_AGENT_BRAIN = "Qwen~Qwen3-Coder-Next-GGUF"
+DEFAULT_AGENT_BRAIN = "Qwen3-Coder-Next-GGUF"
 # Legacy alias — import-site back-compat only. New code uses DEFAULT_AGENT_BRAIN.
 DEFAULT_MODEL = DEFAULT_AGENT_BRAIN
 # Second-in-line agent brain (HUGPY_AGENT_BRAIN_2). Empty = feature off.
@@ -21,7 +21,7 @@ DEFAULT_AGENT_BRAINS: list = []
 
 DEFAULT_MAX_STEPS = 25
 DEFAULT_TIMEOUT = 300          # per-read socket timeout; cold model loads are slow by design
-DEFAULT_MAX_TOKENS = 1024      # per agent step
+DEFAULT_MAX_TOKENS = -1        # per agent step; -1 = until the model stops or its context is full
 DEFAULT_CTX_FALLBACK = 8192    # when /v1/models reports no context_length
 DEFAULT_MAX_GENERATIONS = 2    # async GPU generations per run (remote_compute cap)
 DEFAULT_ASK_TIMEOUT = 300      # seconds an escalation waits for the operator

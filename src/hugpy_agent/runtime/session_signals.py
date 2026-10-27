@@ -523,7 +523,7 @@ def start_lease_sidecar(base: str, key: str, harness: str, environ=None,
     child_env = dict(env)
     if key:
         child_env["HUGPY_LEASE_KEY"] = key
-    argv = [sys.executable, "-m", "hugpy_agent.session_signals", "keep",
+    argv = [sys.executable, "-m", "hugpy_agent.runtime.session_signals", "keep",
             "--base", base, "--pid", str(pid), "--session", sid,
             "--harness", harness]
     try:
@@ -539,7 +539,7 @@ def start_lease_sidecar(base: str, key: str, harness: str, environ=None,
 
 def _main(argv=None) -> int:
     import argparse
-    p = argparse.ArgumentParser(prog="hugpy_agent.session_signals")
+    p = argparse.ArgumentParser(prog="hugpy_agent.runtime.session_signals")
     sub = p.add_subparsers(dest="cmd", required=True)
     k = sub.add_parser("keep", help="lease a harness session while --pid lives")
     k.add_argument("--base", required=True)

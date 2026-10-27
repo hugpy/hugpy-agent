@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hugpy-agent"
-version = "0.1.131"
+version = "0.1.135.3"
 description = "Portable agent runtime powered by the Hugpy self-hosted LLM fleet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,7 +25,7 @@ classifiers = [
 # abstract-toolserver is the CENTRAL toolserver client (stdlib-only core, no
 # server stack): the one shared client/discovery every consumer pins
 # (abstract-toolserver CENTRALIZATION.md, 2026-09-30).
-dependencies = ["hugpy-tools", "abstract-toolserver>=0.0.106", "hugpy-harness>=0.1.15,<0.2"]
+dependencies = ["hugpy-resources>=0.1.2.4,<0.2", "hugpy-tools", "abstract-toolserver>=0.0.106", "hugpy-terminal>=0.1.9,<0.2"]
 
 # Optional extras. No extra pins a vendor SDK (anthropic / openai / google …);
 # the only abstract-* base dependency is the stdlib-only toolserver client above.
@@ -42,7 +42,7 @@ dependencies = ["hugpy-tools", "abstract-toolserver>=0.0.106", "hugpy-harness>=0
 # installs only on request, so `import hugpy_agent.mct` requires the extra.
 [project.optional-dependencies]
 # `serve` is kept as an empty extra so existing installs of hugpy-agent[serve]
-# keep resolving: the session server is hugpy-harness's (a base dependency);
+# keep resolving: the session server is hugpy-terminal's (a base dependency);
 # abstract-serve-core is no longer used by this package.
 serve = []
 mct = ["jsonschema>=4.0"]
@@ -65,9 +65,10 @@ hugpy-agent-serve = "hugpy_agent.service.http:main"
 # subcommand, `hugpy-agent console-serve` (needs the [console] extra), not a
 # separate script — see hugpy_agent.cli.cmd_console_serve.
 
-# Transitional: a still-installed abstract-serve-core console can list Hugpy
-# among its providers (its adapter is an HTTP front end to the :9126 session
-# server, which `hugpy-agent serve` still provides). Removed with serve-core.
+# Register Hugpy among abstract-serve's providers (it loads providers ONLY from this
+# entry-point group). The provider object is serve-core's own built-in front end to
+# `hugpy-agent serve` on :9126; it moved from the removed `console` module to
+# `abstract_serve_core.providers` (2026-10-24: the old path failed to import).
 [project.entry-points."abstract_serve_core.providers"]
 hugpy = "abstract_serve_core.providers:hugpy"
 

@@ -22,7 +22,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from hugpy_agent.adapter import Adapter                      # noqa: E402
+from hugpy_terminal.adapter import Adapter                      # noqa: E402
 from hugpy_agent.config import load_config                   # noqa: E402
 from hugpy_agent.gateway import Gateway                      # noqa: E402
 from hugpy_agent.tools import ToolContext, ToolSpec          # noqa: E402

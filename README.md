@@ -6,7 +6,7 @@ hugpy-agent is the agent runtime for the Hugpy self-hosted LLM fleet, and it
 - **An agent loop on the fleet.** It runs assess → act → observe with a
   crash-safe SQLite journal, workspace-jailed tools, a policy gate with
   operator escalation, audit, subagents and RAG memory. The loop is the
-  [hugpy-harness](../hugpy_harness/README.md) core, extended with fleet extras.
+  [hugpy-terminal](../hugpy_terminal/README.md) core, extended with fleet extras.
 - **The operator CLIs.** `hugpy-agent run`, `chat`, `case` and `resume`; the
   headless fleet cockpit (`console`); launchers for OpenCode, Claude Code,
   Qwen Code, Hermes and Aider (`launch`); a terminal client for Serve sessions
@@ -63,7 +63,7 @@ Overrides go in `/etc/hugpy/agent.env`, for example
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ../hugpy_tools -e ../hugpy_harness -e ../abstract_toolserver -e '.[console,mct,serve]'   # from this tree
+pip install -e ../hugpy_tools -e ../hugpy_terminal -e ../abstract_toolserver -e '.[console,mct,serve]'   # from this tree
 hugpy-agent models
 ```
 
@@ -165,7 +165,7 @@ index in `MEMORY.md`.
 ## The harness core
 
 hugpy-agent does not fork the loop. `runtime/loop.py` subclasses
-`hugpy_harness.loop.AgentLoop` and supplies these hooks:
+`hugpy_terminal.loop.AgentLoop` and supplies these hooks:
 
 - `rag_factory`: the fleet-embedding RAG index.
 - `comms_factory`: Discord operator comms.
@@ -174,7 +174,7 @@ hugpy-agent does not fork the loop. `runtime/loop.py` subclasses
   toolserver, `remember`/`recall` and `spawn`.
 - An override of `turn_ctx`, which reports one turn to central per drive.
 
-`gateway.py` subclasses `hugpy_harness.gateway.Gateway` and implements
+`gateway.py` subclasses `hugpy_terminal.gateway.Gateway` and implements
 `request_ctx`, which adds identity headers and a lease to every model call and
 cancels the call on abort. `Config.state_dir = ".hugpy_agent"` relocates the
 journal and the audit log.
@@ -251,14 +251,14 @@ tests/          unittest suite
 ## Development
 
 ```sh
-python -m unittest discover -s tests                     # offline; tests/_bootstrap.py adds src/ + ../hugpy_harness
+python -m unittest discover -s tests                     # offline; tests/_bootstrap.py adds src/ + ../hugpy_terminal
 HUGPY_AGENT_LIVE=1 python scripts/live_smoke.py          # 3 tiny live calls
 BUILD_PYTHON=/usr/bin/python3 PIP_CACHE_DIR=/var/tmp/pip-cache-$USER bash packaging/debian/build.sh
 ```
 
 The deb build needs the built UI in `src/hugpy_agent/ui_dist/`, which comes
 from `ui/agents_ui`. It bundles the sibling `hugpy_tools`,
-`abstract_toolserver` and `hugpy_harness` source as wheels.
+`abstract_toolserver` and `hugpy_terminal` source as wheels.
 
 The suite has known pre-existing failures, and the release flow and UI build
 steps are documented elsewhere; see
@@ -297,3 +297,6 @@ Roles, persistent sessions, conversations and tool activity in the terminal.
 
 </details>
 
+Generic file, data, text and local-search operations are imported directly from
+`hugpy-resources`. The Tools package supplies capability registration and web
+backends; legacy generic Tools module paths are no longer used.

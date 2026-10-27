@@ -69,8 +69,8 @@ try:  # line editing (backspace/arrows/Ctrl-A/E) + history for input()
 except ImportError:  # non-GNU platforms: input() still works, just bare
     readline = None
 
-from hugpy_agent.mct.claude_adapter import ClaudeCodeAdapter
-from hugpy_agent.mct.session import BrokerConfig, BrokerServer
+from .claude_adapter import ClaudeCodeAdapter
+from .session import BrokerConfig, BrokerServer
 
 DIM, BOLD, CYAN, YELLOW, RED, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[33m", "\033[31m", "\033[0m"
 MAGENTA = "\033[35m"   # B's voice — visually distinct from A's cyan

@@ -14,8 +14,8 @@ import tempfile
 
 from . import console
 from . import harness_settings as hs
-from . import session_signals  # registers the identity ENV_HOOK
-from .fleet_console import FleetError
+from .runtime import session_signals  # registers the identity ENV_HOOK
+from .fleet.fleet_console import FleetError
 
 
 REGISTRY = (

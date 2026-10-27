@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 
 from . import harness_settings as hs
-from . import session_signals
+from .runtime import session_signals
 from .gateway import brain_matches_key, normalize_base, origin
 
 # The env var name OpenCode resolves at ITS runtime via the `{env:NAME}`
@@ -771,7 +771,7 @@ def launch(workspace_dir: str, key: str,
         # Rebrand the baked-in "opencode" wordmark to "Hugpy Agent"
         # (branding.py; same-length glyph patch, .orig-logo kept). Cosmetic
         # only — any failure means the stock splash, never a failed launch.
-        from . import branding
+        from hugpy_terminal import branding
         binary = branding.ensure_hugpy_binary(binary)
     except Exception:
         pass

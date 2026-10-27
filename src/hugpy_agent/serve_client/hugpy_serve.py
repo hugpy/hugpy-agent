@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import json
 
-from .base import (Client, Event, EventPage, ProviderOption, Receipt, Roster,
+from hugpy_terminal.serve_client.base import (Client, Event, EventPage, ProviderOption, Receipt, Roster,
                    ServeError, Session)
-from .http import Http
+from hugpy_terminal.serve_client.http import Http
 
 BUSY_STATES = ("running", "waiting", "stopping")
 PAGE_SIZE = 500            # runtime Store.events LIMIT
@@ -148,7 +148,18 @@ def normalize_event(raw, seq=None):
                      **b)
     if kind == "model":
         return Event(kind="system", text="→ model %s" % _text(data), meta={"refresh_roster": True}, **b)
-    if kind in ("brain", "brain_fallback", "mode", "compaction", "resume"):
+    if kind == "compaction":
+        # (cut, summarized, est_tokens, budget) — older journals send (cut, summarized)
+        a = (_args(data) + [None, None, None, None])[:4]
+        n, est, budget = a[1], a[2], a[3]
+        text = "context compacted"
+        if isinstance(n, int):
+            text += " · %d earlier messages summarized" % n
+        if isinstance(est, int) and isinstance(budget, int) and budget > 0:
+            text += " (≈%s of %s tokens)" % (format(est, ","), format(budget, ","))
+        return Event(kind="system", text=text, detail="up to message %s" % _text(a[0]),
+                     meta={}, **b)
+    if kind in ("brain", "brain_fallback", "mode", "resume"):
         a = [_text(x) for x in _args(data) if _text(x)]
         label = {"brain": "→ brain", "brain_fallback": "→ fallback", "mode": "mode",
                  "compaction": "context compacted", "resume": "↻ resumed run"}[kind]
@@ -246,6 +257,9 @@ class HugpyServeClient(Client):
 
     def clear(self, sid):
         return self.http.post("/api/sessions/%s/clear" % sid, {})
+
+    def end_session(self, sid):
+        return self.http.post("/api/sessions/%s/end" % sid, {})
 
     def emergency_preflight(self):
         return self.http.get("/api/emergency/preflight")

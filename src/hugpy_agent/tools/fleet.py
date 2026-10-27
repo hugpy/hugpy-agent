@@ -34,7 +34,7 @@ import urllib.parse
 
 from . import (RISK_READONLY, RISK_REMOTE_COMPUTE, ToolContext,
                ToolInterrupted, ToolSpec)
-from .fs import _confine
+from hugpy_terminal.tools.fs import _confine
 
 # ── job status sets (seed: generate.py) ─────────────────────────────────────
 _DONE = {"done", "completed", "complete", "success", "succeeded", "finished"}

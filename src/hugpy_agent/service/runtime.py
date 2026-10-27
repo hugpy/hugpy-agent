@@ -276,7 +276,7 @@ class Runtime:
         """JSON-able preflight for the TUI Emergency window: a llama-server
         binary, local GGUFs and hardware, with any blocking errors. Never
         raises — a missing mount degrades to an error string, not a 500."""
-        from .. import emergency as em
+        from ..runtime import emergency as em
         pf = em.preflight()
         return {"llama_bin": pf.llama_bin, "threads": pf.threads, "ready": pf.ready,
                 "errors": pf.errors,
@@ -288,7 +288,7 @@ class Runtime:
         central / toolserver in the path) and open a conversation-mode session
         on it. The model loads in the background so this returns at once; the
         session carries `note` events (loading -> ready/failed)."""
-        from .. import emergency as em
+        from ..runtime import emergency as em
         with self.lock:
             if self.closing:
                 raise RuntimeError("Service is closing")
@@ -419,10 +419,11 @@ class Runtime:
                         text = "Prior conversation:\n" + history[-16000:] + "\nCurrent request:\n" + text
                 report = run(profile, self.cfg.workspace, text, session["native_id"], emit, control)
             else:
-                from ..loop import AgentLoop
-                from ..journal import Journal
-                from ..adapter import Adapter
-                from ..tools import Registry, ToolSpec, RISK_READONLY, fs, http, shell, toolserver, fleet
+                from ..runtime.loop import AgentLoop
+                from hugpy_terminal.journal import Journal
+                from hugpy_terminal.adapter import Adapter
+                from ..tools import Registry, ToolSpec, RISK_READONLY, http, toolserver, fleet
+                from hugpy_terminal.tools import fs, shell
                 cfg = replace(self.cfg, model=profile["model"], base=profile["base_url"],
                               api_key=os.environ.get(profile.get("api_key_env", ""), ""),
                               max_tokens=profile["max_tokens"], ctx_fallback=profile["context_length"],

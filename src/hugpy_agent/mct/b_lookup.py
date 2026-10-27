@@ -483,7 +483,7 @@ def queue_busy(base: str, api_key: str = "", timeout: float = QUEUE_PROBE_TIMEOU
     if os.environ.get("HUGPY_B_SKIP_IF_BUSY", "1") in ("0", "false", "no"):
         return False
     try:
-        from hugpy_agent.gateway import origin
+        from ..gateway import origin
         url = origin(base) + "/api/llm/queue"
         headers = {"Accept": "application/json"}
         if api_key:
@@ -511,8 +511,8 @@ def meta_line(model: str, tokens: int, started: float, ts: datetime | None = Non
 def default_chat(workspace: str | None = None, model: str | None = None):
     """Build the gateway lazily — only a synth reply pays for the import,
     the config load, and the route probe."""
-    from hugpy_agent.config import load_config
-    from hugpy_agent.gateway import Gateway
+    from ..config import load_config
+    from ..gateway import Gateway
     cfg = load_config(workspace=workspace) if workspace else load_config()
     gw = Gateway.from_config(cfg)
     name = model or gw.model or "default"
@@ -595,7 +595,7 @@ def respond(text: str, sess, server, state: dict | None = None, *,
 
 def _estimate(text: str) -> int:
     try:
-        from hugpy_agent.gateway import estimate_tokens
+        from ..gateway import estimate_tokens
         return estimate_tokens(text)
     except Exception:
         return max(1, len(text) // 4)
@@ -603,7 +603,7 @@ def _estimate(text: str) -> int:
 
 def _configured_model_name(workspace: str | None) -> str:
     try:
-        from hugpy_agent.config import load_config
+        from ..config import load_config
         cfg = load_config(workspace=workspace) if workspace else load_config()
         return cfg.model or "default"
     except Exception:
@@ -612,7 +612,7 @@ def _configured_model_name(workspace: str | None) -> str:
 
 def _configured_base(workspace: str | None) -> str:
     try:
-        from hugpy_agent.config import load_config
+        from ..config import load_config
         cfg = load_config(workspace=workspace) if workspace else load_config()
         return cfg.base
     except Exception:

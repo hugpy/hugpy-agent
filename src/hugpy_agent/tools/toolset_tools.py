@@ -1,6 +1,6 @@
-"""hugpy_tools -> agent tools. Thin glue: all logic lives in hugpy_tools (stdlib-only).
+"""Agent tools using shared Resources primitives and Tools web capabilities.
 
-Every path goes through hugpy_tools.confine (realpath + parent-confine on write),
+Every path goes through Resources confine (realpath + parent-confine on write),
 re-raised as ValueError with the same wording as tools/fs.py. Risk classes reuse
 the registry constants so policy.py gates writes and network like fs_write/http_fetch.
 """
@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import json
 
-import hugpy_tools as ht
+from hugpy_resources import imports as resources
+from hugpy_tools.web import assess_webpage, prescreen_webpage
 
 from . import RISK_NETWORK, RISK_READONLY, RISK_WRITE, ToolSpec
 
 
 def _confine(workspace: str, path: str, for_write: bool = False) -> str:
     try:
-        return ht.confine(workspace, path, for_write=for_write)
-    except ht.PathEscape:
+        return resources.confine(workspace, path, for_write=for_write)
+    except resources.PathEscape:
         raise ValueError("path %r escapes the workspace (%s)" % (path, workspace))
 
 
@@ -33,54 +34,54 @@ _PATH = {"type": "string", "description": "workspace-relative path"}
 
 def specs(workspace: str) -> list[ToolSpec]:
     def fs_read_lines(path: str, start: int = 1, end: int | None = None, number: bool = False) -> str:
-        return _out(ht.read_lines(_confine(workspace, path), start=start, end=end, number=number))
+        return _out(resources.read_lines(_confine(workspace, path), start=start, end=end, number=number))
 
     def fs_list(path: str = ".", glob: str | None = None, files_only: bool = False,
                 dirs_only: bool = False, limit: int = 500) -> str:
-        return _out(ht.list_dir(_confine(workspace, path), glob=glob, files_only=files_only,
+        return _out(resources.list_dir(_confine(workspace, path), glob=glob, files_only=files_only,
                                 dirs_only=dirs_only, limit=limit))
 
     def fs_tree(path: str = ".", max_depth: int = 3, max_entries: int = 500, show_files: bool = True) -> str:
-        return _out(ht.tree(_confine(workspace, path), max_depth=max_depth,
+        return _out(resources.tree(_confine(workspace, path), max_depth=max_depth,
                             max_entries=max_entries, show_files=show_files))
 
     def fs_info(path: str, hash_files: bool = False) -> str:
-        return _out(ht.file_info(_confine(workspace, path), hash_files=hash_files))
+        return _out(resources.file_info(_confine(workspace, path), hash_files=hash_files))
 
     def fs_edit(path: str, old: str, new: str, count: int | None = None) -> str:
-        return _out(ht.edit_replace(_confine(workspace, path, for_write=True), old, new, count=count))
+        return _out(resources.edit_replace(_confine(workspace, path, for_write=True), old, new, count=count))
 
     def data_read(path: str, fmt: str | None = None) -> str:
-        return _out(ht.read_data(_confine(workspace, path), fmt=fmt))
+        return _out(resources.read_data(_confine(workspace, path), fmt=fmt))
 
     def data_write(path: str, obj, indent: int = 2, sort_keys: bool = False) -> str:
-        return _out(ht.write_json(_confine(workspace, path, for_write=True), obj,
+        return _out(resources.write_json(_confine(workspace, path, for_write=True), obj,
                                   indent=indent, sort_keys=sort_keys))
 
     def text_count_tokens(text: str) -> str:
-        return _out({"tokens": ht.count_tokens(text)})
+        return _out({"tokens": resources.count_tokens(text)})
 
     def text_chunk(text: str, by: str = "tokens", size: int = 1000, overlap: int = 0) -> str:
         if by == "lines":
-            chunks = ht.chunk_by_lines(text, max_lines=size, overlap=overlap)
+            chunks = resources.chunk_by_lines(text, max_lines=size, overlap=overlap)
         elif by == "tokens":
-            chunks = ht.chunk_by_tokens(text, max_tokens=size)
+            chunks = resources.chunk_by_tokens(text, max_tokens=size)
         else:
             raise ValueError("by must be 'tokens' or 'lines', got %r" % by)
         return _out({"by": by, "count": len(chunks), "chunks": chunks})
 
     def text_diff(before: str, after: str, before_name: str = "before",
                   after_name: str = "after", context: int = 3) -> str:
-        return ht.unified_diff(before, after, before_name=before_name,
+        return resources.unified_diff(before, after, before_name=before_name,
                                after_name=after_name, context=context)
 
     def web_assess(url: str, max_chars: int = 12000, max_links: int = 50,
                    force_render: bool = False) -> str:
-        return _out(ht.assess_webpage(url, max_chars=max_chars, max_links=max_links,
+        return _out(assess_webpage(url, max_chars=max_chars, max_links=max_links,
                                       force_render=force_render))
 
     def web_prescreen(url: str, max_chars: int = 600, force_render: bool = False) -> str:
-        return _out(ht.prescreen_webpage(url, max_chars=max_chars, force_render=force_render))
+        return _out(prescreen_webpage(url, max_chars=max_chars, force_render=force_render))
 
     S, I, B = {"type": "string"}, {"type": "integer"}, {"type": "boolean"}
     return [

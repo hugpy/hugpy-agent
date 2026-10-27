@@ -33,8 +33,8 @@ import sys
 def answer(ws: str, text: str, history: list | None = None, **kw) -> dict:
     """The one-shot body, importable for tests: open the workspace, answer,
     close. ``kw`` passes through to :func:`b_lookup.respond` (``chat`` etc.)."""
-    from hugpy_agent.mct.b_lookup import respond
-    from hugpy_agent.mct.session import BrokerServer
+    from .b_lookup import respond
+    from .session import BrokerServer
     srv = BrokerServer(ws, sink=lambda *_a, **_k: None)
     try:
         sess = srv.session(srv.open_session("console-b"))
