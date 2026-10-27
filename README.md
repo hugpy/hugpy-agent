@@ -1,12 +1,12 @@
 # hugpy-agent
 
-hugpy-agent is the agent runtime for the Hugpy self-hosted LLM fleet, and it
-**replaces the legacy "hugpy-fleet"**. The package provides:
+hugpy-agent is the agent runtime for the Hugpy self-hosted LLM fleet.
+`hugpy-fleet` is the separate Core control client. The package provides:
 
 - **An agent loop on the fleet.** It runs assess → act → observe with a
   crash-safe SQLite journal, workspace-jailed tools, a policy gate with
   operator escalation, audit, subagents and RAG memory. The loop is the
-  [hugpy-terminal](../hugpy_terminal/README.md) core, extended with fleet extras.
+  [hugpy-terminal](../../hugpy-terminal/package/README.md) core, extended with fleet extras.
 - **The operator CLIs.** `hugpy-agent run`, `chat`, `case` and `resume`; the
   headless fleet cockpit (`console`); launchers for OpenCode, Claude Code,
   Qwen Code, Hermes and Aider (`launch`); a terminal client for Serve sessions
@@ -18,22 +18,14 @@ hugpy-agent is the agent runtime for the Hugpy self-hosted LLM fleet, and it
 - **The Core host's sessions service.** The deb installs `hugpy-agent-sessions.service`:
   `hugpy-agent serve` on `127.0.0.1:9127` registered with Core, the home of the
   console's Station tab sessions and the brain (`/etc/hugpy/sessions.env` tunes it).
-- **The Hugpy session server.** `hugpy-agent serve` is `hugpy-harness serve`
-  with the agent's loop and gateway swapped in: the harness's named sessions
+- **The Hugpy session server.** `hugpy-agent serve` reuses `hugpy-terminal`'s session runtime
+  with the agent's loop and gateway: named sessions
   on `127.0.0.1:9126` for Station and `hugpy-agent tui`, plus RAG, Discord
   comms, the fleet toolset and session identity/lease signals to central.
 
-The full reference is [`docs/agent-and-harness.md`](../../docs/agent-and-harness.md).
+The full reference is [`docs/agent-and-harness.md`](../../hugpy-terminal/package/README.md).
 It covers the harness hooks, chat-loop behavior, every subcommand, the
 services, the TUI keys, delegation, eval, known gaps and open topics.
-
-## Status (2026-10-18)
-
-| where | version |
-|---|---|
-| this source | **0.1.124**, prepared for release; requires `hugpy-harness>=0.1.10,<0.2` |
-| installed on ae | 0.1.123 deb (`/opt/hugpy-agent/venv`) with local Harness source fixes |
-| PyPI | 0.1.123; publish Harness 0.1.10 before Agent 0.1.124 |
 
 ## Install
 
@@ -109,7 +101,7 @@ hugpy-agent serve --daemon --task-source queue                 # task daemon (qu
 All subcommands: `launch`, `run`, `case`, `chat`, `resume`, `models`, `runs`,
 `eval`, `console`, `harness`, `mct`, `mct-serve`, `mct-usage`, `mct-fs`,
 `serve`, `console-serve`, `seat-report`, `tui` and `tools`. Each is described in
-[the CLI reference](../../docs/agent-and-harness.md#hugpy-agent).
+[the CLI reference](../../hugpy-terminal/package/README.md#hugpy-agent).
 
 Behaviors to know:
 
@@ -155,7 +147,7 @@ export. Secrets belong in the environment or `.env`, never in `agent.toml`.
 | `HUGPY_SESSION_SIGNALS` | on | `0` disables session identity headers and leases |
 
 The full table, with every variable, is in the
-[configuration reference](../../docs/agent-and-harness.md#configuration-reference).
+[configuration reference](../../hugpy-terminal/package/README.md#configuration-reference).
 
 **Per-workspace state** lives in `<workspace>/.hugpy_agent/`: `journal.db`,
 `audit.jsonl`, `memory_vectors.db`, `traces/`, `tasks.queue` and
@@ -194,7 +186,7 @@ Of these, the per-message budget and the abort-on-empty-reply rule apply in
 **chat mode**, which is what the :9126 session service uses. `hugpy-agent chat`
 runs task-mode turns.
 
-See [the hooks a host uses](../../docs/agent-and-harness.md#the-hooks-a-host-uses).
+See [the hooks a host uses](../../hugpy-terminal/package/README.md#the-hooks-a-host-uses).
 
 ## The /fleet console
 
@@ -213,7 +205,7 @@ See [the hooks a host uses](../../docs/agent-and-harness.md#the-hooks-a-host-use
 
 The arm identity is `agent`. hugpy-core discovers it through
 `/usr/share/hugpy/arms.d/agent.json` and reverse-proxies `/fleet/` and
-`/api/agent/*` to it; see [`docs/arms.md`](../../docs/arms.md). The same toolset
+`/api/agent/*` to it; see [`docs/arms.md`](../../hugpy-core/package/docs/ROUTES-CONVENTION.md). The same toolset
 is also exposed through entry points for an in-process host:
 `hugpy.toolsets: agent` and `hugpy.arms: agent` (`hugpy_agent.routes:fleet_bp`).
 
